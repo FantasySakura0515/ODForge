@@ -123,19 +123,18 @@ def test_backend_passthrough(tmp_path, monkeypatch, sample_presentation):
     assert seen["backend"] == "ollama"
 
 
-def test_ods_unrendered_exit_1(tmp_path, monkeypatch, sample_spreadsheet):
-    # .ods maps to "spreadsheet" but no renderer is registered yet (Task 8.1):
-    # the render-stage ValueError must surface as a concise FAIL, not a traceback.
+def test_new_ods_success(tmp_path, monkeypatch, sample_spreadsheet):
+    # Task 8.1 registers the spreadsheet renderer: .ods now renders through the
+    # CLI and validates, so the command succeeds with exit 0.
     monkeypatch.setattr(
         "odforge.cli.generate_ir",
         lambda prompt, doc_type, backend=None: sample_spreadsheet,
     )
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["new", "x", "-o", "out.ods", "--no-soffice"])
-    assert result.exit_code == 1
-    out = _out(result)
-    assert "FAIL" in out
-    assert "Traceback" not in out
+    assert result.exit_code == 0, _out(result)
+    assert (tmp_path / "out.ods").exists()
+    assert "OK" in _out(result)
 
 
 def test_error_message_with_brackets_survives(tmp_path, monkeypatch):

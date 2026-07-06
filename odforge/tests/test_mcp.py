@@ -50,12 +50,11 @@ def test_invalid_document_returns_error_string(tmp_path: Path) -> None:
     assert not out.exists()
 
 
-def test_spreadsheet_unrendered_returns_error(sample_spreadsheet, tmp_path: Path) -> None:
-    # Task 8.1 registers the spreadsheet renderer; until then rendering fails
-    # and the tool returns an error string. Flip to asserting "ok" after 8.1.
+def test_forge_spreadsheet_ok(sample_spreadsheet, tmp_path: Path) -> None:
     out = tmp_path / "x.ods"
     result = forge_spreadsheet(sample_spreadsheet.model_dump(), str(out))
-    assert result.startswith("error:")
+    assert out.exists()
+    assert "ok" in result
 
 
 def test_out_dir_created(sample_presentation, tmp_path: Path) -> None:
