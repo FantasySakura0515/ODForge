@@ -18,3 +18,5 @@ build/
 odforge/.venv/
 odforge/**/__pycache__/
 odforge/*.egg-info/
+上傳區/
+.~lock.*#
