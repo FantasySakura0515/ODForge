@@ -123,6 +123,34 @@ def test_backend_passthrough(tmp_path, monkeypatch, sample_presentation):
     assert seen["backend"] == "ollama"
 
 
+def test_ods_unrendered_exit_1(tmp_path, monkeypatch, sample_spreadsheet):
+    # .ods maps to "spreadsheet" but no renderer is registered yet (Task 8.1):
+    # the render-stage ValueError must surface as a concise FAIL, not a traceback.
+    monkeypatch.setattr(
+        "odforge.cli.generate_ir",
+        lambda prompt, doc_type, backend=None: sample_spreadsheet,
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["new", "x", "-o", "out.ods", "--no-soffice"])
+    assert result.exit_code == 1
+    out = _out(result)
+    assert "FAIL" in out
+    assert "Traceback" not in out
+
+
+def test_error_message_with_brackets_survives(tmp_path, monkeypatch):
+    # Pydantic-style errors contain bracketed segments like
+    # "[type=missing, input_value=x]"; rich markup must not swallow them.
+    def boom(prompt, doc_type, backend=None):
+        raise RuntimeError("field required [type=missing, input_value=x]")
+
+    monkeypatch.setattr("odforge.cli.generate_ir", boom)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["new", "x", "-o", "out.odp", "--no-soffice"])
+    assert result.exit_code == 1
+    assert "input_value" in _out(result)
+
+
 def test_validation_failure_exit_1(tmp_path, monkeypatch, sample_text_doc):
     from odforge.validate import ValidationReport
 

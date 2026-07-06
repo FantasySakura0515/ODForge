@@ -14,6 +14,7 @@ from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from odforge.llm import generate_ir
@@ -92,7 +93,7 @@ def new(
     try:
         ir = generate_ir(prompt, doc_type, backend=backend.value if backend else None)
     except Exception as exc:  # noqa: BLE001 - present a concise message, no traceback
-        _err.print(f"[red]FAIL[/red] 內容產生失敗：{exc}")
+        _err.print(f"[red]FAIL[/red] 內容產生失敗：{escape(str(exc))}")
         raise typer.Exit(code=1)
 
     # --theme only means anything for presentations; leave the default alone.
@@ -100,10 +101,13 @@ def new(
         ir = ir.model_copy(update={"theme": theme.value})
 
     out_path = out.resolve()
-    render(ir, out_path)
-
-    with_soffice = bool(soffice) and find_soffice() is not None
-    report = validate_odf(out_path, with_soffice=with_soffice)
+    try:
+        render(ir, out_path)
+        with_soffice = bool(soffice) and find_soffice() is not None
+        report = validate_odf(out_path, with_soffice=with_soffice)
+    except Exception as exc:  # noqa: BLE001 - present a concise message, no traceback
+        _err.print(f"[red]FAIL[/red] 輸出或驗證失敗：{escape(str(exc))}")
+        raise typer.Exit(code=1)
 
     table = Table(title="驗證結果")
     table.add_column("Gate")
@@ -111,7 +115,7 @@ def new(
     table.add_column("訊息", overflow="fold")
     for name, (passed, message) in report.gates.items():
         mark = "[green]OK[/green]" if passed else "[red]FAIL[/red]"
-        table.add_row(name, mark, message)
+        table.add_row(escape(name), mark, escape(message))
     _out.print(table)
 
     if report.ok:
