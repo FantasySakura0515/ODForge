@@ -191,6 +191,26 @@ def test_tool_choice_and_schema_sent(monkeypatch):
     assert call["tools"][0]["function"]["parameters"] == Presentation.model_json_schema()
 
 
+def test_max_tokens_default_sent(monkeypatch):
+    monkeypatch.delenv("ODFORGE_MAX_TOKENS", raising=False)
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_VALID_PRESENTATION))]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    backend.generate_ir("x", "presentation")
+    assert client.completions.calls[0]["max_tokens"] == 8192
+
+
+def test_max_tokens_env_override(monkeypatch):
+    monkeypatch.setenv("ODFORGE_MAX_TOKENS", "4000")
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_VALID_PRESENTATION))]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    backend.generate_ir("x", "presentation")
+    assert client.completions.calls[0]["max_tokens"] == 4000
+
+
 def test_get_backend_deepseek_requires_key(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="DEEPSEEK_API_KEY"):

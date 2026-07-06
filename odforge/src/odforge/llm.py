@@ -127,6 +127,7 @@ class OpenAICompatBackend:
                 messages=messages,
                 tools=tools,
                 tool_choice=tool_choice,
+                max_tokens=int(os.environ.get("ODFORGE_MAX_TOKENS", "8192")),
             )
 
             tool_calls = resp.choices[0].message.tool_calls
