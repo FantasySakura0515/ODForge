@@ -58,6 +58,17 @@ def test_manifest_missing_part_fails(tmp_path):
         z.writestr("META-INF/manifest.xml", manifest)
     assert not validate_odf(bad).gates["structure"][0]
 
+def test_empty_content_xml_fails(tmp_path):
+    bad = tmp_path / "bad.odt"
+    with zipfile.ZipFile(bad, "w") as z:
+        zi = zipfile.ZipInfo("mimetype"); zi.compress_type = zipfile.ZIP_STORED
+        z.writestr(zi, "application/vnd.oasis.opendocument.text")
+        z.writestr("content.xml", "")
+        z.writestr("META-INF/manifest.xml",
+                   '<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"/>')
+    r = validate_odf(bad)
+    assert not r.ok and not r.gates["xml"][0]
+
 def test_not_a_zip_fails(tmp_path):
     bad = tmp_path / "bad.odt"
     bad.write_text("not a zip", encoding="utf-8")

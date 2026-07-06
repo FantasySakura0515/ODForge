@@ -39,6 +39,11 @@ _EXT_MIMETYPE = {
 
 _SOFFICE_TIMEOUT = 120
 
+# Parts that, when present in the package, must not be empty. Presence is
+# not enforced here - the rule is "if a required-named part exists and is
+# empty, fail" (e.g. settings.xml need not exist at all).
+_REQUIRED_PARTS = {"content.xml", "styles.xml", "meta.xml", "settings.xml", "META-INF/manifest.xml"}
+
 
 @dataclass
 class ValidationReport:
@@ -120,9 +125,11 @@ def _gate_xml(path: Path) -> tuple[bool, str]:
                 continue
             data = z.read(name)
             if not data.strip():
-                # Empty placeholder parts (e.g. Configurations2/.../current.xml)
-                # are emitted by real ODF producers and carry no content to be
-                # malformed.
+                # Mandatory document parts must carry content; other empty
+                # placeholders (e.g. Configurations2/.../current.xml) are
+                # emitted by real ODF producers and are fine.
+                if name in _REQUIRED_PARTS:
+                    bad.append(f"{name}: empty/whitespace-only required part")
                 continue
             try:
                 etree.fromstring(data)
