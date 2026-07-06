@@ -17,6 +17,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from odforge.check import check_odf, diff_docx_odt
 from odforge.llm import generate_ir
 from odforge.render import render
 from odforge.validate import find_soffice, validate_odf
@@ -124,6 +125,43 @@ def new(
 
     _out.print("[red]FAIL[/red] 驗證未通過。")
     raise typer.Exit(code=1)
+
+
+@app.command()
+def check(
+    file: Path = typer.Argument(
+        ..., help="要檢測的檔案；.odt/.odp/.ods 做 ODF 檢測，.docx 做結構比對。"
+    ),
+    out: Optional[Path] = typer.Option(
+        None,
+        "-o",
+        "--out",
+        help="同時把報告寫入此檔案（UTF-8）。",
+    ),
+) -> None:
+    """檢測一份 ODF 檔（.odt/.odp/.ods），或比對 .docx 與其轉出的 .odt 結構。"""
+    ext = file.suffix.lower()
+    if ext == ".docx":
+        report = diff_docx_odt(file)
+    elif ext in _EXT_DOC_TYPE:
+        report = check_odf(file)
+    else:
+        supported = ", ".join(sorted((*_EXT_DOC_TYPE, ".docx")))
+        report = (
+            f"error: unsupported extension {ext or '(無)'!r}; "
+            f"supported: {supported}"
+        )
+
+    # Print the raw markdown so stdout is exactly the report body; keep any
+    # side notes on stderr so ``-o`` output and stdout stay identical.
+    typer.echo(report)
+
+    if out is not None:
+        out.write_text(report, encoding="utf-8")
+        _err.print(f"[green]OK[/green] 報告已寫入 {out}")
+
+    failed = report.startswith("error:") or "FAIL" in report
+    raise typer.Exit(code=1 if failed else 0)
 
 
 if __name__ == "__main__":  # pragma: no cover
