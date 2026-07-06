@@ -10,11 +10,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+from odforge.render.odp import render_odp
 from odforge.render.odt import render_odt
 
 # ir.type -> renderer. Extend this table to add new document types.
 DISPATCH: dict[str, Callable[..., Path]] = {
     "text": render_odt,
+    "presentation": render_odp,
 }
 
 
@@ -31,4 +33,4 @@ def render(ir, out_path: Path) -> Path:
     return renderer(ir, Path(out_path))
 
 
-__all__ = ["render", "render_odt", "DISPATCH"]
+__all__ = ["render", "render_odt", "render_odp", "DISPATCH"]
