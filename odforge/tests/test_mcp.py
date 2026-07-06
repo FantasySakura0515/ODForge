@@ -1,0 +1,78 @@
+"""Tests for the ODForge MCP server tools.
+
+The four tools are exercised as plain functions (the FastMCP registration is a
+thin wrapper); no MCP server process is started. Every failure path must return
+an ``"error: ..."`` string rather than raising, because an exception inside an
+MCP tool becomes a protocol-level error.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from odforge.mcp_server import (
+    forge_presentation,
+    forge_spreadsheet,
+    forge_text_document,
+    inspect_odf,
+)
+
+
+def test_forge_presentation_ok(sample_presentation, tmp_path: Path) -> None:
+    out = tmp_path / "x.odp"
+    result = forge_presentation(sample_presentation.model_dump(), str(out))
+    assert out.exists()
+    assert "ok" in result
+
+
+def test_forge_text_ok(sample_text_doc, tmp_path: Path) -> None:
+    out = tmp_path / "x.odt"
+    result = forge_text_document(sample_text_doc.model_dump(), str(out))
+    assert out.exists()
+    assert "ok" in result
+
+
+def test_type_injected(sample_presentation, tmp_path: Path) -> None:
+    # A caller (or a confused LLM) mislabels the payload as "text"; the tool
+    # must override the type so the presentation still renders to .odp.
+    doc = sample_presentation.model_dump()
+    doc["type"] = "text"
+    out = tmp_path / "injected.odp"
+    result = forge_presentation(doc, str(out))
+    assert out.exists()
+    assert "ok" in result
+
+
+def test_invalid_document_returns_error_string(tmp_path: Path) -> None:
+    out = tmp_path / "bad.odp"
+    result = forge_presentation({"garbage": 1}, str(out))
+    assert result.startswith("error:")
+    assert not out.exists()
+
+
+def test_spreadsheet_unrendered_returns_error(sample_spreadsheet, tmp_path: Path) -> None:
+    # Task 8.1 registers the spreadsheet renderer; until then rendering fails
+    # and the tool returns an error string. Flip to asserting "ok" after 8.1.
+    out = tmp_path / "x.ods"
+    result = forge_spreadsheet(sample_spreadsheet.model_dump(), str(out))
+    assert result.startswith("error:")
+
+
+def test_out_dir_created(sample_presentation, tmp_path: Path) -> None:
+    out = tmp_path / "deep" / "nested" / "dir" / "x.odp"
+    result = forge_presentation(sample_presentation.model_dump(), str(out))
+    assert out.exists()
+    assert "ok" in result
+
+
+def test_inspect_odf_valid(sample_presentation, tmp_path: Path) -> None:
+    out = tmp_path / "x.odp"
+    forge_presentation(sample_presentation.model_dump(), str(out))
+    result = inspect_odf(str(out))
+    assert "structure" in result
+    assert "OK" in result
+
+
+def test_inspect_odf_missing_file(tmp_path: Path) -> None:
+    result = inspect_odf(str(tmp_path / "does-not-exist.odp"))
+    assert result.startswith("error:")
