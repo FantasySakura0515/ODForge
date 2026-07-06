@@ -191,6 +191,35 @@ def test_tool_choice_and_schema_sent(monkeypatch):
     assert call["tools"][0]["function"]["parameters"] == Presentation.model_json_schema()
 
 
+def test_malformed_json_repaired(monkeypatch):
+    # DeepSeek field failure: unquoted CJK-bracket-initial string value.
+    malformed = (
+        '{"title": "T", "theme": "academic", "slides": '
+        '[{"layout": "title", "title": "封面", "notes": 【開場】大家好}]}'
+    )
+    client = _install_fake_openai(monkeypatch, [_make_response(malformed)])
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    result = backend.generate_ir("x", "presentation")
+    # repaired in-place: no second API call
+    assert len(client.completions.calls) == 1
+    assert isinstance(result, Presentation)
+    assert "開場" in result.slides[0].notes
+
+
+def test_repair_failure_still_retries(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch,
+        [
+            _make_response("@@@@"),  # hopeless garbage: repair yields non-dict
+            _make_response(json.dumps(_VALID_PRESENTATION)),
+        ],
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    result = backend.generate_ir("x", "presentation")
+    assert isinstance(result, Presentation)
+    assert len(client.completions.calls) == 2
+
+
 def test_max_tokens_default_sent(monkeypatch):
     monkeypatch.delenv("ODFORGE_MAX_TOKENS", raising=False)
     client = _install_fake_openai(

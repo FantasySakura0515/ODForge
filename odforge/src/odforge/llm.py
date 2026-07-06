@@ -16,6 +16,7 @@ import json
 import os
 from typing import Callable, Dict, Optional, Protocol, Type, Union, runtime_checkable
 
+import json_repair
 from openai import OpenAI
 from pydantic import ValidationError
 
@@ -42,6 +43,7 @@ SYSTEM_PROMPT = """\
 【輸出方式】
 - 只透過 emit_document 工具輸出結果,不要輸出任何一般文字或說明。
 - 產出內容必須完全符合工具參數的 JSON Schema。
+- 工具參數必須是嚴格合法的 JSON,所有字串值(含 notes)一律以雙引號包裹。
 
 【一般文件(text)】
 - 建立清楚的標題階層(章、節、小節),善用標題、段落、清單與表格。
@@ -138,7 +140,16 @@ class OpenAICompatBackend:
 
             args_json = tool_calls[0].function.arguments
             try:
-                data = json.loads(args_json)
+                try:
+                    data = json.loads(args_json)
+                except json.JSONDecodeError:
+                    # DeepSeek occasionally emits malformed JSON in tool
+                    # arguments (e.g. an unquoted CJK-bracket-initial string
+                    # value). Attempt a best-effort repair; pydantic below
+                    # remains the correctness gate — repair never bypasses it.
+                    data = json_repair.loads(args_json)
+                    if not isinstance(data, dict):
+                        raise  # repair failed too: original JSONDecodeError
                 if not isinstance(data, dict):
                     # Valid JSON that is not an object (e.g. the string "123");
                     # route into the retry path instead of letting the ensuing
