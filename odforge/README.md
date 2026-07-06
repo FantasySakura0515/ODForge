@@ -4,6 +4,8 @@
 >
 > *Natural language → native ODF (`.odt` / `.odp` / `.ods`).*
 
+完整專案介紹請見 repo 根目錄:[繁體中文](../README.md) | [English](../README.en.md)。本檔為套件層技術說明。
+
 ODForge 讓你用一句自然語言的需求描述，直接產出一份**原生 ODF 文件**：
 文書（`.odt`）、簡報（`.odp`）與試算表（`.ods`）。輸出的是真正的
 OpenDocument 檔案，可用 LibreOffice、Microsoft Office、Google Docs 等直接開啟編輯。
