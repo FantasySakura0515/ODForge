@@ -75,3 +75,14 @@ def test_inspect_odf_valid(sample_presentation, tmp_path: Path) -> None:
 def test_inspect_odf_missing_file(tmp_path: Path) -> None:
     result = inspect_odf(str(tmp_path / "does-not-exist.odp"))
     assert result.startswith("error:")
+
+
+def test_forge_error_string_bounded(tmp_path: Path) -> None:
+    # A pathological payload with many invalid slides produces a huge pydantic
+    # ValidationError; the returned error string must be length-bounded so it
+    # never floods the MCP client.
+    doc = {"title": "x", "slides": [{"title": "no layout"} for _ in range(300)]}
+    result = forge_presentation(doc, str(tmp_path / "x.odp"))
+    assert result.startswith("error:")
+    assert "訊息截斷" in result
+    assert len(result) < 1000

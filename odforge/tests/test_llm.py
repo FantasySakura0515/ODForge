@@ -149,6 +149,23 @@ def test_retry_succeeds_second_time(monkeypatch):
     ), combined
 
 
+def test_non_dict_arguments_retries_then_succeeds(monkeypatch):
+    # A model can emit valid JSON that is not an object (e.g. the string
+    # "123"). Assigning data["type"] would raise TypeError; that must route
+    # into the retry path, not escape.
+    client = _install_fake_openai(
+        monkeypatch,
+        [
+            _make_response(json.dumps("123")),  # arguments == '"123"'
+            _make_response(json.dumps(_VALID_PRESENTATION)),
+        ],
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    result = backend.generate_ir("x", "presentation")
+    assert isinstance(result, Presentation)
+    assert len(client.completions.calls) == 2
+
+
 def test_no_tool_call_raises_runtime_error(monkeypatch):
     client = _install_fake_openai(
         monkeypatch, [_make_response(None), _make_response(None)]

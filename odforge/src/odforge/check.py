@@ -24,7 +24,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from .validate import find_soffice, validate_odf
+from .validate import find_soffice, run_soffice_convert, validate_odf
 
 # ---------------------------------------------------------------------------
 # Namespaces
@@ -217,39 +217,22 @@ def _check_odf_report(path: Path) -> str:
 def _convert_docx_to_odt(docx: Path, soffice: Path, outdir: Path) -> tuple[Path | None, str]:
     """Convert ``docx`` to ``.odt`` inside ``outdir`` using an isolated profile.
 
-    Follows the soffice subprocess pattern from ``validate.py`` (captured
-    output, timeout, temp-dir isolation). Returns (odt-path, message); the path
-    is ``None`` on failure.
+    Delegates to :func:`odforge.validate.run_soffice_convert`, the single shared
+    soffice entry point (captured output, timeout, private-profile isolation).
+    Returns (odt-path, message); the path is ``None`` on failure.
     """
-    profile_dir = Path(tempfile.mkdtemp(prefix="odforge-check-profile-"))
     try:
-        proc = subprocess.run(
-            [
-                str(soffice),
-                "--headless",
-                f"-env:UserInstallation={profile_dir.as_uri()}",
-                "--convert-to",
-                "odt",
-                "--outdir",
-                str(outdir),
-                str(docx),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=_SOFFICE_TIMEOUT,
-        )
-        if proc.returncode != 0:
-            stderr = (proc.stderr or proc.stdout or "").strip()
-            return None, f"soffice exited {proc.returncode}: {stderr[:500]}"
-        odt = outdir / (docx.stem + ".odt")
-        if not odt.exists():
-            stderr = (proc.stderr or proc.stdout or "").strip()
-            return None, f"soffice produced no odt: {stderr[:500]}"
-        return odt, "ok"
+        proc = run_soffice_convert(soffice, docx, "odt", outdir, timeout=_SOFFICE_TIMEOUT)
     except subprocess.TimeoutExpired:
         return None, f"soffice timed out after {_SOFFICE_TIMEOUT}s"
-    finally:
-        shutil.rmtree(profile_dir, ignore_errors=True)
+    if proc.returncode != 0:
+        stderr = (proc.stderr or proc.stdout or "").strip()
+        return None, f"soffice exited {proc.returncode}: {stderr[:500]}"
+    odt = outdir / (docx.stem + ".odt")
+    if not odt.exists():
+        stderr = (proc.stderr or proc.stdout or "").strip()
+        return None, f"soffice produced no odt: {stderr[:500]}"
+    return odt, "ok"
 
 
 def _count_docx(docx: Path) -> dict[str, int]:

@@ -20,6 +20,7 @@ from rich.table import Table
 from odforge.check import check_odf, diff_docx_odt
 from odforge.llm import generate_ir
 from odforge.render import render
+from odforge.textutil import concise
 from odforge.validate import find_soffice, validate_odf
 
 # Output extension -> IR doc_type. Also the source of the "supported types"
@@ -51,17 +52,9 @@ app = typer.Typer(
 _out = Console()
 _err = Console(stderr=True)
 
-# A real-API failure can carry huge pydantic error dumps (tens of KB); bound
-# what reaches the terminal.
-_MAX_ERROR_LEN = 500
-
-
 def _concise(exc: Exception) -> str:
     """One-line, length-bounded, rich-markup-safe rendering of an exception."""
-    message = str(exc)
-    if len(message) > _MAX_ERROR_LEN:
-        message = message[:_MAX_ERROR_LEN] + "…(訊息截斷)"
-    return escape(message)
+    return escape(concise(str(exc)))
 
 
 @app.callback()
@@ -98,8 +91,8 @@ def new(
     if doc_type is None:
         supported = ", ".join(sorted(_EXT_DOC_TYPE))
         _err.print(
-            f"[red]FAIL[/red] 不支援的副檔名 {ext or '(無)'!r}；"
-            f"支援的類型：{supported}"
+            f"[red]FAIL[/red] 不支援的副檔名 {escape(repr(ext or '(無)'))}；"
+            f"支援的類型：{escape(supported)}"
         )
         raise typer.Exit(code=2)
 
@@ -115,6 +108,7 @@ def new(
 
     out_path = out.resolve()
     try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         render(ir, out_path)
         with_soffice = bool(soffice) and find_soffice() is not None
         report = validate_odf(out_path, with_soffice=with_soffice)
@@ -132,7 +126,7 @@ def new(
     _out.print(table)
 
     if report.ok:
-        _out.print(f"[green]OK[/green] {out_path}")
+        _out.print(f"[green]OK[/green] {escape(str(out_path))}")
         raise typer.Exit(code=0)
 
     _out.print("[red]FAIL[/red] 驗證未通過。")
@@ -170,7 +164,7 @@ def check(
 
     if out is not None:
         out.write_text(report, encoding="utf-8")
-        _err.print(f"[green]OK[/green] 報告已寫入 {out}")
+        _err.print(f"[green]OK[/green] 報告已寫入 {escape(str(out))}")
 
     failed = report.startswith("error:") or "FAIL" in report
     raise typer.Exit(code=1 if failed else 0)

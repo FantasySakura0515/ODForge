@@ -54,6 +54,18 @@ def test_parse_ir_spreadsheet_with_null_cell():
     assert ir.sheets[0].rows[0][1] is None
 
 
+def test_empty_slides_presentation_rejected():
+    # A presentation with zero slides is a degenerate document; reject it at
+    # the IR boundary so the renderer never emits an empty deck.
+    with pytest.raises(ValidationError):
+        parse_ir({"type": "presentation", "title": "x", "slides": []})
+
+
+def test_empty_sheets_spreadsheet_rejected():
+    with pytest.raises(ValidationError):
+        parse_ir({"type": "spreadsheet", "title": "x", "sheets": []})
+
+
 def test_schema_exportable():
     assert "properties" in Presentation.model_json_schema()
 

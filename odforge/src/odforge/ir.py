@@ -88,7 +88,7 @@ class Presentation(BaseModel):
     type: Literal["presentation"] = "presentation"
     title: str
     theme: Literal["academic", "minimal", "dark"] = "academic"
-    slides: List[Slide] = Field(default_factory=list)
+    slides: List[Slide] = Field(default_factory=list, min_length=1)
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +120,7 @@ class Sheet(BaseModel):
 class Spreadsheet(BaseModel):
     type: Literal["spreadsheet"] = "spreadsheet"
     title: str
-    sheets: List[Sheet] = Field(default_factory=list)
+    sheets: List[Sheet] = Field(default_factory=list, min_length=1)
 
 
 # ---------------------------------------------------------------------------

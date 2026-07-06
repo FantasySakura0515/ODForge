@@ -166,6 +166,21 @@ def test_long_error_message_truncated(tmp_path, monkeypatch):
     assert len(out) < 1000
 
 
+def test_new_creates_missing_parent_dir(tmp_path, monkeypatch, sample_presentation):
+    # -o into a not-yet-existing subdirectory must succeed: the CLI creates the
+    # parent directory before rendering (matching the MCP server's behaviour).
+    monkeypatch.setattr(
+        "odforge.cli.generate_ir",
+        lambda prompt, doc_type, backend=None: sample_presentation,
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["new", "做簡報", "-o", "sub/deep/out.odp", "--no-soffice"]
+    )
+    assert result.exit_code == 0, _out(result)
+    assert (tmp_path / "sub" / "deep" / "out.odp").exists()
+
+
 def test_validation_failure_exit_1(tmp_path, monkeypatch, sample_text_doc):
     from odforge.validate import ValidationReport
 

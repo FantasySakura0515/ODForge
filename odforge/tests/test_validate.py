@@ -1,9 +1,50 @@
+import subprocess
 import zipfile
 import pytest
 from pathlib import Path
-from odforge.validate import validate_odf, find_soffice, ValidationReport
+from odforge import validate
+from odforge.validate import (
+    validate_odf,
+    find_soffice,
+    run_soffice_convert,
+    ValidationReport,
+)
 from odforge.render.odt import render_odt
 from odforge.render.odp import render_odp
+
+
+def test_soffice_gate_isolates_user_installation(tmp_path, monkeypatch):
+    # The soffice conversion MUST pass -env:UserInstallation=... so a running
+    # desktop LibreOffice instance does not block the headless conversion.
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        outdir = Path(cmd[cmd.index("--outdir") + 1])
+        (outdir / (Path(cmd[-1]).stem + ".pdf")).write_bytes(b"%PDF-1.4")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(validate.subprocess, "run", fake_run)
+    passed, msg = validate._gate_soffice(tmp_path / "d.odt", Path("soffice"))
+    assert passed, msg
+    env_args = [a for a in captured["cmd"] if str(a).startswith("-env:UserInstallation=")]
+    assert env_args, captured["cmd"]
+    # single-dash env switch, file URI value
+    assert env_args[0].startswith("-env:UserInstallation=file:")
+
+
+def test_run_soffice_convert_builds_env_arg(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, "out", "")
+
+    monkeypatch.setattr(validate.subprocess, "run", fake_run)
+    proc = run_soffice_convert(Path("soffice"), tmp_path / "s.docx", "odt", tmp_path)
+    assert proc.returncode == 0
+    assert any(str(a).startswith("-env:UserInstallation=") for a in captured["cmd"])
+    assert "odt" in captured["cmd"]
 
 def test_valid_odt_passes(tmp_path, sample_text_doc):
     out = render_odt(sample_text_doc, tmp_path / "d.odt")

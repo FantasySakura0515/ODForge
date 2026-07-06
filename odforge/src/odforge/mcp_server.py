@@ -28,6 +28,7 @@ from mcp.server.fastmcp import FastMCP
 
 from odforge.ir import parse_ir
 from odforge.render import render
+from odforge.textutil import concise
 from odforge.validate import find_soffice, validate_odf
 
 mcp = FastMCP("odforge")
@@ -62,7 +63,7 @@ def _forge(document: dict, out_path: str, doc_type: str) -> str:
             return f"error: validation failed for {out.resolve()} — {gates}"
         return f"ok: wrote {out.resolve()} — {gates}"
     except Exception as exc:  # noqa: BLE001 - tools must never raise
-        return f"error: {type(exc).__name__}: {exc}"
+        return f"error: {type(exc).__name__}: {concise(str(exc))}"
 
 
 @mcp.tool()
@@ -151,7 +152,7 @@ def inspect_odf(path: str) -> str:
         ]
         return "\n".join(lines)
     except Exception as exc:  # noqa: BLE001 - tools must never raise
-        return f"error: {type(exc).__name__}: {exc}"
+        return f"error: {type(exc).__name__}: {concise(str(exc))}"
 
 
 if __name__ == "__main__":  # pragma: no cover

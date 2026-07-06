@@ -140,24 +140,58 @@ def _gate_xml(path: Path) -> tuple[bool, str]:
     return True, "all xml well-formed"
 
 
+def _build_soffice_cmd(
+    soffice: Path, src: Path, fmt: str, outdir: Path, profile_dir: Path
+) -> list[str]:
+    """Build the soffice conversion argv (pure function, so it is testable).
+
+    Always injects ``-env:UserInstallation=<file URI>`` (single-dash env switch)
+    so the headless conversion uses a private profile and never collides with a
+    desktop LibreOffice instance the user may have open.
+    """
+    return [
+        str(soffice),
+        "--headless",
+        f"-env:UserInstallation={profile_dir.as_uri()}",
+        "--convert-to",
+        fmt,
+        "--outdir",
+        str(outdir),
+        str(src),
+    ]
+
+
+def run_soffice_convert(
+    soffice: Path,
+    src: Path,
+    fmt: str,
+    outdir: Path,
+    timeout: int = _SOFFICE_TIMEOUT,
+) -> subprocess.CompletedProcess:
+    """Convert ``src`` to ``fmt`` in ``outdir`` via an isolated soffice profile.
+
+    The single shared entry point for every soffice ``--convert-to`` call in the
+    codebase. Creates a throwaway profile directory, passes it as
+    ``-env:UserInstallation``, captures stdout/stderr and cleans the profile up.
+    Raises :class:`subprocess.TimeoutExpired` on timeout (callers handle it).
+    """
+    profile_dir = Path(tempfile.mkdtemp(prefix="odforge-soffice-profile-"))
+    try:
+        return subprocess.run(
+            _build_soffice_cmd(soffice, src, fmt, outdir, profile_dir),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    finally:
+        shutil.rmtree(profile_dir, ignore_errors=True)
+
+
 def _gate_soffice(path: Path, soffice: Path) -> tuple[bool, str]:
     """Gate 3: round-trip through soffice --convert-to pdf."""
     tmpdir = Path(tempfile.mkdtemp(prefix="odforge-validate-"))
     try:
-        proc = subprocess.run(
-            [
-                str(soffice),
-                "--headless",
-                "--convert-to",
-                "pdf",
-                "--outdir",
-                str(tmpdir),
-                str(path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=_SOFFICE_TIMEOUT,
-        )
+        proc = run_soffice_convert(soffice, path, "pdf", tmpdir)
         if proc.returncode != 0:
             stderr = (proc.stderr or proc.stdout or "").strip()
             return False, f"soffice exited {proc.returncode}: {stderr[:500]}"

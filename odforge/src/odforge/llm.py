@@ -138,9 +138,16 @@ class OpenAICompatBackend:
             args_json = tool_calls[0].function.arguments
             try:
                 data = json.loads(args_json)
+                if not isinstance(data, dict):
+                    # Valid JSON that is not an object (e.g. the string "123");
+                    # route into the retry path instead of letting the ensuing
+                    # item assignment raise an unhandled TypeError.
+                    raise TypeError(
+                        f"tool arguments must be a JSON object, got {type(data).__name__}"
+                    )
                 data["type"] = doc_type  # guard against a missing discriminator
                 return parse_ir(data)
-            except (json.JSONDecodeError, ValidationError) as exc:
+            except (json.JSONDecodeError, TypeError, ValidationError) as exc:
                 error_summary = str(exc)
                 last_exc = exc
                 continue
