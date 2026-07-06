@@ -8,3 +8,9 @@ dist/
 build/
 *.egg-info/
 .DS_Store
+
+.superpowers/
+報名文件/
+odforge/.venv/
+odforge/**/__pycache__/
+odforge/*.egg-info/
