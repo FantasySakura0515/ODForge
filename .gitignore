@@ -11,6 +11,10 @@ build/
 
 .superpowers/
 報名文件/
+佐證資料/
+深度研究報告.md
+競賽重點整理.md
+教育部115年度校園開放文件格式(ODF)競賽簡章.pdf
 odforge/.venv/
 odforge/**/__pycache__/
 odforge/*.egg-info/
