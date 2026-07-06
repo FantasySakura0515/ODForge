@@ -102,6 +102,18 @@ def test_diff_real_docx(tmp_path, sample_text_doc):
     assert "段落" in report or "paragraph" in report
 
 
+def test_diff_never_raises_on_subprocess_error(tmp_path, monkeypatch):
+    # A stale soffice path makes subprocess.run raise FileNotFoundError;
+    # diff_docx_odt must swallow it into an "error:" string, never raise.
+    fake_docx = tmp_path / "x.docx"
+    fake_docx.write_bytes(b"not a real docx")
+    monkeypatch.setattr(
+        "odforge.check.find_soffice", lambda: Path("C:/nonexistent/soffice.exe")
+    )
+    result = diff_docx_odt(fake_docx)  # must not raise
+    assert result.startswith("error:")
+
+
 def test_cli_check_exit_codes(tmp_path, sample_text_doc, monkeypatch):
     monkeypatch.setattr("odforge.check.find_soffice", lambda: None)
     out = render_odt(sample_text_doc, tmp_path / "d.odt")

@@ -163,12 +163,21 @@ def _part_listing(path: Path) -> list[str]:
 def check_odf(path: Path) -> str:
     """Validate an ODF file and return a markdown check report.
 
-    Never raises. A missing file yields ``"error: file not found: {path}"``.
+    Never raises. A missing file yields ``"error: file not found: {path}"``;
+    any unexpected exception while building the report becomes an ``error:``
+    string (same outer guard as validate.py's gates).
     """
     path = Path(path)
     if not path.exists():
         return f"error: file not found: {path}"
+    try:
+        return _check_odf_report(path)
+    except Exception as exc:  # noqa: BLE001 - never-raise contract
+        return f"error: check failed: {type(exc).__name__}: {exc}"
 
+
+def _check_odf_report(path: Path) -> str:
+    """Build the markdown report for an existing file (may raise; guarded)."""
     report = validate_odf(path, with_soffice=find_soffice() is not None)
 
     lines: list[str] = [f"# ODF 檢測報告:{path.name}", ""]
@@ -296,7 +305,9 @@ def diff_docx_odt(docx: Path) -> str:
     """Convert ``docx`` to ``.odt`` and return a heuristic comparison report.
 
     Never raises. Without LibreOffice, returns an explanatory string. A failed
-    conversion yields ``"error: conversion failed: {摘要}"``.
+    conversion yields ``"error: conversion failed: {摘要}"``; any unexpected
+    exception (e.g. a stale soffice path raising ``FileNotFoundError`` inside
+    ``subprocess.run``) is likewise returned as an ``error:`` string.
     """
     docx = Path(docx)
     soffice = find_soffice()
@@ -309,6 +320,14 @@ def diff_docx_odt(docx: Path) -> str:
     if not docx.exists():
         return f"error: file not found: {docx}"
 
+    try:
+        return _diff_report(docx, soffice)
+    except Exception as exc:  # noqa: BLE001 - never-raise contract
+        return f"error: conversion failed: {type(exc).__name__}: {exc}"
+
+
+def _diff_report(docx: Path, soffice: Path) -> str:
+    """Convert, count and format the comparison (may raise; guarded)."""
     outdir = Path(tempfile.mkdtemp(prefix="odforge-check-diff-"))
     try:
         odt, message = _convert_docx_to_odt(docx, soffice, outdir)
