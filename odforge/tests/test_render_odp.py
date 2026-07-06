@@ -151,6 +151,14 @@ def test_dispatch_presentation(tmp_path, sample_presentation):
     assert out.exists()
 
 
+def test_cjk_font_size_applied(tmp_path, sample_presentation):
+    render_odp(sample_presentation, tmp_path / "p.odp")
+    with zipfile.ZipFile(tmp_path / "p.odp") as z:
+        content = z.read("content.xml").decode("utf-8")
+    assert 'style:font-size-asian="40pt"' in content
+    assert 'style:font-weight-asian="bold"' in content
+
+
 def test_unknown_theme_falls_back_to_academic(tmp_path):
     # Presentation.theme 是 Literal 不會出現未知值;此測試鎖 render_odp 對 THEMES 的取值方式
     p = Presentation(title="t", slides=[Slide(layout="title", title="T")])

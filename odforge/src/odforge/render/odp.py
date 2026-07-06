@@ -99,11 +99,24 @@ def _paragraph_style_xml(
 ) -> str:
     """Build one ``style:family="paragraph"`` automatic style element."""
     align = "center" if center else "start"
-    weight = ' fo:font-weight="bold"' if bold else ""
+    # LibreOffice applies fo:font-size / fo:font-weight to Western script
+    # only; CJK glyphs need the *-asian variants (and *-complex for CTL).
+    size = (
+        f' fo:font-size="{size_pt}pt"'
+        f' style:font-size-asian="{size_pt}pt"'
+        f' style:font-size-complex="{size_pt}pt"'
+    )
+    weight = (
+        ' fo:font-weight="bold"'
+        ' style:font-weight-asian="bold"'
+        ' style:font-weight-complex="bold"'
+        if bold
+        else ""
+    )
     return (
         f'<style:style style:name="{_attr(name)}" style:family="paragraph">'
         f'<style:paragraph-properties fo:text-align="{align}"/>'
-        f'<style:text-properties fo:font-size="{size_pt}pt"{weight}'
+        f"<style:text-properties{size}{weight}"
         f' fo:color="{_attr(color)}" style:font-name="{_attr(font)}"'
         f' style:font-name-asian="{_attr(font)}"/>'
         f"</style:style>"
