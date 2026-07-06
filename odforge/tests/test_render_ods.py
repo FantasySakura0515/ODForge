@@ -51,3 +51,31 @@ def test_bad_cell_ref_raises(tmp_path):
 def test_dispatch_spreadsheet(tmp_path, sample_spreadsheet):
     out = render(sample_spreadsheet, tmp_path / "s.ods")
     assert out.exists()
+
+def test_none_cell_renders_empty_and_keeps_alignment(tmp_path):
+    # A null cell (formula target) must render as an empty cell that still
+    # occupies its position, so following cells land in the right column.
+    from odforge.validate import validate_odf
+    s = Spreadsheet(title="t", sheets=[Sheet(
+        name="s", columns=["a", "b", "c"],
+        rows=[["x", None, 5], [None, 2, None]])])
+    out = render_ods(s, tmp_path / "s.ods")
+    report = validate_odf(out, with_soffice=False)
+    assert report.ok, report.gates
+
+    def cell_count(row):
+        # Count table:table-cell elements including empty ones, honouring
+        # table:number-columns-repeated (odfdo may compress empty runs).
+        total = 0
+        for c in row.findall("table:table-cell", NS):
+            total += int(c.get("{%s}number-columns-repeated" % NS["table"], "1"))
+        return total
+
+    root = content_root(out)
+    rows = [r for r in root.findall(".//table:table-row", NS) if cell_count(r)]
+    # header + 2 data rows, each still spanning all 3 columns.
+    assert len(rows) == 3
+    for r in rows:
+        assert cell_count(r) == 3
+    # The value after the None cell survived in its own cell (column C).
+    assert "5" in "".join(root.itertext())

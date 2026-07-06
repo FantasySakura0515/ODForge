@@ -111,7 +111,9 @@ class FormulaSpec(BaseModel):
 class Sheet(BaseModel):
     name: str
     columns: List[str]
-    rows: List[List[Union[str, int, float]]]
+    # ``None`` marks an intentionally empty cell — typically a formula target
+    # the LLM leaves null because a formula computes its value.
+    rows: List[List[Union[str, int, float, None]]]
     formulas: List[FormulaSpec] = Field(default_factory=list)
 
 

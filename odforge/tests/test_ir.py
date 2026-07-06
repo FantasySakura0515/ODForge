@@ -40,6 +40,20 @@ def test_formula_must_use_of_namespace():
               formulas=[{"cell": "B1", "formula": "=SUM(A1)"}])  # 缺 "of:" 前綴
 
 
+def test_sheet_rows_allow_none_cells():
+    # Formula-target cells are often null in LLM output (the formula computes
+    # them); the IR must accept None in rows.
+    sheet = Sheet(name="s", columns=["a", "b"], rows=[[1, None]])
+    assert sheet.rows[0][1] is None
+
+
+def test_parse_ir_spreadsheet_with_null_cell():
+    ir = parse_ir({"type": "spreadsheet", "title": "成績", "sheets": [
+        {"name": "s", "columns": ["a", "b"], "rows": [[1, None], ["x", 2.5]]}]})
+    assert isinstance(ir, Spreadsheet)
+    assert ir.sheets[0].rows[0][1] is None
+
+
 def test_schema_exportable():
     assert "properties" in Presentation.model_json_schema()
 

@@ -51,6 +51,18 @@ app = typer.Typer(
 _out = Console()
 _err = Console(stderr=True)
 
+# A real-API failure can carry huge pydantic error dumps (tens of KB); bound
+# what reaches the terminal.
+_MAX_ERROR_LEN = 500
+
+
+def _concise(exc: Exception) -> str:
+    """One-line, length-bounded, rich-markup-safe rendering of an exception."""
+    message = str(exc)
+    if len(message) > _MAX_ERROR_LEN:
+        message = message[:_MAX_ERROR_LEN] + "…(訊息截斷)"
+    return escape(message)
+
 
 @app.callback()
 def _root() -> None:
@@ -94,7 +106,7 @@ def new(
     try:
         ir = generate_ir(prompt, doc_type, backend=backend.value if backend else None)
     except Exception as exc:  # noqa: BLE001 - present a concise message, no traceback
-        _err.print(f"[red]FAIL[/red] 內容產生失敗：{escape(str(exc))}")
+        _err.print(f"[red]FAIL[/red] 內容產生失敗：{_concise(exc)}")
         raise typer.Exit(code=1)
 
     # --theme only means anything for presentations; leave the default alone.
@@ -107,7 +119,7 @@ def new(
         with_soffice = bool(soffice) and find_soffice() is not None
         report = validate_odf(out_path, with_soffice=with_soffice)
     except Exception as exc:  # noqa: BLE001 - present a concise message, no traceback
-        _err.print(f"[red]FAIL[/red] 輸出或驗證失敗：{escape(str(exc))}")
+        _err.print(f"[red]FAIL[/red] 輸出或驗證失敗：{_concise(exc)}")
         raise typer.Exit(code=1)
 
     table = Table(title="驗證結果")

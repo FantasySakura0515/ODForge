@@ -89,9 +89,14 @@ def _validate_cell_ref(ref: str) -> None:
 def _cell_for_value(value: object) -> Cell:
     """Build a cell: numeric for int/float (never a string), text otherwise.
 
-    ``bool`` is excluded from the numeric path (it is an ``int`` subclass) so a
-    boolean never silently becomes a float.
+    ``None`` becomes an empty cell (no value, no text) that still occupies its
+    position, keeping later cells in their correct columns — typical for
+    formula-target cells the LLM leaves null. ``bool`` is excluded from the
+    numeric path (it is an ``int`` subclass) so a boolean never silently
+    becomes a float.
     """
+    if value is None:
+        return Cell()
     if isinstance(value, bool):
         return Cell(str(value))
     if isinstance(value, (int, float)):

@@ -150,6 +150,22 @@ def test_error_message_with_brackets_survives(tmp_path, monkeypatch):
     assert "input_value" in _out(result)
 
 
+def test_long_error_message_truncated(tmp_path, monkeypatch):
+    # A real-API failure once dumped ~18KB of pydantic errors to the terminal;
+    # the printed message must be bounded and flag the truncation.
+    def boom(prompt, doc_type, backend=None):
+        raise RuntimeError("x" * 2000)
+
+    monkeypatch.setattr("odforge.cli.generate_ir", boom)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["new", "x", "-o", "out.odp", "--no-soffice"])
+    assert result.exit_code == 1
+    out = _out(result)
+    assert "訊息截斷" in out
+    # 500-char cap + FAIL prefix + suffix + rich line wrapping newlines.
+    assert len(out) < 1000
+
+
 def test_validation_failure_exit_1(tmp_path, monkeypatch, sample_text_doc):
     from odforge.validate import ValidationReport
 
