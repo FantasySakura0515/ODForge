@@ -20,6 +20,7 @@ from rich.table import Table
 
 from odforge.check import check_odf, diff_docx_odt
 from odforge.critic import QAReport, run_qa_loop
+from odforge.extract import extract_design
 from odforge.ir import Outline
 from odforge.llm import generate_ir, generate_outline, generate_slides
 from odforge.render import render
@@ -196,6 +197,11 @@ def new(
     backend: Optional[Backend] = typer.Option(
         None, "--backend", help="LLM 後端；省略則使用預設。"
     ),
+    from_template: Optional[Path] = typer.Option(
+        None,
+        "--from-template",
+        help="吃現有 ODF 公版範本(.otp/.odp/.ott/.odt):抽出其樣式並鎖定設計,LLM 只負責內容。僅對 .odp 有效。",
+    ),
     interactive: bool = typer.Option(
         False,
         "--interactive",
@@ -234,6 +240,23 @@ def new(
         raise typer.Exit(code=2)
 
     backend_name = backend.value if backend else None
+
+    # --from-template (吃現有範本): extract a DesignSpec from a public template and
+    # LOCK it — the LLM only produces content, the look comes from the template.
+    # Only meaningful for presentations; extracted here (before the pipeline) so
+    # it can be locked onto the stage-1 outline AND enforced on the final deck.
+    extracted_design = None
+    if from_template is not None:
+        if doc_type != "presentation":
+            _err.print("[dim]--from-template 僅適用於簡報(.odp),已略過[/dim]")
+        else:
+            try:
+                extracted_design = extract_design(from_template)
+            except Exception as exc:  # noqa: BLE001 - concise message, no traceback
+                _err.print(f"[red]FAIL[/red] 範本樣式抽取失敗：{_concise(exc)}")
+                raise typer.Exit(code=1)
+            _out.print(f"[cyan]套用範本樣式[/cyan] {escape(str(from_template))}")
+
     # The stage-1 outline, when the two-stage path runs — captured so --qa can
     # hand it to the repair step for per-page regeneration (None otherwise).
     outline: Optional[Outline] = None
@@ -249,6 +272,12 @@ def new(
         # --mode overrides the outline's narrative register before stage 2.
         if mode is not None:
             outline = outline.model_copy(update={"mode": mode.value})
+
+        # --from-template locks the design: overwrite the outline's design with
+        # the extracted one so stage 2 fills content against the locked art
+        # direction (generate_slides re-attaches outline.design onto the deck).
+        if extracted_design is not None:
+            outline = outline.model_copy(update={"design": extracted_design})
 
         # Interactive checkpoint: show the outline, then gate stage 2 on confirm.
         if interactive:
@@ -279,6 +308,12 @@ def new(
         ir = ir.model_copy(update={"theme": theme.value, "design": None})
         if dropped_design:
             _err.print("[dim]--theme 指定,已改用預設主題(捨棄 AI 自選設計)[/dim]")
+
+    # --from-template wins outright: enforce the extracted design on the final
+    # deck (after --theme, so the template look always beats a preset/LLM choice
+    # and is honoured even if stage 2 dropped the locked design).
+    if extracted_design is not None:
+        ir = ir.model_copy(update={"design": extracted_design})
 
     # Soft layout-budget gate: warn (never fail) when a slide's text overruns its
     # frames. The hard enforcement + LLM retry loop is Task 15.2's job; here we

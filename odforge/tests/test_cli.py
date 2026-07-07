@@ -363,6 +363,92 @@ def test_new_creates_missing_parent_dir(tmp_path, monkeypatch, sample_presentati
 
 
 # ---------------------------------------------------------------------------
+# --from-template: style extraction locks the design (殺手功能:吃現有範本)
+# ---------------------------------------------------------------------------
+
+
+def _extracted_design():
+    from odforge.ir import DesignSpec, FontPair, Palette
+
+    # A distinctive dark-ish extracted design (bg #171826) so its presence in
+    # the final render is unambiguous.
+    return DesignSpec(
+        palette=Palette(
+            bg="#171826",
+            surface="#252842",
+            text="#E8EAF2",
+            muted="#9BA0C4",
+            accent="#3DD6E6",
+        ),
+        fonts=FontPair(display="Noto Sans TC", body="Noto Sans TC"),
+        scale="standard",
+        mode="presenter",
+    )
+
+
+def test_from_template_locks_extracted_design(tmp_path, monkeypatch, sample_presentation):
+    # --from-template extracts a design and LOCKS it: generate_outline still runs
+    # for page roles, but stage 2 fills against the extracted design (handed in on
+    # the outline), overriding whatever the LLM had chosen.
+    extracted = _extracted_design()
+    monkeypatch.setattr("odforge.cli.extract_design", lambda path: extracted)
+
+    outline = _sample_outline(design=None)
+    seen = {}
+    monkeypatch.setattr(
+        "odforge.cli.generate_outline", lambda prompt, backend=None: outline
+    )
+
+    def fake_slides(outline, backend=None):
+        seen["design"] = outline.design
+        # Mimic the real generate_slides: re-attach the outline's design.
+        return sample_presentation.model_copy(update={"design": outline.design})
+
+    monkeypatch.setattr("odforge.cli.generate_slides", fake_slides)
+
+    tmpl = tmp_path / "gov_template.otp"
+    tmpl.write_bytes(b"placeholder - extract_design is monkeypatched")
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app,
+        ["new", "做簡報", "-o", "out.odp", "--from-template", str(tmpl), "--no-soffice"],
+    )
+    assert result.exit_code == 0, _out(result)
+    # generate_slides received the locked (extracted) design on its outline.
+    assert seen["design"] == extracted
+    # The rendered deck carries the extracted bg.
+    with zipfile.ZipFile(tmp_path / "out.odp") as z:
+        styles = z.read("styles.xml").decode("utf-8")
+    assert "#171826" in styles
+    # An info line names the template that was applied.
+    out = _out(result)
+    assert "gov_template.otp" in out
+
+
+def test_from_template_extraction_failure_exit_1(tmp_path, monkeypatch, sample_presentation):
+    # A genuinely unreadable template surfaces as a concise FAIL (exit 1), never a
+    # traceback.
+    from odforge.extract import TemplateExtractionError
+
+    def boom(path):
+        raise TemplateExtractionError("無法讀取範本")
+
+    monkeypatch.setattr("odforge.cli.extract_design", boom)
+    _mock_two_stage(monkeypatch, sample_presentation)
+    tmpl = tmp_path / "broken.otp"
+    tmpl.write_bytes(b"garbage")
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app,
+        ["new", "做簡報", "-o", "out.odp", "--from-template", str(tmpl), "--no-soffice"],
+    )
+    assert result.exit_code == 1
+    out = _out(result)
+    assert "無法讀取範本" in out
+    assert "Traceback" not in out
+
+
+# ---------------------------------------------------------------------------
 # One-shot escape hatch + non-presentation types (generate_ir path)
 # ---------------------------------------------------------------------------
 
