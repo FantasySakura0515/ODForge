@@ -12,6 +12,7 @@ Tools registered on the ``mcp`` app:
 * ``forge_presentation(document, out_path)`` — render a presentation to ``.odp``
 * ``forge_spreadsheet(document, out_path)`` — render a spreadsheet to ``.ods``
 * ``inspect_odf(path)`` — validate an existing ODF file
+* ``preview_odf(path, out_dir)`` — rasterise an ODF file to one PNG per page
 
 Every tool returns a plain string and **never raises**: any failure is reported
 as a string beginning with ``"error:"``. Raising inside an MCP tool would surface
@@ -22,11 +23,13 @@ Run as a stdio MCP server with ``python -m odforge.mcp_server``.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 from odforge.ir import parse_ir
+from odforge.preview import PreviewUnavailable, render_pages
 from odforge.render import render
 from odforge.textutil import concise
 from odforge.validate import find_soffice, validate_odf
@@ -151,6 +154,34 @@ def inspect_odf(path: str) -> str:
             for name, (passed, message) in report.gates.items()
         ]
         return "\n".join(lines)
+    except Exception as exc:  # noqa: BLE001 - tools must never raise
+        return f"error: {type(exc).__name__}: {concise(str(exc))}"
+
+
+@mcp.tool()
+def preview_odf(path: str, out_dir: str) -> str:
+    """Rasterise an ODF file to one PNG per page for an agent's visual QA loop.
+
+    Converts the ODF at ``path`` to PDF via a headless LibreOffice round-trip and
+    renders each page to a zero-padded PNG (``page-01.png``, ``page-02.png``, ...)
+    in ``out_dir``, which is created if missing. This hands the QA harness's
+    rendering capability to any calling agent: after forging a deck, preview it
+    and *look* at the PNGs to catch overflow, contrast or layout problems that
+    ``inspect_odf`` (structure/XML validation) cannot see.
+
+    On success returns a JSON string ``{"pages": [<png path>, ...], "count": N}``
+    with the absolute PNG paths in page order. When LibreOffice is not installed
+    it returns ``"error: preview unavailable: <reason>"``; any other failure
+    returns ``"error: <reason>"``. Never raises (an exception inside an MCP tool
+    would surface as a protocol-level error).
+    """
+    try:
+        pages = render_pages(Path(path), Path(out_dir))
+        return json.dumps(
+            {"pages": [str(p.resolve()) for p in pages], "count": len(pages)}
+        )
+    except PreviewUnavailable as exc:
+        return f"error: preview unavailable: {concise(str(exc))}"
     except Exception as exc:  # noqa: BLE001 - tools must never raise
         return f"error: {type(exc).__name__}: {concise(str(exc))}"
 
