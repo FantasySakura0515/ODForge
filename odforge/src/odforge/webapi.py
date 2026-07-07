@@ -80,6 +80,9 @@ class Job:
     slides_done: int = 0
     qa_report: Optional[QAReport] = None
     error: Optional[Dict[str, str]] = None
+    # Strong ref to the background runner so the loop doesn't GC a "fire and
+    # forget" task before it finishes.
+    task: Optional["asyncio.Task"] = None
 
     events: List[Dict[str, Any]] = field(default_factory=list)
     # Set on approve (interactive gate) and on every emit (wakes SSE subscribers).
@@ -244,8 +247,11 @@ async def run_job(job: Job) -> None:
             stage = "qa"
             job.status = "qa"
             await _run_qa_loop(job, outline)
-            # QA may repair slides + re-render; refresh the previews once more.
-            await _emit_previews(job)
+            # More than one round means QA repaired slides and re-rendered, so the
+            # first-pass PNGs are now stale — refresh them. A clean single round
+            # changed nothing, so don't re-emit redundant previews.
+            if job.qa_report is not None and job.qa_report.rounds > 1:
+                await _emit_previews(job)
 
         job.status = "complete"
         data: Dict[str, Any] = {"download_url": _download_url(job)}
@@ -361,8 +367,8 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
             qa=body.qa,
             backend=body.backend,
         )
-        # Fire-and-forget background task on the running loop.
-        asyncio.create_task(run_job(job))
+        # Background task on the running loop; keep a ref so it isn't GC'd.
+        job.task = asyncio.create_task(run_job(job))
         return {"job_id": job.id}
 
     @app.get("/api/jobs/{job_id}/events")

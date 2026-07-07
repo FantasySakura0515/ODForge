@@ -179,7 +179,8 @@ data: {"n":1,"slide":{…}}
 非 interactive、開 preview + qa 的典型順序：
 `outline` → `slide_done`×N → `preview_ready`×N → `qa_round`×R → `complete`。
 （interactive 時 `outline` 後先出 `awaiting_approval`，核可後才續。無 soffice 時
-略過所有 `preview_ready`，其餘照舊。）
+略過所有 `preview_ready`，其餘照舊。QA 若實際修頁（多於一輪），修好的頁會再補一次
+`preview_ready`，故同一頁的 `preview_ready` 可能出現一次以上——以最後一次為準。）
 
 以下為每個事件 `data` 的完整 JSON 範例。
 
