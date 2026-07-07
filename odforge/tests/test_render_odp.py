@@ -164,3 +164,108 @@ def test_unknown_theme_falls_back_to_academic(tmp_path):
     p = Presentation(title="t", slides=[Slide(layout="title", title="T")])
     out = render_odp(p, tmp_path / "p.odp")
     assert out.exists()
+
+
+# ---------------------------------------------------------------------------
+# Task 12.2: tokenized Theme + SCALES + resolve_design
+# ---------------------------------------------------------------------------
+
+from odforge.themes import SCALES, resolve_design
+from odforge.ir import contrast_ratio, DesignSpec, Palette, FontPair
+
+
+def test_theme_has_full_token_set():
+    """The resolved Theme carries the complete design token set."""
+    t = THEMES["academic"]
+    for field in (
+        "bg", "surface", "text", "muted", "accent", "title_color",
+        "font_display", "font_body",
+        "display_pt", "h1_pt", "body_pt", "caption_pt", "bullet_char",
+    ):
+        assert hasattr(t, field), field
+    assert t.bullet_char == "▪"
+
+
+def test_theme_compat_aliases_still_resolve():
+    """v1 renderer reads theme.text_color / theme.font — keep them working."""
+    t = THEMES["dark"]
+    assert t.text_color == t.text
+    assert t.font == t.font_body
+
+
+def test_all_presets_pass_contrast_bars():
+    """① Every preset clears the same WCAG bars the ir.py validator enforces."""
+    for name, t in THEMES.items():
+        assert contrast_ratio(t.text, t.bg) >= 4.5, (name, "text/bg")
+        assert contrast_ratio(t.accent, t.bg) >= 3.0, (name, "accent/bg")
+        assert contrast_ratio(t.muted, t.bg) >= 3.0, (name, "muted/bg")
+
+
+def test_presets_survive_palette_validation():
+    """Presets are legal Palettes — construct one from each preset's colours."""
+    for name, t in THEMES.items():
+        Palette(bg=t.bg, surface=t.surface, text=t.text, muted=t.muted, accent=t.accent)
+
+
+def test_presets_use_standard_scale_sizes():
+    """Presets default to the 'standard' scale sizes."""
+    display, h1, body, caption = SCALES["standard"]
+    for t in THEMES.values():
+        assert (t.display_pt, t.h1_pt, t.body_pt, t.caption_pt) == (display, h1, body, caption)
+
+
+def test_scales_three_tiers_strictly_increasing_per_slot():
+    """④ compact < standard < display for every (display, h1, body, caption) slot."""
+    assert set(SCALES) == {"compact", "standard", "display"}
+    for slot in range(4):
+        c = SCALES["compact"][slot]
+        s = SCALES["standard"][slot]
+        d = SCALES["display"][slot]
+        assert c < s < d, (slot, c, s, d)
+
+
+def test_resolve_design_none_returns_preset():
+    """② design=None → THEMES[p.theme]."""
+    for theme_name in ("academic", "minimal", "dark"):
+        p = Presentation(title="t", theme=theme_name,
+                         slides=[Slide(layout="title", title="T")])
+        assert resolve_design(p) is THEMES[theme_name]
+
+
+def test_resolve_design_uses_design_colors_and_fonts():
+    """③ A valid DesignSpec → Theme colours/fonts/sizes come from the design."""
+    design = DesignSpec(
+        palette=Palette(bg="#0B1020", surface="#1B2340", text="#F0F3FF",
+                        muted="#9AA6D0", accent="#5AD0E0"),
+        fonts=FontPair(display="Noto Serif TC", body="Noto Sans TC"),
+        scale="display",
+        mode="detailed",
+    )
+    p = Presentation(title="t", theme="academic", design=design,
+                     slides=[Slide(layout="title", title="T")])
+    t = resolve_design(p)
+    assert t.bg == "#0B1020"
+    assert t.surface == "#1B2340"
+    assert t.text == "#F0F3FF"
+    assert t.muted == "#9AA6D0"
+    assert t.accent == "#5AD0E0"
+    assert t.title_color == "#F0F3FF"  # title_color = text
+    assert t.font_display == "Noto Serif TC"
+    assert t.font_body == "Noto Sans TC"
+    assert (t.display_pt, t.h1_pt, t.body_pt, t.caption_pt) == SCALES["display"]
+
+
+def test_resolve_design_scale_selects_sizes():
+    """design.scale picks the SCALES tier; mode does not alter sizes."""
+    for scale in ("compact", "standard", "display"):
+        design = DesignSpec(
+            palette=Palette(bg="#FFFFFF", surface="#EEEEEE", text="#111111",
+                            muted="#666666", accent="#0055AA"),
+            fonts=FontPair(display="Noto Sans TC", body="Noto Sans TC"),
+            scale=scale,
+            mode="presenter",
+        )
+        p = Presentation(title="t", design=design,
+                         slides=[Slide(layout="title", title="T")])
+        t = resolve_design(p)
+        assert (t.display_pt, t.h1_pt, t.body_pt, t.caption_pt) == SCALES[scale]

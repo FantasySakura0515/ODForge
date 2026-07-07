@@ -1,14 +1,26 @@
 """ODForge presentation theme and layout data.
 
-Pure-data module for the ``.odp`` renderer (Task 4.2). Defines the slide page
-geometry, the per-layout text frames, and the theme colour palettes. Contains
-no rendering logic and does not import the IR or renderer modules.
+Pure-data module for the ``.odp`` renderer. Defines the slide page geometry,
+the per-layout text frames, and the resolved design tokens (:class:`Theme`).
+Contains no rendering logic; the only IR dependency is :class:`Presentation`
+(imported lazily inside :func:`resolve_design` to keep this a pure-data module).
 
 Page size is 16:9 = 28cm x 15.75cm. Positions and sizes are in centimetres;
 font sizes are in points.
+
+A :class:`Theme` is the *only* visual vocabulary the renderer understands: a
+fully-resolved bundle of colour + typography tokens. It is produced either from
+a built-in preset (:data:`THEMES`) or from a validated per-deck
+:class:`~odforge.ir.DesignSpec` via :func:`resolve_design`.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from odforge.ir import Presentation
 
 
 @dataclass(frozen=True)
@@ -25,11 +37,46 @@ class Frame:
 
 @dataclass(frozen=True)
 class Theme:
-    bg: str  # background colour hex, e.g. "#FFFFFF"
-    title_color: str
-    text_color: str
+    """Fully-resolved design tokens the renderer consumes.
+
+    Colours are ``#RRGGBB`` hex; ``*_pt`` sizes are points. ``title_color``
+    defaults conceptually to ``text`` but is stored explicitly so dark themes
+    can override it. The legacy ``text_color`` / ``font`` names the v1 ``.odp``
+    renderer reads are exposed as read-only aliases below.
+    """
+
+    bg: str
+    surface: str
+    text: str
+    muted: str
     accent: str
-    font: str = "Noto Sans TC"
+    title_color: str
+    font_display: str
+    font_body: str
+    display_pt: int
+    h1_pt: int
+    body_pt: int
+    caption_pt: int
+    bullet_char: str = "▪"
+
+    # -- v1 renderer compatibility aliases (read-only) -----------------------
+    @property
+    def text_color(self) -> str:
+        """Legacy alias for :attr:`text` (render/odp.py, pre-Phase-13)."""
+        return self.text
+
+    @property
+    def font(self) -> str:
+        """Legacy alias for :attr:`font_body` (render/odp.py, pre-Phase-13)."""
+        return self.font_body
+
+
+# (display, h1, body, caption) point sizes per density tier.
+SCALES: dict[str, tuple[int, int, int, int]] = {
+    "compact": (44, 24, 16, 12),
+    "standard": (54, 28, 18, 13),
+    "display": (66, 32, 20, 14),
+}
 
 
 PAGE_W: float = 28.0
@@ -60,23 +107,103 @@ LAYOUTS: dict[str, list[Frame]] = {
 }
 
 
+_STANDARD = SCALES["standard"]
+
+
+def _preset(
+    *,
+    bg: str,
+    surface: str,
+    text: str,
+    muted: str,
+    accent: str,
+    font_display: str,
+    font_body: str,
+    title_color: str | None = None,
+) -> Theme:
+    """Build a preset Theme at the 'standard' scale (title_color defaults to text)."""
+    display_pt, h1_pt, body_pt, caption_pt = _STANDARD
+    return Theme(
+        bg=bg,
+        surface=surface,
+        text=text,
+        muted=muted,
+        accent=accent,
+        title_color=title_color if title_color is not None else text,
+        font_display=font_display,
+        font_body=font_body,
+        display_pt=display_pt,
+        h1_pt=h1_pt,
+        body_pt=body_pt,
+        caption_pt=caption_pt,
+    )
+
+
+# Three built-in art directions. Colours are hand-picked to (a) read well and
+# (b) clear the very contrast bars ir.Palette enforces (text/bg >= 4.5,
+# accent/bg >= 3.0, muted/bg >= 3.0) — see the contrast tests.
 THEMES: dict[str, Theme] = {
-    "academic": Theme(
-        bg="#FFFFFF",
-        title_color="#1A3C6E",
-        text_color="#222222",
-        accent="#1A3C6E",
+    # 學術藍 + 暖白: a scholarly blue on warm off-white; serif display for gravitas.
+    "academic": _preset(
+        bg="#FBF9F4",
+        surface="#EFEADD",
+        text="#1F2733",
+        muted="#5B6470",
+        accent="#1A4B8C",
+        font_display="Noto Serif TC",
+        font_body="Noto Sans TC",
     ),
-    "minimal": Theme(
-        bg="#FAFAFA",
-        title_color="#333333",
-        text_color="#444444",
-        accent="#888888",
+    # 暖灰單色 + 一點橘: warm-grey monochrome lifted by a single burnt-orange accent.
+    "minimal": _preset(
+        bg="#FAF8F5",
+        surface="#ECE8E2",
+        text="#2B2926",
+        muted="#6E6A63",
+        accent="#C0560E",
+        font_display="Noto Sans TC",
+        font_body="Noto Sans TC",
     ),
-    "dark": Theme(
-        bg="#1E1E2E",
-        title_color="#F5F5F5",
-        text_color="#D8D8D8",
-        accent="#7AA2F7",
+    # 深靛 + 亮青: deep indigo ground with a bright cyan accent; light text.
+    "dark": _preset(
+        bg="#171826",
+        surface="#252842",
+        text="#E8EAF2",
+        muted="#9BA0C4",
+        accent="#3DD6E6",
+        font_display="Noto Sans TC",
+        font_body="Noto Sans TC",
     ),
 }
+
+
+def resolve_design(p: "Presentation") -> Theme:
+    """Resolve a presentation's visual tokens into the single :class:`Theme`
+    the renderer consumes.
+
+    With no per-deck ``design`` the built-in preset ``THEMES[p.theme]`` is
+    returned unchanged. When ``p.design`` is present (already validated by
+    pydantic) its palette maps 1:1 onto the Theme colours, ``title_color``
+    follows ``text``, fonts come from the pairing, and the point sizes are taken
+    from :data:`SCALES` keyed by ``design.scale``. ``design.mode`` is a hint for
+    the LLM layer and deliberately does not affect sizing here.
+    """
+    if p.design is None:
+        return THEMES[p.theme]
+
+    d = p.design
+    pal = d.palette
+    display_pt, h1_pt, body_pt, caption_pt = SCALES[d.scale]
+    return Theme(
+        bg=pal.bg,
+        surface=pal.surface,
+        text=pal.text,
+        muted=pal.muted,
+        accent=pal.accent,
+        title_color=pal.text,
+        font_display=d.fonts.display,
+        font_body=d.fonts.body,
+        display_pt=display_pt,
+        h1_pt=h1_pt,
+        body_pt=body_pt,
+        caption_pt=caption_pt,
+    )

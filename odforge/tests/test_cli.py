@@ -92,14 +92,16 @@ def test_theme_override(tmp_path, monkeypatch, sample_presentation):
     assert result.exit_code == 0, _out(result)
     with zipfile.ZipFile(tmp_path / "out.odp") as z:
         styles = z.read("styles.xml").decode("utf-8")
-    assert "#1E1E2E" in styles
+    from odforge.themes import THEMES
+
+    assert THEMES["dark"].bg in styles
 
 
 def test_theme_explicit_academic_overrides_llm(tmp_path, monkeypatch, sample_presentation):
     # Regression: an explicit --theme must override the LLM's theme even when
     # its value equals the option's former default (academic). Here the LLM
     # returns a dark deck; --theme academic must win, so styles.xml carries the
-    # academic background (#FFFFFF), not the dark one (#1E1E2E).
+    # academic background, not the dark one.
     from odforge.themes import THEMES
 
     dark_pres = sample_presentation.model_copy(update={"theme": "dark"})
@@ -121,7 +123,7 @@ def test_theme_explicit_academic_overrides_llm(tmp_path, monkeypatch, sample_pre
 
 def test_theme_omitted_respects_llm(tmp_path, monkeypatch, sample_presentation):
     # When --theme is omitted, the LLM's chosen theme must be respected: a dark
-    # deck from the LLM stays dark (#1E1E2E), with no override applied.
+    # deck from the LLM stays dark, with no override applied.
     from odforge.themes import THEMES
 
     dark_pres = sample_presentation.model_copy(update={"theme": "dark"})
