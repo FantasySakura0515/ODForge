@@ -3,12 +3,26 @@ from pydantic import ValidationError
 
 import odforge
 from odforge.ir import (
+    DesignSpec,
+    FontPair,
+    Palette,
     Presentation,
     Sheet,
     Spreadsheet,
     TextDoc,
     parse_ir,
 )
+
+# A palette whose contrasts all clear the WCAG thresholds against a white bg:
+# text 21:1, muted ~4.8:1, accent ~5.2:1.
+_GOOD_PALETTE = {
+    "bg": "#FFFFFF",
+    "surface": "#F5F5F5",
+    "text": "#1A1A1A",
+    "muted": "#6B7280",
+    "accent": "#2563EB",
+}
+_GOOD_FONTS = {"display": "Noto Serif TC", "body": "Noto Sans TC"}
 
 
 def test_import():
@@ -92,3 +106,80 @@ def test_sample_spreadsheet_fixture(sample_spreadsheet):
     assert isinstance(sample_spreadsheet, Spreadsheet)
     assert sample_spreadsheet.sheets[0].columns == ["項目", "數量", "單價"]
     assert sample_spreadsheet.sheets[0].formulas[0].formula.startswith("of:=")
+
+
+# ---------------------------------------------------------------------------
+# Task 12.1: DesignSpec IR + contrast validation
+# ---------------------------------------------------------------------------
+
+
+def test_valid_design_spec_accepted():
+    # ① A palette that clears every contrast threshold and whitelisted fonts
+    #    must build cleanly, defaulting scale/mode.
+    spec = DesignSpec(palette=Palette(**_GOOD_PALETTE), fonts=FontPair(**_GOOD_FONTS))
+    assert spec.palette.accent == "#2563EB"
+    assert spec.fonts.body == "Noto Sans TC"
+    assert spec.scale == "standard"
+    assert spec.mode == "presenter"
+
+
+def test_low_contrast_text_rejected_with_message():
+    # ② text #CCCCCC on white bg is ~1.6:1, far below the 4.5 floor.
+    with pytest.raises(ValidationError) as exc:
+        Palette(bg="#FFFFFF", surface="#FFFFFF", text="#CCCCCC",
+                muted="#6B7280", accent="#2563EB")
+    msg = str(exc.value)
+    assert "contrast" in msg.lower()
+    assert "text" in msg  # message names the offending pair
+
+
+def test_font_not_in_whitelist_rejected():
+    # ③ Fonts outside FONT_WHITELIST are rejected.
+    with pytest.raises(ValidationError):
+        FontPair(display="Comic Sans MS", body="Noto Sans TC")
+
+
+def test_presentation_design_defaults_none():
+    # ④ Backward compatibility: a v1 presentation without a design is valid and
+    #    exposes design=None.
+    ir = parse_ir({"type": "presentation", "title": "簡報", "slides": [
+        {"layout": "title", "title": "封面"}]})
+    assert isinstance(ir, Presentation)
+    assert ir.design is None
+
+
+def test_presentation_accepts_design_block():
+    ir = parse_ir({
+        "type": "presentation",
+        "title": "簡報",
+        "slides": [{"layout": "title", "title": "封面"}],
+        "design": {"palette": _GOOD_PALETTE, "fonts": _GOOD_FONTS,
+                   "scale": "display", "mode": "detailed"},
+    })
+    assert isinstance(ir.design, DesignSpec)
+    assert ir.design.scale == "display"
+    assert ir.design.mode == "detailed"
+
+
+def test_malformed_hex_rejected():
+    # 3-digit shorthand and named colors are not #RRGGBB — reject with a message
+    # that mentions the format.
+    with pytest.raises(ValidationError) as exc:
+        Palette(bg="#FFF", surface="#FFFFFF", text="#000000",
+                muted="#6B7280", accent="#2563EB")
+    assert "#RRGGBB" in str(exc.value) or "hex" in str(exc.value).lower()
+
+
+def test_low_contrast_message_reports_ratio():
+    # The error must be actionable: it states the computed ratio so the LLM can
+    # judge how far off it is on retry.
+    with pytest.raises(ValidationError) as exc:
+        Palette(bg="#FFFFFF", surface="#FFFFFF", text="#DDDDDD",
+                muted="#6B7280", accent="#2563EB")
+    msg = str(exc.value)
+    assert "1." in msg  # a ratio like 1.35 appears in the message
+
+
+def test_sample_presentation_fixture_has_no_design(sample_presentation):
+    # v1 fixture stays green and design-free.
+    assert sample_presentation.design is None
