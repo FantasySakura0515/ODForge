@@ -117,10 +117,11 @@ def app(tmp_path):
 def _stream_events(resp, expected):
     """Read frames off a live SSE response, stopping after ``expected`` events.
 
-    The ``/events`` stream stays open past ``complete`` (``complete`` is a
-    milestone, not the stream terminator — see webapi.md), so reading to EOF
-    would block. We know how many events the job has logged, so we read that
-    many and break, which closes the connection on ``with`` exit.
+    The ``/events`` stream terminates at ``complete`` (or ``error``): that
+    terminal event closes it — see webapi.py's ``event_stream`` and
+    ``test_sse_stream_terminates_at_complete``. This helper does not depend on
+    reaching EOF, though — it knows how many events the job logged and stops after
+    collecting ``expected`` of them, closing the connection on ``with`` exit.
     """
     events = []
     cur = {}
@@ -135,8 +136,9 @@ def _stream_events(resp, expected):
         elif field == "data":
             # Our emitter writes exactly one single-line data field per event,
             # always after the event line — so a data line *completes* an event.
-            # Finalise here and stop at ``expected`` WITHOUT waiting for the
-            # trailing blank line (the stream never EOFs, so waiting would hang).
+            # Finalise here and stop at ``expected`` on the data line itself,
+            # WITHOUT waiting for the trailing blank line — so a mid-stream read
+            # never blocks on a frame boundary that has not been emitted yet.
             cur["data"] = value
             events.append(cur)
             cur = {}
