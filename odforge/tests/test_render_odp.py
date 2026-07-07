@@ -65,6 +65,8 @@ NS = {
     "style": "urn:oasis:names:tc:opendocument:xmlns:style:1.0",
     "fo": "urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0",
     "svg": "urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0",
+    "xlink": "http://www.w3.org/1999/xlink",
+    "manifest": "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0",
 }
 
 
@@ -823,3 +825,98 @@ def test_big_fact_fact_style_uses_display_pt_and_accent():
     stp = _style_by_name(croot, supp_p.get(_q("text", "style-name"))).find(
         "style:text-properties", NS)
     assert stp.get(_q("fo", "color")) == theme.muted
+
+
+# ---------------------------------------------------------------------------
+# Task 13.4: SVG decorations on title pages + rounded surface cards on two-col
+# ---------------------------------------------------------------------------
+
+from odforge.render.odp import _svg_decoration, _DECO_HREF  # noqa: E402
+
+
+# ① The engine-generated decoration is deterministic, accent-coloured, small.
+def test_svg_decoration_is_deterministic_accent_and_small():
+    theme = THEMES["academic"]
+    a = _svg_decoration(theme)
+    b = _svg_decoration(theme)
+    assert isinstance(a, bytes)
+    assert a == b, "decoration must be deterministic (reproducible builds)"
+    assert len(a) < 10 * 1024, "decoration must stay small (<10KB)"
+    root = etree.fromstring(a)  # well-formed SVG
+    assert etree.QName(root).localname == "svg"
+    assert theme.accent in a.decode("utf-8"), "decoration takes colour from accent"
+    # Different accent → different bytes (engine, not a fixed blob).
+    assert _svg_decoration(THEMES["dark"]) != a
+
+
+# ① title deck: zip has Pictures/*.svg + manifest media-type + draw:image ref.
+def test_title_page_embeds_svg_decoration(tmp_path):
+    p = Presentation(title="t", slides=[
+        Slide(layout="title", title="標題", subtitle="副標")])
+    out = render_odp(p, tmp_path / "p.odp")
+    with zipfile.ZipFile(out) as z:
+        svgs = [n for n in z.namelist()
+                if n.startswith("Pictures/") and n.endswith(".svg")]
+        assert svgs, "title deck must embed a Pictures/*.svg part"
+        man = etree.fromstring(z.read("META-INF/manifest.xml"))
+        entry = next(
+            e for e in man.findall(".//manifest:file-entry", NS)
+            if e.get(_q("manifest", "full-path")) == svgs[0]
+        )
+        assert entry.get(_q("manifest", "media-type")) == "image/svg+xml"
+        croot = etree.fromstring(z.read("content.xml"))
+    images = croot.findall(".//draw:image", NS)
+    assert images, "content.xml must reference the decoration via <draw:image>"
+    assert images[0].get(_q("xlink", "href")) in svgs
+    assert images[0].get(_q("xlink", "href")) == _DECO_HREF
+
+
+def test_non_title_deck_embeds_no_svg(tmp_path):
+    p = Presentation(title="t", slides=[
+        Slide(layout="title-content", title="C", bullets=["x"])])
+    out = render_odp(p, tmp_path / "p.odp")
+    with zipfile.ZipFile(out) as z:
+        assert not [n for n in z.namelist() if n.endswith(".svg")]
+        croot = etree.fromstring(z.read("content.xml"))
+    assert croot.findall(".//draw:image", NS) == []
+
+
+# ② two-col columns each get a rounded surface-coloured card.
+def test_two_col_columns_get_rounded_surface_cards():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="two-col", title="比較",
+              left=["傳統", "耗時"], right=["ODForge", "自動"])])
+    croot = _content_root(p, theme)
+    page = croot.find(".//draw:page", NS)
+    cards = [
+        r for r in page.findall(".//draw:rect", NS)
+        if r.get(_q("draw", "corner-radius")) == "0.3cm"
+    ]
+    assert len(cards) == 2, "each column needs one rounded card"
+    for card in cards:
+        style = _style_by_name(croot, card.get(_q("draw", "style-name")))
+        props = style.find("style:graphic-properties", NS)
+        assert props.get(_q("draw", "fill-color")) == theme.surface
+
+
+# ② cards sit behind the column text (emitted before the text frame → z-order).
+def test_two_col_cards_are_behind_column_text():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="two-col", title="比較",
+              left=["a", "b"], right=["c", "d"])])
+    page = _content_root(p, theme).find(".//draw:page", NS)
+    rect_tag, frame_tag = _q("draw", "rect"), _q("draw", "frame")
+    children = [el for el in page if el.tag in (rect_tag, frame_tag)]
+    card_idx = [
+        i for i, el in enumerate(children)
+        if el.tag == rect_tag and el.get(_q("draw", "corner-radius"))
+    ]
+    col_frame_idx = [
+        i for i, el in enumerate(children)
+        if el.tag == frame_tag and el.find(".//text:list", NS) is not None
+    ]
+    assert len(card_idx) == 2 and len(col_frame_idx) == 2
+    for card_pos, frame_pos in zip(card_idx, col_frame_idx):
+        assert card_pos < frame_pos, "card must precede its column text frame"

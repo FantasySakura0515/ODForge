@@ -33,6 +33,9 @@ _CONTENT_NS = {
     "presentation": "urn:oasis:names:tc:opendocument:xmlns:presentation:1.0",
     "svg": "urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0",
     "fo": "urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0",
+    # Linked images (Task 13.4 title-page SVG) reference their package part via
+    # xlink:href, so the prefix must be declared on office:document-content.
+    "xlink": "http://www.w3.org/1999/xlink",
 }
 
 _STYLES_NS = dict(_CONTENT_NS)
@@ -116,6 +119,32 @@ _LIST_LEVELS: tuple[tuple[int, float, float], ...] = (
     (1, 0.6, 0.6),
     (2, 1.4, 0.6),
 )
+
+# Task 13.4: title-page SVG decoration + card-backed two-col columns.
+#
+# The decoration is a single engine-generated (never LLM) SVG shared by every
+# title page in a deck — one theme per deck means one accent, so one file. It is
+# linked (not per-page embedded) from Pictures/ via xlink:href.
+_DECO_HREF = "Pictures/deco.svg"
+_DECO_LAYOUTS = frozenset({"title"})
+# Low-key placement box (x, y, w, h cm) hugging the bottom-right page corner; the
+# 4:3 box matches the SVG viewBox so dots stay circular.
+_DECO_BOX = (21.0, 10.75, 6.0, 4.5)
+# SVG dot-grid geometry (viewBox units): a cols×rows lattice fading out toward
+# the top-left, densest (most opaque) at the bottom-right corner.
+_DECO_VIEWBOX = (80.0, 60.0)
+_DECO_GRID = (6, 4)  # cols, rows
+_DECO_MARGIN = 8.0
+_DECO_DOT_R = 2.6
+_DECO_OPACITY_MIN = 0.06
+_DECO_OPACITY_SPAN = 0.30
+
+# Rounded "surface" card sitting behind each two-col column's text. Padded out
+# from the text frame so the card reads as a container; emitted before the text
+# frame so document order puts the text on top (ODF z-order == document order).
+_CARD_ROLES = frozenset({"left", "right"})
+_CARD_PAD = 0.3  # cm the card overhangs its text frame on every side
+_CARD_CORNER = 0.3  # cm corner radius
 
 
 def _attr(value: str) -> str:
@@ -422,6 +451,67 @@ def _line_xml(
 
 
 # ---------------------------------------------------------------------------
+# Title-page SVG decoration (engine-generated, deterministic)
+# ---------------------------------------------------------------------------
+
+
+def _svg_decoration(theme: Theme) -> bytes:
+    """Return a small, deterministic decorative SVG tinted with ``theme.accent``.
+
+    A ``cols×rows`` lattice of dots that fades out toward the top-left: each dot's
+    ``fill-opacity`` grows with its Manhattan distance from the origin so the
+    cluster reads densest at the bottom-right — the page corner it is placed in.
+    Purely a function of the theme (no randomness / time) for reproducible
+    builds. Returns UTF-8 bytes so it drops straight into the ODF package as a
+    ``Pictures/*.svg`` part (media-type inferred by :mod:`odforge.package`).
+    """
+    cols, rows = _DECO_GRID
+    vb_w, vb_h = _DECO_VIEWBOX
+    step_x = (vb_w - 2 * _DECO_MARGIN) / (cols - 1)
+    step_y = (vb_h - 2 * _DECO_MARGIN) / (rows - 1)
+    max_dist = (cols - 1) + (rows - 1)
+    circles: list[str] = []
+    for row in range(rows):
+        for col in range(cols):
+            cx = _DECO_MARGIN + col * step_x
+            cy = _DECO_MARGIN + row * step_y
+            opacity = _DECO_OPACITY_MIN + _DECO_OPACITY_SPAN * (
+                (col + row) / max_dist
+            )
+            circles.append(
+                f'<circle cx="{cx:g}" cy="{cy:g}" r="{_DECO_DOT_R:g}"'
+                f' fill="{_attr(theme.accent)}"'
+                f' fill-opacity="{round(opacity, 3):g}"/>'
+            )
+    svg = (
+        f"{_XML_DECL}"
+        f'<svg xmlns="http://www.w3.org/2000/svg"'
+        f' viewBox="0 0 {vb_w:g} {vb_h:g}"'
+        f' width="{vb_w:g}" height="{vb_h:g}">'
+        f"{''.join(circles)}"
+        f"</svg>"
+    )
+    return svg.encode("utf-8")
+
+
+def _deco_frame_xml() -> str:
+    """Build the ``draw:frame`` linking the title-page decoration SVG.
+
+    The frame carries the no-fill/no-stroke ``gr1`` graphic style and holds a
+    single ``<draw:image>`` whose ``xlink:href`` points at the ``Pictures/*.svg``
+    package part built by :func:`_svg_decoration`.
+    """
+    x, y, w, h = _DECO_BOX
+    return (
+        f'<draw:frame draw:style-name="{_GRAPHIC_STYLE}"'
+        f' svg:x="{_cm(x)}" svg:y="{_cm(y)}"'
+        f' svg:width="{_cm(w)}" svg:height="{_cm(h)}">'
+        f'<draw:image xlink:href="{_attr(_DECO_HREF)}"/>'
+        f"</draw:frame>"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Frame content resolution (role -> slide field)
 # ---------------------------------------------------------------------------
 
@@ -607,6 +697,10 @@ def _page_xml(
     bar; ``fact`` text is up-sized to display + accent; big-fact bullets go muted.
     """
     parts: list[str] = []
+    # Title pages carry a low-key decorative SVG in the bottom-right corner,
+    # emitted first so it sits behind the title/subtitle text.
+    if slide.layout in _DECO_LAYOUTS:
+        parts.append(_deco_frame_xml())
     if slide.layout in _ACCENT_BG_LAYOUTS and section_ordinal is not None:
         parts.append(_section_number_xml(section_ordinal, theme, styles))
 
@@ -614,6 +708,22 @@ def _page_xml(
         lines = _role_lines(slide, frame.role)
         if not lines:
             continue
+        # Column frames (two-col left/right) get a rounded surface card behind
+        # them — emitted before the text frame so document order keeps the text
+        # on top.
+        if frame.role in _CARD_ROLES:
+            card_style = graphics.name_for_fill(theme.surface)
+            parts.append(
+                _rect_xml(
+                    frame.x - _CARD_PAD,
+                    frame.y - _CARD_PAD,
+                    frame.w + 2 * _CARD_PAD,
+                    frame.h + 2 * _CARD_PAD,
+                    fill=theme.surface,
+                    corner_radius_cm=_CARD_CORNER,
+                    style_name=card_style,
+                )
+            )
         if frame.role in _LIST_ROLES and not frame.center:
             inner = _list_xml(
                 lines,
@@ -911,9 +1021,14 @@ def build_meta_xml(title: str) -> str:
 def render_odp(p: Presentation, out_path: Path) -> Path:
     """Render presentation ``p`` to a native ``.odp`` file at ``out_path``."""
     theme = THEMES.get(p.theme, THEMES["academic"])
-    parts = {
+    parts: dict[str, str | bytes] = {
         "content.xml": build_content_xml(p, theme),
         "styles.xml": build_styles_xml(theme, p.title),
         "meta.xml": build_meta_xml(p.title),
     }
+    # Only ship the decoration SVG when a title page actually references it —
+    # keeps non-title decks free of an unused Pictures part. build_content_xml
+    # emits the <draw:image> under the same title-layout condition.
+    if any(slide.layout in _DECO_LAYOUTS for slide in p.slides):
+        parts[_DECO_HREF] = _svg_decoration(theme)
     return write_odf_package(Path(out_path), ODP_MIMETYPE, parts)
