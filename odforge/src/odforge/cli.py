@@ -8,6 +8,7 @@ blocks together and presents the result. Task 8.2 adds a ``check`` subcommand.
 
 from __future__ import annotations
 
+import os
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -18,6 +19,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from odforge.check import check_odf, diff_docx_odt
+from odforge.critic import QAReport, run_qa_loop
 from odforge.ir import Outline
 from odforge.llm import generate_ir, generate_outline, generate_slides
 from odforge.render import render
@@ -103,6 +105,70 @@ def _print_outline(outline: Outline) -> None:
     _out.print(f"講述型態（mode）：{escape(outline.mode)}")
 
 
+def _print_qa_report(report: QAReport) -> None:
+    """Render a run_qa_loop outcome as a before/after summary table."""
+    table = Table(title="設計評審(第四道閘)")
+    table.add_column("輪次", justify="right")
+    table.add_column("error", justify="right")
+    table.add_column("warn", justify="right")
+    for i, findings in enumerate(report.findings_by_round, start=1):
+        errors = sum(1 for f in findings if f.severity == "error")
+        warns = sum(1 for f in findings if f.severity == "warn")
+        table.add_row(str(i), str(errors), str(warns))
+    _out.print(table)
+    if report.note:
+        _out.print(f"[dim]{escape(report.note)}[/dim]")
+    if report.final_ok:
+        _out.print(f"[green]設計 OK[/green]（共 {report.rounds} 輪）")
+    else:
+        _out.print(
+            f"[yellow]設計仍有 error[/yellow]（達上限 {report.rounds} 輪仍未收斂）"
+        )
+
+
+def _run_qa(
+    ir,
+    out_path: Path,
+    outline: Optional[Outline],
+    llm_backend: Optional[str],
+) -> None:
+    """Run the design-QA loop (第四道閘) and print a before/after summary.
+
+    Requires LibreOffice (soffice) and a vision backend
+    (``ODFORGE_VISION_BACKEND != off``). If either is missing, print a clear
+    message and fall back to the deterministic budget gate (already run) — the
+    command never fails on ``--qa``. Any QA-side error is likewise swallowed
+    into a message rather than crashing the run.
+    """
+    vision_backend = os.environ.get("ODFORGE_VISION_BACKEND", "off")
+    reasons = []
+    if find_soffice() is None:
+        reasons.append("找不到 LibreOffice(soffice)")
+    if vision_backend == "off":
+        reasons.append("未設定視覺後端(ODFORGE_VISION_BACKEND=off)")
+    if reasons:
+        _err.print(
+            "[yellow]--qa 已略過[/yellow] 設計評審需要 soffice 與視覺後端："
+            + "、".join(reasons)
+            + "。已改跑內建的版面預算閘(deterministic)。"
+        )
+        return
+
+    try:
+        report = run_qa_loop(
+            ir,
+            out_path,
+            outline=outline,
+            backend=vision_backend,
+            llm_backend=llm_backend,
+        )
+    except Exception as exc:  # noqa: BLE001 - QA must never fail the command
+        _err.print(f"[yellow]--qa 已略過[/yellow] 設計評審發生問題：{_concise(exc)}")
+        return
+
+    _print_qa_report(report)
+
+
 @app.callback()
 def _root() -> None:
     """ODForge：自然語言 → 原生 ODF。"""
@@ -145,6 +211,11 @@ def new(
         "--soffice/--no-soffice",
         help="驗證時若找得到 LibreOffice 就跑 soffice 轉檔驗證。",
     ),
+    qa: bool = typer.Option(
+        False,
+        "--qa",
+        help="簡報專用:算圖後跑「第四道閘」設計評審迴圈(render→critique→repair);需 soffice + 視覺後端,缺任一則略過。",
+    ),
 ) -> None:
     """由 PROMPT 產生一份 ODF 文件並輸出到 -o 指定的檔案。
 
@@ -163,6 +234,9 @@ def new(
         raise typer.Exit(code=2)
 
     backend_name = backend.value if backend else None
+    # The stage-1 outline, when the two-stage path runs — captured so --qa can
+    # hand it to the repair step for per-page regeneration (None otherwise).
+    outline: Optional[Outline] = None
     # Two-stage (outline -> slides) is the presentation default; .odt/.ods and
     # the --one-shot escape hatch stay on the v1 single-call generate_ir path.
     if doc_type == "presentation" and not one_shot:
@@ -233,6 +307,15 @@ def new(
         mark = "[green]OK[/green]" if passed else "[red]FAIL[/red]"
         table.add_row(escape(name), mark, escape(message))
     _out.print(table)
+
+    # Fourth gate (design QA): opt-in, presentations only. Runs after the three
+    # deterministic format gates; degrades to a message (never fails) when
+    # soffice or a vision backend is missing.
+    if qa:
+        if doc_type == "presentation":
+            _run_qa(ir, out_path, outline=outline, llm_backend=backend_name)
+        else:
+            _err.print("[dim]--qa 僅適用於簡報(.odp),已略過[/dim]")
 
     if report.ok:
         _out.print(f"[green]OK[/green] {escape(str(out_path))}")

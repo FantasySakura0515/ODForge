@@ -532,3 +532,121 @@ def test_validation_failure_exit_1(tmp_path, monkeypatch, sample_text_doc):
     result = runner.invoke(app, ["new", "t", "-o", "out.odt", "--no-soffice"])
     assert result.exit_code == 1
     assert "FAIL" in _out(result)
+
+
+# ---------------------------------------------------------------------------
+# --qa: the fourth gate (design QA loop). Fully mocked — no soffice, no vision
+# backend, no real loop; odforge.cli.run_qa_loop and find_soffice are patched.
+# ---------------------------------------------------------------------------
+
+
+def test_qa_flag_runs_loop_and_prints_summary(tmp_path, monkeypatch, sample_presentation):
+    from odforge.critic import Finding, QAReport
+
+    _mock_two_stage(monkeypatch, sample_presentation)
+    monkeypatch.setattr("odforge.cli.find_soffice", lambda: __import__("pathlib").Path("soffice"))
+    monkeypatch.setenv("ODFORGE_VISION_BACKEND", "ollama")
+
+    captured = {}
+
+    def fake_loop(ir, out_path, *, outline=None, backend=None, llm_backend=None):
+        captured["backend"] = backend
+        captured["outline_pages"] = None if outline is None else len(outline.pages)
+        return QAReport(
+            rounds=2,
+            findings_by_round=[
+                [Finding(slide_no=2, issue="溢出", severity="error", fix_hint="縮短")],
+                [],
+            ],
+            final_ok=True,
+        )
+
+    monkeypatch.setattr("odforge.cli.run_qa_loop", fake_loop)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["new", "做簡報", "-o", "out.odp", "--qa", "--no-soffice"]
+    )
+    assert result.exit_code == 0, _out(result)
+    out = _out(result)
+    assert "設計評審" in out  # the before/after summary table title
+    assert "設計 OK" in out  # final_ok=True line
+    assert captured["backend"] == "ollama"  # vision backend resolved from env
+    assert captured["outline_pages"] == 3  # the stage-1 outline was handed through
+
+
+def test_qa_flag_reports_unconverged(tmp_path, monkeypatch, sample_presentation):
+    from odforge.critic import Finding, QAReport
+
+    _mock_two_stage(monkeypatch, sample_presentation)
+    monkeypatch.setattr("odforge.cli.find_soffice", lambda: __import__("pathlib").Path("soffice"))
+    monkeypatch.setenv("ODFORGE_VISION_BACKEND", "ollama")
+
+    err = Finding(slide_no=2, issue="溢出", severity="error", fix_hint="縮短")
+    monkeypatch.setattr(
+        "odforge.cli.run_qa_loop",
+        lambda *a, **k: QAReport(
+            rounds=2, findings_by_round=[[err], [err]], final_ok=False
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["new", "做簡報", "-o", "out.odp", "--qa", "--no-soffice"]
+    )
+    assert result.exit_code == 0, _out(result)
+    assert "設計仍有 error" in _out(result)
+
+
+def test_qa_flag_falls_back_when_vision_off(tmp_path, monkeypatch, sample_presentation):
+    _mock_two_stage(monkeypatch, sample_presentation)
+    monkeypatch.setattr("odforge.cli.find_soffice", lambda: __import__("pathlib").Path("soffice"))
+    monkeypatch.delenv("ODFORGE_VISION_BACKEND", raising=False)  # default "off"
+
+    def boom(*a, **k):
+        raise AssertionError("run_qa_loop must not run when the vision backend is off")
+
+    monkeypatch.setattr("odforge.cli.run_qa_loop", boom)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["new", "做簡報", "-o", "out.odp", "--qa", "--no-soffice"]
+    )
+    assert result.exit_code == 0, _out(result)  # fallback, never fails
+    out = _out(result)
+    assert "--qa 已略過" in out
+    assert "視覺後端" in out
+
+
+def test_qa_flag_falls_back_when_no_soffice(tmp_path, monkeypatch, sample_presentation):
+    _mock_two_stage(monkeypatch, sample_presentation)
+    monkeypatch.setattr("odforge.cli.find_soffice", lambda: None)
+    monkeypatch.setenv("ODFORGE_VISION_BACKEND", "ollama")
+
+    def boom(*a, **k):
+        raise AssertionError("run_qa_loop must not run without soffice")
+
+    monkeypatch.setattr("odforge.cli.run_qa_loop", boom)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["new", "做簡報", "-o", "out.odp", "--qa", "--no-soffice"]
+    )
+    assert result.exit_code == 0, _out(result)
+    out = _out(result)
+    assert "--qa 已略過" in out
+    assert "找不到" in out  # names the missing LibreOffice (soffice) dependency
+
+
+def test_qa_flag_ignored_for_non_presentation(tmp_path, monkeypatch, sample_text_doc):
+    monkeypatch.setattr(
+        "odforge.cli.generate_ir",
+        lambda prompt, doc_type, backend=None: sample_text_doc,
+    )
+
+    def boom(*a, **k):
+        raise AssertionError("QA loop must not run for .odt")
+
+    monkeypatch.setattr("odforge.cli.run_qa_loop", boom)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["new", "寫文件", "-o", "out.odt", "--qa", "--no-soffice"]
+    )
+    assert result.exit_code == 0, _out(result)
+    assert "僅適用於簡報" in _out(result)

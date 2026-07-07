@@ -29,13 +29,17 @@ from __future__ import annotations
 import base64
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Callable, Dict, List, Literal, Optional, Protocol, runtime_checkable
 
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError
 
-from odforge.ir import Presentation
+from odforge.ir import Outline, PageRole, Presentation
+from odforge.llm import generate_slides
+from odforge.preview import PreviewUnavailable, render_pages
+from odforge.render import render
 
 # ---------------------------------------------------------------------------
 # Finding — the structured output the critic produces.
@@ -363,3 +367,183 @@ def critique(
     if backend == "off":
         return []
     return get_vision_backend(backend).critique(pngs, ir)
+
+
+# ===========================================================================
+# QA loop — the 第四道閘 (design gate): render → critique → repair → re-critique.
+#
+# Composes the deterministic renderer, the page rasteriser and the vision
+# critic into a bounded render-critique-repair loop that ends ODForge v2's four
+# quality gates. Only the pages the critic flags ``severity=="error"`` are
+# regenerated (stage-2 ``generate_slides`` on a *sub-outline* of just those
+# pages) and swapped back in place, so the unaffected pages never drift. The
+# loop is hard-bounded by ``max_rounds`` (no infinite loop) and degrades — never
+# crashes — when soffice is missing or the vision backend is off.
+# ===========================================================================
+
+
+class QAReport(BaseModel):
+    """The outcome of :func:`run_qa_loop`.
+
+    * ``rounds`` — how many render→critique rounds actually ran (``0`` when the
+      loop degraded to deterministic-only because preview was unavailable).
+    * ``findings_by_round`` — the critic's findings for each round, in order, so
+      the CLI can print a before/after (round 1 → round N) summary.
+    * ``final_ok`` — ``True`` iff the last round carried no ``error`` findings.
+    * ``note`` — a human-readable explanation when the loop degraded.
+    """
+
+    rounds: int
+    findings_by_round: List[List[Finding]]
+    final_ok: bool
+    note: str = ""
+
+
+def _sub_outline_for_errors(
+    ir: Presentation,
+    error_slide_nos: List[int],
+    findings_by_slide: Dict[int, List[Finding]],
+    outline: Optional[Outline],
+) -> Outline:
+    """Build a minimal outline of ONLY the error-flagged pages for regeneration.
+
+    Each page's ``PageRole`` comes from ``outline`` when available (so the real
+    role/title/gist guide stage 2), otherwise it is derived from the flagged
+    slide itself (``role`` = its layout). The critic's ``fix_hint`` for that page
+    is folded into the ``gist`` so the regeneration knows what design problem to
+    fix. Art direction (``design``) and narrative ``mode`` are carried over from
+    the outline (or the deck) so the repaired pages stay visually consistent.
+    """
+    pages: List[PageRole] = []
+    for slide_no in error_slide_nos:
+        idx = slide_no - 1
+        slide = ir.slides[idx]
+        if outline is not None and idx < len(outline.pages):
+            base = outline.pages[idx]
+            role, title, gist = base.role, base.title, base.gist
+        else:
+            role = slide.layout
+            title = slide.title or slide.fact or slide.quote or "投影片"
+            gist = slide.title or slide.fact or "重新設計此頁"
+        hints = "；".join(
+            f.fix_hint for f in findings_by_slide.get(slide_no, []) if f.fix_hint
+        )
+        if hints:
+            gist = f"{gist}(設計修正建議:{hints})"
+        pages.append(PageRole(role=role, title=title, gist=gist))
+
+    if outline is not None:
+        design, mode = outline.design, outline.mode
+    else:
+        design = ir.design
+        mode = ir.design.mode if ir.design is not None else "presenter"
+    return Outline(design=design, mode=mode, pages=pages)
+
+
+def _repair_error_slides(
+    ir: Presentation,
+    error_slide_nos: List[int],
+    error_findings: List[Finding],
+    outline: Optional[Outline],
+    llm_backend: Optional[str],
+) -> None:
+    """Regenerate the error-flagged pages and swap them back into ``ir`` in place.
+
+    ``generate_slides`` is re-run against a sub-outline containing *only* the
+    flagged pages; its structural gate guarantees the returned deck has one
+    slide per flagged page, in order, with matching layouts. Each is written
+    back at its original index — untouched pages are never re-sent, so they
+    cannot drift.
+    """
+    findings_by_slide: Dict[int, List[Finding]] = {}
+    for finding in error_findings:
+        findings_by_slide.setdefault(finding.slide_no, []).append(finding)
+
+    sub_outline = _sub_outline_for_errors(
+        ir, error_slide_nos, findings_by_slide, outline
+    )
+    repaired = generate_slides(sub_outline, backend=llm_backend)
+    for local_idx, slide_no in enumerate(error_slide_nos):
+        if local_idx < len(repaired.slides):
+            ir.slides[slide_no - 1] = repaired.slides[local_idx]
+
+
+def run_qa_loop(
+    ir: Presentation,
+    out_path: Path,
+    *,
+    outline: Optional[Outline] = None,
+    max_rounds: int = 2,
+    backend: Optional[str] = None,
+    llm_backend: Optional[str] = None,
+) -> QAReport:
+    """Run the bounded render→critique→repair design-QA loop over ``ir``.
+
+    Each round: render ``ir`` to ``out_path`` → rasterise its pages → critique
+    them with the vision ``backend``. If the critique carries no ``error``
+    findings (empty or warn-only) the loop stops with ``final_ok=True``.
+    Otherwise the error-flagged pages are regenerated in place (see
+    :func:`_repair_error_slides`) and the loop re-renders and re-critiques —
+    until a clean round or ``max_rounds`` is reached. Reaching the cap with
+    errors still present stops with ``final_ok=False`` (the hard infinite-loop
+    guard).
+
+    Degrades, never crashes:
+
+    * **No soffice** — ``render_pages`` raises :class:`PreviewUnavailable`; the
+      loop returns ``rounds=0, final_ok=True`` with an explanatory ``note`` (the
+      deterministic gates already ran upstream).
+    * **Vision backend off** — ``critique`` returns ``[]``; the loop naturally
+      stops at round 1 with ``final_ok=True``.
+
+    ``backend`` is the *vision* backend for :func:`critique`; ``llm_backend`` is
+    the *LLM* backend used by the repair's :func:`generate_slides`. ``outline``,
+    when supplied, guides per-page regeneration; when ``None`` the flagged pages'
+    roles are derived from the slides themselves.
+    """
+    out_path = Path(out_path)
+    findings_by_round: List[List[Finding]] = []
+
+    for round_no in range(1, max_rounds + 1):
+        render(ir, out_path)
+        try:
+            with tempfile.TemporaryDirectory(prefix="odforge-qa-") as tmp:
+                pngs = render_pages(out_path, Path(tmp))
+                findings = critique(pngs, ir, backend)
+        except PreviewUnavailable:
+            return QAReport(
+                rounds=0,
+                findings_by_round=[],
+                final_ok=True,
+                note=(
+                    "預覽不可用(找不到 LibreOffice/soffice):已略過視覺評審,"
+                    "僅套用 deterministic 檢查。"
+                ),
+            )
+
+        findings_by_round.append(findings)
+        errors = [f for f in findings if f.severity == "error"]
+        if not errors:
+            return QAReport(
+                rounds=round_no, findings_by_round=findings_by_round, final_ok=True
+            )
+        if round_no == max_rounds:
+            return QAReport(
+                rounds=round_no, findings_by_round=findings_by_round, final_ok=False
+            )
+
+        # Repair only the in-range flagged pages. If every error references a
+        # non-existent page there is nothing to regenerate — stop (bounded)
+        # rather than burn rounds regenerating nothing.
+        repairable = [f for f in errors if 1 <= f.slide_no <= len(ir.slides)]
+        error_slide_nos = sorted({f.slide_no for f in repairable})
+        if not error_slide_nos:
+            return QAReport(
+                rounds=round_no, findings_by_round=findings_by_round, final_ok=False
+            )
+        _repair_error_slides(ir, error_slide_nos, repairable, outline, llm_backend)
+
+    # Unreachable: every path inside the loop returns. Kept for type-checkers.
+    return QAReport(  # pragma: no cover
+        rounds=max_rounds, findings_by_round=findings_by_round, final_ok=False
+    )

@@ -11,6 +11,7 @@ Fully mocked: no real API calls, no anthropic install, no API keys.
 """
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -336,3 +337,267 @@ def test_ollama_vision_model_env_override(monkeypatch):
     monkeypatch.setenv("ODFORGE_OLLAMA_VISION_MODEL", "llava:13b")
     backend = critic.get_vision_backend("ollama")
     assert backend.model == "llava:13b"
+
+
+# ===========================================================================
+# QA loop (Task 16.3): render -> critique -> repair -> re-critique, bounded.
+#
+# Fully mocked: critic.render / critic.render_pages / critic.critique /
+# critic.generate_slides are monkeypatched, so no soffice, no vision backend
+# and no LLM are ever touched. The repair contract under test: only the pages
+# flagged severity=="error" are regenerated and swapped back in place, so the
+# unaffected pages never drift.
+# ===========================================================================
+
+from odforge.ir import Outline, PageRole  # noqa: E402
+from odforge.preview import PreviewUnavailable  # noqa: E402
+
+
+def _ir_n(n: int) -> Presentation:
+    """A deck of ``n`` slides: page 1 is a title, pages 2..n are title-content."""
+    slides = [Slide(layout="title", title="第1頁封面")]
+    for i in range(2, n + 1):
+        slides.append(Slide(layout="title-content", title=f"第{i}頁", bullets=["a", "b"]))
+    return Presentation(title="測試簡報", slides=slides)
+
+
+def _outline_n(n: int) -> Outline:
+    """A matching page-role outline for :func:`_ir_n`."""
+    pages = [PageRole(role="title", title="第1頁封面", gist="封面破題")]
+    for i in range(2, n + 1):
+        pages.append(PageRole(role="title-content", title=f"第{i}頁", gist=f"第{i}頁重點"))
+    return Outline(mode="presenter", pages=pages)
+
+
+def _err(slide_no: int, hint: str = "縮短標題") -> Finding:
+    return Finding(slide_no=slide_no, issue="文字溢出", severity="error", fix_hint=hint)
+
+
+def _warn(slide_no: int) -> Finding:
+    return Finding(slide_no=slide_no, issue="版型單調", severity="warn", fix_hint="穿插分節")
+
+
+def _install_loop_mocks(monkeypatch, critique_rounds, repair_record):
+    """Wire the four loop seams to fakes.
+
+    ``critique_rounds`` is an iterable of per-round findings lists (consumed in
+    order). ``repair_record`` collects each sub-outline the repair path builds.
+    """
+    rounds = iter(critique_rounds)
+    monkeypatch.setattr(critic, "render", lambda ir, out: Path(out))
+    monkeypatch.setattr(
+        critic, "render_pages", lambda odf, td, dpi=150: [Path(td) / "page-01.png"]
+    )
+    monkeypatch.setattr(critic, "critique", lambda pngs, ir, backend=None: next(rounds))
+
+    def fake_generate_slides(sub_outline, backend=None):
+        repair_record.append(sub_outline)
+        return Presentation(
+            title="修訂",
+            slides=[
+                Slide(layout=p.role, title=f"修好了-{p.title}", bullets=["x"])
+                for p in sub_outline.pages
+            ],
+        )
+
+    monkeypatch.setattr(critic, "generate_slides", fake_generate_slides)
+
+
+# ---- ① first round 2 errors -> repair regenerates ONLY those 2 pages -------
+
+
+def test_repair_regenerates_only_flagged_slides(tmp_path, monkeypatch):
+    ir = _ir_n(5)
+    outline = _outline_n(5)
+    repairs: list = []
+    # Round 1: errors on slides 2 and 5. Round 2: clean.
+    _install_loop_mocks(
+        monkeypatch,
+        critique_rounds=[[_err(2, "縮短標題"), _err(5, "移開重疊")], []],
+        repair_record=repairs,
+    )
+
+    report = critic.run_qa_loop(ir, tmp_path / "out.odp", outline=outline, max_rounds=2)
+
+    # The repair ran exactly once and regenerated exactly the two flagged pages.
+    assert len(repairs) == 1
+    sub = repairs[0]
+    assert len(sub.pages) == 2
+    assert [p.title for p in sub.pages] == ["第2頁", "第5頁"]
+    # The fix_hint from each finding is folded into the sub-outline's gist.
+    assert "縮短標題" in sub.pages[0].gist
+    assert "移開重疊" in sub.pages[1].gist
+
+    # Only the flagged slides changed; the other three pages did not drift.
+    assert ir.slides[0].title == "第1頁封面"
+    assert ir.slides[2].title == "第3頁"
+    assert ir.slides[3].title == "第4頁"
+    assert ir.slides[1].title.startswith("修好了")
+    assert ir.slides[4].title.startswith("修好了")
+
+    assert report.final_ok is True
+    assert report.rounds == 2
+
+
+# ---- ② second round returns 0 findings -> stop at round 2, final_ok=True ---
+
+
+def test_loop_stops_when_second_round_clean(tmp_path, monkeypatch):
+    ir = _ir_n(3)
+    repairs: list = []
+    _install_loop_mocks(
+        monkeypatch,
+        critique_rounds=[[_err(2)], []],  # round 1 error, round 2 clean
+        repair_record=repairs,
+    )
+
+    report = critic.run_qa_loop(ir, tmp_path / "out.odp", outline=_outline_n(3))
+
+    assert report.rounds == 2
+    assert report.final_ok is True
+    assert len(repairs) == 1  # repaired once, after round 1
+    assert [len(r) for r in report.findings_by_round] == [1, 0]
+
+
+# ---- ③ always an error -> stop at max_rounds, final_ok=False (no infinite) --
+
+
+def test_loop_bounded_by_max_rounds_when_errors_persist(tmp_path, monkeypatch):
+    ir = _ir_n(3)
+    repairs: list = []
+    # Critique keeps flagging an error forever; the loop must still terminate.
+    _install_loop_mocks(
+        monkeypatch,
+        critique_rounds=[[_err(2)], [_err(2)], [_err(2)], [_err(2)]],
+        repair_record=repairs,
+    )
+
+    report = critic.run_qa_loop(
+        ir, tmp_path / "out.odp", outline=_outline_n(3), max_rounds=2
+    )
+
+    assert report.rounds == 2
+    assert report.final_ok is False
+    # Repair runs only between rounds: once after round 1, NOT after the final
+    # round (we detect the cap and stop rather than regenerate again).
+    assert len(repairs) == 1
+
+
+# ---- warn-only findings are not errors: stop round 1, final_ok=True --------
+
+
+def test_warn_only_findings_stop_without_repair(tmp_path, monkeypatch):
+    ir = _ir_n(3)
+    repairs: list = []
+    _install_loop_mocks(
+        monkeypatch, critique_rounds=[[_warn(2), _warn(3)]], repair_record=repairs
+    )
+
+    report = critic.run_qa_loop(ir, tmp_path / "out.odp", outline=_outline_n(3))
+
+    assert report.rounds == 1
+    assert report.final_ok is True
+    assert repairs == []  # nothing regenerated for warn-only
+
+
+# ---- empty critique (off backend degrades to []) stops round 1 ------------
+
+
+def test_empty_critique_stops_round_one(tmp_path, monkeypatch):
+    ir = _ir_n(3)
+    repairs: list = []
+    _install_loop_mocks(monkeypatch, critique_rounds=[[]], repair_record=repairs)
+
+    report = critic.run_qa_loop(ir, tmp_path / "out.odp", outline=_outline_n(3))
+
+    assert report.rounds == 1
+    assert report.final_ok is True
+    assert repairs == []
+
+
+# ---- preview unavailable (no soffice) degrades, never crashes -------------
+
+
+def test_preview_unavailable_degrades_gracefully(tmp_path, monkeypatch):
+    ir = _ir_n(3)
+    monkeypatch.setattr(critic, "render", lambda ir, out: Path(out))
+
+    def boom(odf, td, dpi=150):
+        raise PreviewUnavailable("no soffice")
+
+    monkeypatch.setattr(critic, "render_pages", boom)
+    # critique must never be reached; make it explode if it is.
+    monkeypatch.setattr(
+        critic,
+        "critique",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("critique reached")),
+    )
+
+    report = critic.run_qa_loop(ir, tmp_path / "out.odp", outline=_outline_n(3))
+
+    assert report.rounds == 0
+    assert report.final_ok is True
+    assert report.note  # a human-readable note explains the degrade
+    assert report.findings_by_round == []
+
+
+# ---- repair without an outline: PageRole is derived from the slide itself --
+
+
+def test_repair_without_outline_derives_pageroles(tmp_path, monkeypatch):
+    ir = _ir_n(4)
+    repairs: list = []
+    _install_loop_mocks(
+        monkeypatch, critique_rounds=[[_err(3, "加大字級")], []], repair_record=repairs
+    )
+
+    report = critic.run_qa_loop(ir, tmp_path / "out.odp", outline=None, max_rounds=2)
+
+    assert len(repairs) == 1
+    (sub,) = repairs
+    assert len(sub.pages) == 1
+    # role derived from the flagged slide's own layout; hint folded into gist.
+    assert sub.pages[0].role == "title-content"
+    assert "加大字級" in sub.pages[0].gist
+    assert report.final_ok is True
+    assert ir.slides[2].title.startswith("修好了")
+
+
+# ---- out-of-range error slide_no cannot be repaired: bounded, final_ok=False
+
+
+def test_out_of_range_error_does_not_loop_forever(tmp_path, monkeypatch):
+    ir = _ir_n(3)
+    repairs: list = []
+    # An error that references a non-existent page 99 — unrepairable.
+    _install_loop_mocks(
+        monkeypatch, critique_rounds=[[_err(99)], [_err(99)]], repair_record=repairs
+    )
+
+    report = critic.run_qa_loop(
+        ir, tmp_path / "out.odp", outline=_outline_n(3), max_rounds=2
+    )
+
+    assert report.final_ok is False
+    assert repairs == []  # never tried to regenerate a page that doesn't exist
+
+
+# ---- QAReport carries per-round findings for the CLI summary --------------
+
+
+def test_qareport_records_findings_by_round(tmp_path, monkeypatch):
+    ir = _ir_n(4)
+    repairs: list = []
+    _install_loop_mocks(
+        monkeypatch,
+        critique_rounds=[[_err(2), _warn(3)], []],
+        repair_record=repairs,
+    )
+
+    report = critic.run_qa_loop(ir, tmp_path / "out.odp", outline=_outline_n(4))
+
+    assert len(report.findings_by_round) == 2
+    first = report.findings_by_round[0]
+    assert sum(1 for f in first if f.severity == "error") == 1
+    assert sum(1 for f in first if f.severity == "warn") == 1
+    assert report.findings_by_round[1] == []
