@@ -50,6 +50,21 @@ _GRAPHIC_STYLE = "gr1"
 _GRADIENT_NAME = "grad-bg"
 _NOTES_SIZE_PT = 14
 
+# Semantic-list typography (Task 13.2).
+_LIST_STYLE_NAME = "L1"
+_BULLET_LINE_HEIGHT = "145%"
+_BULLET_MARGIN_BOTTOM = "0.35cm"
+_KICKER_LETTER_SPACING = "0.15cm"
+# Frame roles whose (left-aligned) multi-item content renders as a bullet list.
+# Centred frames (e.g. the big-fact caption) stay bare centred paragraphs.
+_LIST_ROLES = frozenset({"bullets", "left", "right"})
+# Per bullet level: (text:level, space-before cm, min-label-width cm). Level 2
+# indents deeper so nested items read as a sub-list.
+_LIST_LEVELS: tuple[tuple[int, float, float], ...] = (
+    (1, 0.6, 0.6),
+    (2, 1.4, 0.6),
+)
+
 
 def _attr(value: str) -> str:
     """Escape a string for safe use inside a double-quoted XML attribute."""
@@ -120,14 +135,32 @@ def _ns_decls(ns: dict[str, str]) -> str:
 
 
 class _ParagraphStyles:
-    """Collects unique paragraph styles, assigning names P1, P2, … on demand."""
+    """Collects unique paragraph styles, assigning names P1, P2, … on demand.
+
+    The de-duplication key is the visual property tuple. Beyond the original
+    ``(size_pt, bold, center, color)`` dimensions it now also carries the
+    paragraph-typography knobs Task 13.2 introduced — ``line_height``,
+    ``margin_bottom`` (paragraph-properties) and ``letter_spacing``
+    (text-properties). They default to ``None`` so existing call sites keep
+    producing byte-identical styles (no line-height / margin / spacing emitted).
+    """
 
     def __init__(self, font: str) -> None:
         self._font = font
-        self._names: dict[tuple[int, bool, bool, str], str] = {}
+        self._names: dict[tuple, str] = {}
 
-    def name_for(self, size_pt: int, bold: bool, center: bool, color: str) -> str:
-        key = (size_pt, bold, center, color)
+    def name_for(
+        self,
+        size_pt: int,
+        bold: bool,
+        center: bool,
+        color: str,
+        *,
+        line_height: str | None = None,
+        margin_bottom: str | None = None,
+        letter_spacing: str | None = None,
+    ) -> str:
+        key = (size_pt, bold, center, color, line_height, margin_bottom, letter_spacing)
         name = self._names.get(key)
         if name is None:
             name = f"P{len(self._names) + 1}"
@@ -136,13 +169,21 @@ class _ParagraphStyles:
 
     def xml(self) -> str:
         return "".join(
-            _paragraph_style_xml(name, size_pt, bold, center, color, self._font)
-            for (size_pt, bold, center, color), name in self._names.items()
+            _paragraph_style_xml(name, self._font, *key)
+            for key, name in self._names.items()
         )
 
 
 def _paragraph_style_xml(
-    name: str, size_pt: int, bold: bool, center: bool, color: str, font: str
+    name: str,
+    font: str,
+    size_pt: int,
+    bold: bool,
+    center: bool,
+    color: str,
+    line_height: str | None = None,
+    margin_bottom: str | None = None,
+    letter_spacing: str | None = None,
 ) -> str:
     """Build one ``style:family="paragraph"`` automatic style element."""
     align = "center" if center else "start"
@@ -160,11 +201,21 @@ def _paragraph_style_xml(
         if bold
         else ""
     )
+    para_extra = ""
+    if line_height is not None:
+        para_extra += f' fo:line-height="{_attr(line_height)}"'
+    if margin_bottom is not None:
+        para_extra += f' fo:margin-bottom="{_attr(margin_bottom)}"'
+    spacing = (
+        f' fo:letter-spacing="{_attr(letter_spacing)}"'
+        if letter_spacing is not None
+        else ""
+    )
     return (
         f'<style:style style:name="{_attr(name)}" style:family="paragraph">'
-        f'<style:paragraph-properties fo:text-align="{align}"/>'
+        f'<style:paragraph-properties fo:text-align="{align}"{para_extra}/>'
         f"<style:text-properties{size}{weight}"
-        f' fo:color="{_attr(color)}" style:font-name="{_attr(font)}"'
+        f' fo:color="{_attr(color)}"{spacing} style:font-name="{_attr(font)}"'
         f' style:font-name-asian="{_attr(font)}"/>'
         f"</style:style>"
     )
@@ -316,21 +367,117 @@ def _role_lines(slide: Slide, role: str) -> list[str]:
     return []
 
 
-def _frame_xml(
-    frame: Frame, lines: list[str], style_name: str
-) -> str:
-    """Build a ``draw:frame`` (text box) for the given placeholder frame."""
-    paragraphs = "".join(
-        f'<text:p text:style-name="{_attr(style_name)}">{escape(line)}</text:p>'
-        for line in lines
-    )
+def _frame_box_xml(frame: Frame, inner: str) -> str:
+    """Wrap pre-built text-box ``inner`` XML in a positioned ``draw:frame``."""
     return (
         f'<draw:frame draw:style-name="{_GRAPHIC_STYLE}"'
         f' svg:x="{_cm(frame.x)}" svg:y="{_cm(frame.y)}"'
         f' svg:width="{_cm(frame.w)}" svg:height="{_cm(frame.h)}">'
-        f"<draw:text-box>{paragraphs}</draw:text-box>"
+        f"<draw:text-box>{inner}</draw:text-box>"
         f"</draw:frame>"
     )
+
+
+def _frame_xml(
+    frame: Frame, lines: list[str], style_name: str
+) -> str:
+    """Build a ``draw:frame`` of bare ``text:p`` paragraphs (non-list content)."""
+    paragraphs = "".join(
+        f'<text:p text:style-name="{_attr(style_name)}">{escape(line)}</text:p>'
+        for line in lines
+    )
+    return _frame_box_xml(frame, paragraphs)
+
+
+# ---------------------------------------------------------------------------
+# Semantic list rendering (Task 13.2)
+# ---------------------------------------------------------------------------
+
+# A list item is either plain ``str`` (a leaf bullet) or ``(text, children)``
+# where ``children`` is a list of further items — this is the internal contract
+# Task 14.1's nested ``BulletItem`` IR will lower onto. ``Slide.bullets`` is
+# ``list[str]`` today and passes straight through as leaf items.
+ListItem = "str | tuple[str, list]"
+
+
+def _list_style_xml(name: str, theme: Theme) -> str:
+    """Build a ``<text:list-style>`` with an accent-coloured bullet per level.
+
+    Every level uses ``theme.bullet_char``; the bullet glyph is tinted with the
+    accent colour via a ``<style:text-properties>`` child, and each level's
+    indent grows through ``<style:list-level-properties>`` so nested items sit
+    further in.
+    """
+    levels = "".join(
+        f'<text:list-level-style-bullet text:level="{level}"'
+        f' text:bullet-char="{_attr(theme.bullet_char)}">'
+        f"<style:list-level-properties"
+        f' text:space-before="{_cm(space_before)}"'
+        f' text:min-label-width="{_cm(min_label)}"/>'
+        f'<style:text-properties fo:color="{_attr(theme.accent)}"/>'
+        f"</text:list-level-style-bullet>"
+        for level, space_before, min_label in _LIST_LEVELS
+    )
+    return f'<text:list-style style:name="{_attr(name)}">{levels}</text:list-style>'
+
+
+def _list_xml(
+    items,
+    styles: _ParagraphStyles,
+    *,
+    size_pt: int,
+    color: str,
+    style_name: str | None = None,
+) -> str:
+    """Build a ``<text:list>`` for ``items`` (see :data:`ListItem`).
+
+    Only the outermost list carries ``style_name`` (``L1``); nested lists omit
+    it so LibreOffice derives their level — and thus their level-2 bullet and
+    indent — from the enclosing list-style. Each item's text lives in a
+    ``<text:p>`` whose paragraph style carries the loose bullet typography
+    (line-height + bottom margin); children recurse into a nested ``<text:list>``
+    inside the same ``<text:list-item>``.
+    """
+    li_parts: list[str] = []
+    for item in items:
+        if isinstance(item, tuple):
+            text, children = item
+        else:
+            text, children = item, ()
+        pstyle = styles.name_for(
+            size_pt,
+            False,
+            False,
+            color,
+            line_height=_BULLET_LINE_HEIGHT,
+            margin_bottom=_BULLET_MARGIN_BOTTOM,
+        )
+        para = f'<text:p text:style-name="{_attr(pstyle)}">{escape(text)}</text:p>'
+        nested = (
+            _list_xml(children, styles, size_pt=size_pt, color=color)
+            if children
+            else ""
+        )
+        li_parts.append(f"<text:list-item>{para}{nested}</text:list-item>")
+    style_attr = f' text:style-name="{_attr(style_name)}"' if style_name else ""
+    return f"<text:list{style_attr}>{''.join(li_parts)}</text:list>"
+
+
+def _kicker_paragraph_xml(text: str, styles: _ParagraphStyles, theme: Theme) -> str:
+    """Build a wide-tracked "kicker" ``<text:p>`` (caption-size, accent, spaced).
+
+    Not wired to any layout yet — provided for Tasks 13.3/14.1 to place an
+    eyebrow/kicker line above a heading. The paragraph style carries
+    ``fo:letter-spacing`` so the label reads as spaced small caps.
+    """
+    style_name = styles.name_for(
+        theme.caption_pt,
+        True,
+        False,
+        theme.accent,
+        letter_spacing=_KICKER_LETTER_SPACING,
+    )
+    return f'<text:p text:style-name="{_attr(style_name)}">{escape(text)}</text:p>'
 
 
 def _notes_xml(notes: str, style_name: str) -> str:
@@ -354,6 +501,16 @@ def _page_xml(
     for frame in LAYOUTS[slide.layout]:
         lines = _role_lines(slide, frame.role)
         if not lines:
+            continue
+        if frame.role in _LIST_ROLES and not frame.center:
+            inner = _list_xml(
+                lines,
+                styles,
+                size_pt=frame.size_pt,
+                color=theme.text_color,
+                style_name=_LIST_STYLE_NAME,
+            )
+            parts.append(_frame_box_xml(frame, inner))
             continue
         color = theme.title_color if frame.role == "title" else theme.text_color
         style_name = styles.name_for(frame.size_pt, frame.bold, frame.center, color)
@@ -394,6 +551,7 @@ def build_content_xml(p: Presentation, theme: Theme) -> str:
         "<office:automatic-styles>"
         f"{styles.xml()}"
         f"{graphics.xml()}"
+        f"{_list_style_xml(_LIST_STYLE_NAME, theme)}"
         f'<style:style style:name="{_DRAWING_PAGE_STYLE}"'
         f' style:family="drawing-page">'
         f"<style:drawing-page-properties {_page_fill_attrs(theme)}/>"

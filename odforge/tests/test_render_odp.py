@@ -443,3 +443,178 @@ def test_light_theme_content_page_style_stays_solid():
         assert all(
             pr.get(_q("draw", "fill-color")) == THEMES[preset].bg for pr in dpp
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 13.2: semantic text:list + paragraph typography
+# ---------------------------------------------------------------------------
+
+from odforge.render.odp import (  # noqa: E402
+    _ParagraphStyles,
+    _list_xml,
+    _list_style_xml,
+    _kicker_paragraph_xml,
+    _LIST_STYLE_NAME,
+)
+
+
+def _style_by_name(root, name):
+    """Return the <style:style> automatic style with style:name == ``name``."""
+    return next(
+        s for s in root.findall(".//style:style", NS)
+        if s.get(_q("style", "name")) == name
+    )
+
+
+# ① bullets -> <text:list> wrapping <text:list-item> (each holding a text:p)
+def test_bullets_render_as_semantic_text_list(tmp_path):
+    p = Presentation(title="t", slides=[
+        Slide(layout="title-content", title="T", bullets=["甲", "乙", "丙"])])
+    root = content_root(render_odp(p, tmp_path / "p.odp"))
+    lists = root.findall(".//text:list", NS)
+    assert lists, "bullets must render as a <text:list>, not bare <text:p>"
+    tl = lists[0]
+    assert tl.get(_q("text", "style-name")) == _LIST_STYLE_NAME
+    items = tl.findall("text:list-item", NS)
+    assert len(items) == 3
+    assert [it.find("text:p", NS).text for it in items] == ["甲", "乙", "丙"]
+
+
+# ② automatic-styles carries a <text:list-style> with bullet-char = accent-coloured
+def test_list_style_has_bullet_char_in_accent_colour():
+    theme = THEMES["academic"]
+    root = parse_fragment(_list_style_xml(_LIST_STYLE_NAME, theme))
+    ls = root.find("text:list-style", NS)
+    assert ls is not None
+    assert ls.get(_q("style", "name")) == _LIST_STYLE_NAME
+    lvl1 = ls.find("text:list-level-style-bullet", NS)
+    assert lvl1.get(_q("text", "bullet-char")) == theme.bullet_char
+    tp = lvl1.find("style:text-properties", NS)
+    assert tp.get(_q("fo", "color")) == theme.accent
+
+
+def test_list_style_is_registered_in_content_automatic_styles():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="title-content", title="T", bullets=["甲"])])
+    croot = etree.fromstring(build_content_xml(p, theme).encode("utf-8"))
+    autos = croot.find("office:automatic-styles", NS)
+    assert autos.find("text:list-style", NS) is not None
+
+
+# ③ nested items render two levels; list-style defines both with deeper indent
+def test_nested_items_render_two_level_list():
+    styles = _ParagraphStyles("Noto Sans TC")
+    items = [("父", ["子一", "子二"]), "另一父"]
+    root = parse_fragment(
+        _list_xml(items, styles, size_pt=18, color="#111111",
+                  style_name=_LIST_STYLE_NAME)
+    )
+    outer = root.find("text:list", NS)
+    assert outer.get(_q("text", "style-name")) == _LIST_STYLE_NAME
+    top_items = outer.findall("text:list-item", NS)
+    assert [it.find("text:p", NS).text for it in top_items] == ["父", "另一父"]
+    nested = top_items[0].find("text:list", NS)
+    assert nested is not None, "children must nest a second <text:list>"
+    # nested list inherits the level from its position, no repeated style-name
+    assert nested.get(_q("text", "style-name")) is None
+    assert [ci.find("text:p", NS).text
+            for ci in nested.findall("text:list-item", NS)] == ["子一", "子二"]
+
+
+def test_list_style_defines_two_levels_with_deeper_indent():
+    root = parse_fragment(_list_style_xml(_LIST_STYLE_NAME, THEMES["academic"]))
+    bullets = root.findall(".//text:list-level-style-bullet", NS)
+    by_level = {b.get(_q("text", "level")): b for b in bullets}
+    assert set(by_level) >= {"1", "2"}
+
+    def space_cm(b):
+        lp = b.find("style:list-level-properties", NS)
+        return float(lp.get(_q("text", "space-before")).rstrip("cm"))
+
+    assert space_cm(by_level["2"]) > space_cm(by_level["1"])
+    for b in bullets:  # every level's bullet char is accent-coloured
+        assert (b.find("style:text-properties", NS).get(_q("fo", "color"))
+                == THEMES["academic"].accent)
+
+
+# ④ bullet paragraphs carry fo:line-height 145% + fo:margin-bottom
+def test_bullet_paragraph_has_line_height_and_margin_bottom():
+    p = Presentation(title="t", slides=[
+        Slide(layout="title-content", title="T", bullets=["甲", "乙"])])
+    croot = etree.fromstring(build_content_xml(p, THEMES["academic"]).encode("utf-8"))
+    li_p = croot.find(".//text:list/text:list-item/text:p", NS)
+    style = _style_by_name(croot, li_p.get(_q("text", "style-name")))
+    pp = style.find("style:paragraph-properties", NS)
+    assert pp.get(_q("fo", "line-height")) == "145%"
+    assert pp.get(_q("fo", "margin-bottom")) == "0.35cm"
+
+
+def test_non_bullet_paragraphs_keep_tight_typography():
+    # Title/subtitle stay bare centred text:p with no injected line-height —
+    # be conservative: only bullet/body paragraphs get the loose typography.
+    p = Presentation(title="t", slides=[
+        Slide(layout="title", title="標題", subtitle="副標")])
+    croot = etree.fromstring(build_content_xml(p, THEMES["academic"]).encode("utf-8"))
+    bare = croot.findall(".//draw:text-box/text:p", NS)  # direct = non-list
+    assert bare
+    for tp in bare:
+        style = _style_by_name(croot, tp.get(_q("text", "style-name")))
+        pp = style.find("style:paragraph-properties", NS)
+        assert pp.get(_q("fo", "line-height")) is None
+        assert pp.get(_q("fo", "margin-bottom")) is None
+
+
+# ⑤ kicker paragraph style carries fo:letter-spacing
+def test_kicker_style_emits_letter_spacing():
+    styles = _ParagraphStyles("Noto Sans TC")
+    name = styles.name_for(14, True, False, "#1A4B8C", letter_spacing="0.15cm")
+    root = parse_fragment(styles.xml())
+    tp = _style_by_name(root, name).find("style:text-properties", NS)
+    assert tp.get(_q("fo", "letter-spacing")) == "0.15cm"
+
+
+def test_kicker_paragraph_helper_references_letter_spacing_style():
+    styles = _ParagraphStyles("Noto Sans TC")
+    frag = _kicker_paragraph_xml("重點摘要", styles, THEMES["academic"])
+    root = parse_fragment(frag + styles.xml())
+    kp = root.find("text:p", NS)
+    assert kp.text == "重點摘要"
+    tp = _style_by_name(root, kp.get(_q("text", "style-name"))).find(
+        "style:text-properties", NS)
+    assert tp.get(_q("fo", "letter-spacing")) == "0.15cm"
+
+
+# de-dup key gains the new typography dimensions
+def test_paragraph_style_key_includes_typography_dimensions():
+    s = _ParagraphStyles("Noto Sans TC")
+    a = s.name_for(18, False, False, "#111111")
+    b = s.name_for(18, False, False, "#111111", line_height="145%")
+    c = s.name_for(18, False, False, "#111111", line_height="145%")
+    d = s.name_for(18, False, False, "#111111", letter_spacing="0.15cm")
+    assert a != b, "line_height must split the de-dup key"
+    assert b == c, "identical dimensions must still de-dup"
+    assert a != d and b != d, "letter_spacing must split the de-dup key"
+
+
+# new/changed text styles keep the CJK three-track font-size rule
+def test_bullet_style_keeps_cjk_three_track_font_size():
+    p = Presentation(title="t", slides=[
+        Slide(layout="title-content", title="T", bullets=["甲"])])
+    croot = etree.fromstring(build_content_xml(p, THEMES["academic"]).encode("utf-8"))
+    li_p = croot.find(".//text:list/text:list-item/text:p", NS)
+    tp = _style_by_name(croot, li_p.get(_q("text", "style-name"))).find(
+        "style:text-properties", NS)
+    assert tp.get(_q("fo", "font-size")) == "18pt"
+    assert tp.get(_q("style", "font-size-asian")) == "18pt"
+    assert tp.get(_q("style", "font-size-complex")) == "18pt"
+
+
+# two-column content also becomes a semantic list (consistent with bullets)
+def test_two_col_columns_render_as_lists(tmp_path):
+    p = Presentation(title="t", slides=[
+        Slide(layout="two-col", title="比較",
+              left=["傳統", "耗時"], right=["ODForge", "自動"])])
+    root = content_root(render_odp(p, tmp_path / "p.odp"))
+    lists = root.findall(".//text:list", NS)
+    assert len(lists) == 2  # one per column
