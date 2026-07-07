@@ -7,6 +7,7 @@ license = { text = "MIT" }
 dependencies = [
   "odfdo>=3.22", "pydantic>=2.7", "typer>=0.12", "rich>=13",
   "openai>=1.40", "mcp>=1.2", "lxml>=5", "json-repair>=0.30",
+  "PyMuPDF>=1.24",
 ]
 [project.optional-dependencies]
 dev = ["pytest>=8"]
