@@ -183,3 +183,59 @@ def test_low_contrast_message_reports_ratio():
 def test_sample_presentation_fixture_has_no_design(sample_presentation):
     # v1 fixture stays green and design-free.
     assert sample_presentation.design is None
+
+
+# ---------------------------------------------------------------------------
+# Task 13.5: ChartSpec (standalone IR; wired into slides in Task 14.1)
+# ---------------------------------------------------------------------------
+
+
+def test_chart_spec_valid():
+    from odforge.ir import ChartSpec
+
+    c = ChartSpec(labels=["甲", "乙"], values=[1.5, 2], unit="%", highlight=0)
+    assert c.values == [1.5, 2.0] and c.highlight == 0 and c.unit == "%"
+
+
+def test_chart_spec_defaults_unit_empty_highlight_none():
+    from odforge.ir import ChartSpec
+
+    c = ChartSpec(labels=["x"], values=[1])
+    assert c.unit == "" and c.highlight is None
+
+
+# ③ more than 8 bars is rejected with a clear, actionable message.
+def test_chart_spec_more_than_8_bars_rejected():
+    from odforge.ir import ChartSpec
+
+    with pytest.raises(ValidationError) as exc:
+        ChartSpec(labels=[str(i) for i in range(9)], values=list(range(9)))
+    assert "8" in str(exc.value)
+
+
+def test_chart_spec_length_mismatch_rejected():
+    from odforge.ir import ChartSpec
+
+    with pytest.raises(ValidationError):
+        ChartSpec(labels=["a", "b"], values=[1])
+
+
+def test_chart_spec_empty_rejected():
+    from odforge.ir import ChartSpec
+
+    with pytest.raises(ValidationError):
+        ChartSpec(labels=[], values=[])
+
+
+def test_chart_spec_negative_value_rejected():
+    from odforge.ir import ChartSpec
+
+    with pytest.raises(ValidationError):
+        ChartSpec(labels=["a"], values=[-1])
+
+
+def test_chart_spec_highlight_out_of_range_rejected():
+    from odforge.ir import ChartSpec
+
+    with pytest.raises(ValidationError):
+        ChartSpec(labels=["a", "b"], values=[1, 2], highlight=5)

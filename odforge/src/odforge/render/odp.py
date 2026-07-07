@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable
 from xml.sax.saxutils import escape
 
-from odforge.ir import Presentation, Slide
+from odforge.ir import ChartSpec, Presentation, Slide
 from odforge.package import ODP_MIMETYPE, write_odf_package
 from odforge.themes import LAYOUTS, PAGE_H, PAGE_W, THEMES, Frame, Theme
 
@@ -145,6 +145,20 @@ _DECO_OPACITY_SPAN = 0.30
 _CARD_ROLES = frozenset({"left", "right"})
 _CARD_PAD = 0.3  # cm the card overhangs its text frame on every side
 _CARD_CORNER = 0.3  # cm corner radius
+
+# Task 13.5: shape-drawn horizontal bar charts. The "chart" layout that drops
+# one onto a page arrives in Task 14.1 — here the renderer only learns to draw a
+# ChartSpec into an arbitrary area. Each value becomes one horizontal draw:rect
+# whose svg:width is proportional to the value (the largest value fills the
+# track); the highlighted bar is filled accent, the rest a muted tone blended
+# toward the bg so the one bar that matters reads first. Labels sit in a left
+# gutter, value+unit text just past each bar's end.
+_CHART_LABEL_W_FRAC = 0.22  # left gutter (fraction of area width) holding labels
+_CHART_VALUE_W_FRAC = 0.14  # right gutter reserved so value text fits past bars
+_CHART_GAP = 0.2  # cm — breathing space before a bar and before its value text
+_CHART_BAR_H_FRAC = 0.42  # bar thickness as a fraction of its row's height
+_CHART_BAR_CORNER = 0.08  # cm — bars are barely rounded
+_CHART_OTHER_BLEND = 0.55  # non-highlight bars: _blend(muted, bg, this amount)
 
 
 def _attr(value: str) -> str:
@@ -553,6 +567,137 @@ def _frame_xml(
         for line in lines
     )
     return _frame_box_xml(frame, paragraphs)
+
+
+# ---------------------------------------------------------------------------
+# Task 13.5: shape-drawn horizontal bar charts
+# ---------------------------------------------------------------------------
+
+
+def _fmt_number(value: float) -> str:
+    """Format a chart value for display: whole numbers drop the ``.0``
+    (42.0 -> "42"), fractions stay compact (3.5 -> "3.5")."""
+    if value == int(value):
+        return str(int(value))
+    return f"{value:g}"
+
+
+def _text_line_h_cm(size_pt: int) -> float:
+    """Approximate one text line's height in cm for a point size (1.2 leading).
+
+    Lets a bar's label/value be positioned to sit vertically centred on the bar
+    without a dedicated vertical-align graphic style — and stays deterministic
+    (a pure function of the point size).
+    """
+    return size_pt / 72.0 * 2.54 * 1.2
+
+
+def _chart_xml(
+    chart: ChartSpec,
+    area_x: float,
+    area_y: float,
+    area_w: float,
+    area_h: float,
+    theme: Theme,
+    graphics: _GraphicStyles,
+    para_styles: _ParagraphStyles,
+) -> str:
+    """Render a :class:`~odforge.ir.ChartSpec` as horizontal bars filling an area.
+
+    Each value becomes one ``draw:rect`` whose ``svg:width`` is proportional to
+    the value — the largest value fills the available track width, so bar-width
+    ratios equal value ratios exactly. The bar named by ``chart.highlight`` is
+    filled ``theme.accent``; every other bar takes a muted tone blended toward
+    the background (:data:`_CHART_OTHER_BLEND`) so the key bar reads first. Each
+    bar carries its label (left gutter) and value+unit text (just past the bar's
+    end), both at ``theme.body_pt`` with three-track CJK sizing via
+    ``para_styles``. Bars are barely rounded (:data:`_CHART_BAR_CORNER`).
+
+    ``graphics`` / ``para_styles`` are the shared style registries the caller
+    later serialises; this builder only *registers* styles and returns the shape
+    + text XML (no ``<style:style>`` of its own). Deterministic.
+
+    Zero-value edge: when every value is 0 the bars render at zero width (guarded
+    against division by zero) — no data, no bar — while labels/values still show.
+    """
+    n = len(chart.values)
+    max_v = max(chart.values)
+    label_w = area_w * _CHART_LABEL_W_FRAC
+    value_w = area_w * _CHART_VALUE_W_FRAC
+    track_w = area_w - label_w - value_w
+    row_h = area_h / n
+    bar_x = area_x + label_w
+    # Non-highlight bars share one muted-toned fill (deduped in ``graphics``).
+    other_fill = _blend(theme.muted, theme.bg, _CHART_OTHER_BLEND)
+    line_h = _text_line_h_cm(theme.body_pt)
+
+    parts: list[str] = []
+    for i, (label, value) in enumerate(zip(chart.labels, chart.values)):
+        highlighted = i == chart.highlight
+        bar_w = track_w * (value / max_v) if max_v > 0 else 0.0
+        row_y = area_y + i * row_h
+        bar_h = row_h * _CHART_BAR_H_FRAC
+        bar_y = row_y + (row_h - bar_h) / 2.0
+        # Vertically centre one text line on the bar.
+        text_y = bar_y + (bar_h - line_h) / 2.0
+
+        fill = theme.accent if highlighted else other_fill
+        bar_style = graphics.name_for_fill(fill)
+        parts.append(
+            _rect_xml(
+                bar_x,
+                bar_y,
+                bar_w,
+                bar_h,
+                fill=fill,
+                corner_radius_cm=_CHART_BAR_CORNER,
+                style_name=bar_style,
+            )
+        )
+
+        # Label in the left gutter (the highlighted row's label is bolded too).
+        label_style = para_styles.name_for(
+            theme.body_pt, highlighted, False, theme.text_color
+        )
+        parts.append(
+            _frame_box_xml(
+                Frame(
+                    "chart-label",
+                    area_x,
+                    text_y,
+                    label_w - _CHART_GAP,
+                    line_h,
+                    theme.body_pt,
+                ),
+                f'<text:p text:style-name="{_attr(label_style)}">'
+                f"{escape(label)}</text:p>",
+            )
+        )
+
+        # Value + unit just past the bar's end; the frame runs to the area edge.
+        value_x = bar_x + bar_w + _CHART_GAP
+        value_frame_w = max((area_x + area_w) - value_x, _CHART_GAP)
+        value_color = theme.accent if highlighted else theme.muted
+        value_style = para_styles.name_for(
+            theme.body_pt, highlighted, False, value_color
+        )
+        value_text = f"{_fmt_number(value)}{chart.unit}"
+        parts.append(
+            _frame_box_xml(
+                Frame(
+                    "chart-value",
+                    value_x,
+                    text_y,
+                    value_frame_w,
+                    line_h,
+                    theme.body_pt,
+                ),
+                f'<text:p text:style-name="{_attr(value_style)}">'
+                f"{escape(value_text)}</text:p>",
+            )
+        )
+
+    return "".join(parts)
 
 
 # ---------------------------------------------------------------------------

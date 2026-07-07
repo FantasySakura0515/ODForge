@@ -85,6 +85,53 @@ class Slide(BaseModel):
     notes: str = ""
 
 
+class ChartSpec(BaseModel):
+    """A horizontal bar chart's data, drawn as data-proportional ``draw:rect``\\ s.
+
+    Standalone in Phase 13.5 — the ``chart`` slide layout and the ``Slide.chart``
+    field that carry one onto a page arrive in Task 14.1; the renderer already
+    knows how to draw one via ``render.odp._chart_xml``.
+
+    Kept deliberately small: at most **8 bars**. More than that reads as a table,
+    not a chart, so it is rejected ("不支援就閉嘴") rather than crammed. ``values``
+    must be non-negative (a bar's width can't be negative) and equal in count to
+    ``labels``. ``highlight`` — when given — names the one bar the renderer fills
+    with the accent colour and must index an existing bar.
+    """
+
+    labels: List[str] = Field(min_length=1)
+    values: List[float] = Field(min_length=1)
+    unit: str = ""
+    highlight: Optional[int] = None
+
+    @field_validator("values")
+    @classmethod
+    def _values_non_negative(cls, values: List[float]) -> List[float]:
+        if any(v < 0 for v in values):
+            raise ValueError("chart values must be non-negative (>= 0)")
+        return values
+
+    @model_validator(mode="after")
+    def _check_shape(self) -> "ChartSpec":
+        n = len(self.values)
+        if len(self.labels) != n:
+            raise ValueError(
+                f"labels/values length mismatch: {len(self.labels)} labels "
+                f"vs {n} values — they must pair up one-to-one"
+            )
+        if n > 8:
+            raise ValueError(
+                f"chart supports at most 8 bars, got {n} — split it into "
+                f"multiple charts (不支援就閉嘴)"
+            )
+        if self.highlight is not None and not 0 <= self.highlight < n:
+            raise ValueError(
+                f"highlight index {self.highlight} out of range for {n} bars "
+                f"(expected 0..{n - 1})"
+            )
+        return self
+
+
 # ---------------------------------------------------------------------------
 # Design tokens (per-deck visual variation, validated before it reaches the
 # renderer). An LLM designs a palette + font pairing per presentation; these

@@ -920,3 +920,85 @@ def test_two_col_cards_are_behind_column_text():
     assert len(card_idx) == 2 and len(col_frame_idx) == 2
     for card_pos, frame_pos in zip(card_idx, col_frame_idx):
         assert card_pos < frame_pos, "card must precede its column text frame"
+
+
+# ---------------------------------------------------------------------------
+# Task 13.5: shape-drawn horizontal bar charts (render side; layout in 14.1)
+# ---------------------------------------------------------------------------
+
+
+def _render_chart(chart, theme=None, area=(1.5, 3.0, 15.0, 10.0)):
+    """Render a ChartSpec via ``_chart_xml`` + its graphic styles.
+
+    Returns ``(root, bar_rects)`` where ``root`` wraps the chart fragment and
+    the registered graphic styles so a bar's referenced fill can be resolved.
+    """
+    from odforge.render.odp import _chart_xml, _ParagraphStyles
+
+    theme = theme or THEMES["academic"]
+    graphics = _GraphicStyles()
+    para = _ParagraphStyles(theme.font)
+    frag = _chart_xml(
+        chart, area[0], area[1], area[2], area[3], theme, graphics, para
+    )
+    root = parse_fragment(frag + graphics.xml())
+    return root, root.findall(".//draw:rect", NS)
+
+
+def _cm_value(text):
+    assert text.endswith("cm")
+    return float(text[:-2])
+
+
+# ① a chart with N values renders N bar rects whose widths are proportional.
+def test_chart_renders_proportional_bars():
+    from odforge.ir import ChartSpec
+
+    chart = ChartSpec(labels=["甲", "乙", "丙", "丁"],
+                      values=[10, 20, 40, 30], unit="%", highlight=2)
+    root, rects = _render_chart(chart)
+    assert len(rects) == 4
+    widths = [_cm_value(r.get(_q("svg", "width"))) for r in rects]
+    max_w, max_v = max(widths), max(chart.values)
+    for w, v in zip(widths, chart.values):
+        assert abs(w / max_w - v / max_v) < 1e-6
+
+
+# ② the highlighted bar's fill == accent; every other bar's fill != accent.
+def test_chart_highlight_bar_is_accent():
+    from odforge.ir import ChartSpec
+
+    theme = THEMES["academic"]
+    chart = ChartSpec(labels=["a", "b", "c"], values=[5, 9, 3], highlight=1)
+    root, rects = _render_chart(chart, theme)
+
+    def fill_of(rect):
+        style = _style_by_name(root, rect.get(_q("draw", "style-name")))
+        props = style.find("style:graphic-properties", NS)
+        return props.get(_q("draw", "fill-color"))
+
+    assert fill_of(rects[1]) == theme.accent
+    assert fill_of(rects[0]) != theme.accent
+    assert fill_of(rects[2]) != theme.accent
+
+
+# each bar carries its label text and its value+unit text.
+def test_chart_renders_labels_and_values():
+    from odforge.ir import ChartSpec
+
+    chart = ChartSpec(labels=["營收", "成本"], values=[80, 20], unit="萬")
+    root, _ = _render_chart(chart)
+    text = "".join(root.itertext())
+    assert "營收" in text and "成本" in text
+    assert "80萬" in text and "20萬" in text
+
+
+# zero-value edge: no ZeroDivisionError; N bars still render, all zero width.
+def test_chart_all_zero_values_have_zero_width():
+    from odforge.ir import ChartSpec
+
+    chart = ChartSpec(labels=["x", "y", "z"], values=[0, 0, 0])
+    root, rects = _render_chart(chart)
+    assert len(rects) == 3
+    for r in rects:
+        assert _cm_value(r.get(_q("svg", "width"))) == 0.0
