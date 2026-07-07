@@ -163,6 +163,52 @@ def test_ollama_parses_two_findings(monkeypatch, tmp_path):
     assert [f.severity for f in findings] == ["error", "warn"]
 
 
+# --- malformed payload degrades gracefully (skip-bad, keep-good; never raises) ---
+
+# one valid finding + one bad-enum severity + one missing-fields finding
+_MIXED_FINDINGS = [
+    _TWO_FINDINGS[0],  # valid (slide_no 2, severity "error")
+    {"slide_no": 3, "issue": "壞的嚴重度", "severity": "fatal", "fix_hint": "x"},  # bad enum
+    {"slide_no": 4, "issue": "缺少欄位"},  # missing severity + fix_hint
+]
+
+
+def test_ollama_skips_malformed_findings_keeps_valid(monkeypatch, tmp_path):
+    _install_fake_openai(monkeypatch, json.dumps({"findings": _MIXED_FINDINGS}))
+    findings = critique(_make_pngs(tmp_path, 5), _ir(), backend="ollama")
+    # only the valid finding survives; no ValidationError escapes critique()
+    assert [f.slide_no for f in findings] == [2]
+    assert all(isinstance(f, Finding) for f in findings)
+
+
+def test_claude_skips_malformed_findings_keeps_valid(tmp_path):
+    # valid one is slide 5, sandwiched between two malformed items
+    payload = [
+        {"slide_no": 1, "issue": "x", "severity": "oops", "fix_hint": "y"},  # bad enum
+        _TWO_FINDINGS[1],  # valid (slide_no 5, severity "warn")
+        {"issue": "缺頁碼與嚴重度"},  # missing fields
+    ]
+    backend = ClaudeVisionBackend(_FakeAnthropic(payload), "test-model")
+    findings = backend.critique(_make_pngs(tmp_path, 5), _ir())
+    assert [f.slide_no for f in findings] == [5]
+
+
+def test_all_malformed_findings_yields_empty(monkeypatch, tmp_path):
+    _install_fake_openai(monkeypatch, json.dumps({"findings": [_MIXED_FINDINGS[1]]}))
+    assert critique(_make_pngs(tmp_path, 2), _ir(), backend="ollama") == []
+
+
+def test_framing_omits_ir_title(monkeypatch, tmp_path):
+    # independent context: the deck title must not leak into the sent framing
+    client = _install_fake_openai(monkeypatch, json.dumps({"findings": []}))
+    critique(_make_pngs(tmp_path, 3), _ir(), backend="ollama")
+    (call,) = client.completions.calls
+    user = next(m["content"] for m in call["messages"] if m["role"] == "user")
+    text = next(b["text"] for b in user if b["type"] == "text")
+    assert "光合作用" not in text  # ir.title must be absent
+    assert "3 頁" in text  # slide count still present
+
+
 def test_no_tool_call_yields_empty(monkeypatch, tmp_path):
     # A model that returns no tool call -> no findings (not a crash).
     client = _FakeOpenAIClient(None)

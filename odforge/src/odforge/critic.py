@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Literal, Optional, Protocol, runtime_checkable
 
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from odforge.ir import Presentation
 
@@ -136,19 +136,38 @@ def _findings_schema() -> dict:
 
 
 def _findings_from_payload(data: object) -> List[Finding]:
-    """Validate a ``{"findings": [...]}`` payload into ``list[Finding]``."""
+    """Validate a ``{"findings": [...]}`` payload into ``list[Finding]``.
+
+    Degrades gracefully (「不炸」): a structurally-invalid finding — a missing
+    field, an out-of-enum ``severity`` — is **skipped**, not raised, so a
+    partially-valid critique still returns its good findings (skip-bad-keep-good;
+    a partial critique is still useful). A wholly-unusable payload yields ``[]``.
+    The critic must never crash the QA loop on a malformed vision response
+    (local models like qwen2.5vl are the likely culprit).
+    """
     if not isinstance(data, dict):
         return []
     items = data.get("findings", [])
     if not isinstance(items, list):
         return []
-    return [Finding.model_validate(item) for item in items]
+    findings: List[Finding] = []
+    for item in items:
+        try:
+            findings.append(Finding.model_validate(item))
+        except ValidationError:
+            continue  # drop the malformed finding, keep the valid ones
+    return findings
 
 
-def _framing_text(pngs: List[Path], ir: Presentation) -> str:
-    """Minimal per-request framing: how many pages, and the deck title."""
+def _framing_text(pngs: List[Path]) -> str:
+    """Minimal per-request framing: the page count only.
+
+    Independent-context contract (獨立 context): the critic sees only the images,
+    the checklist, and this minimal framing — no deck content (title, IR). Do not
+    leak ``ir`` fields here.
+    """
     return (
-        f"這份簡報共 {len(pngs)} 頁,標題為「{ir.title}」。"
+        f"這份簡報共 {len(pngs)} 頁。"
         "請依系統提示的檢查清單,逐頁檢視下列影像並透過工具回傳所有設計問題。"
     )
 
@@ -202,7 +221,7 @@ class ClaudeVisionBackend:
             }
             for png in pngs
         ]
-        content.append({"type": "text", "text": _framing_text(pngs, ir)})
+        content.append({"type": "text", "text": _framing_text(pngs)})
 
         tools = [
             {
@@ -248,7 +267,7 @@ class OllamaVisionBackend:
             }
             for png in pngs
         ]
-        content.append({"type": "text", "text": _framing_text(pngs, ir)})
+        content.append({"type": "text", "text": _framing_text(pngs)})
 
         tools = [
             {
