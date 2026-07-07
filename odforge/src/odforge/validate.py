@@ -27,6 +27,7 @@ from pathlib import Path
 from lxml import etree
 
 from .package import ODP_MIMETYPE, ODS_MIMETYPE, ODT_MIMETYPE
+from .xmlsafe import safe_fromstring
 
 _MANIFEST_NS = "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"
 _MANIFEST_PATH = "META-INF/manifest.xml"
@@ -93,7 +94,8 @@ def _gate_structure(path: Path) -> tuple[bool, str]:
             return False, f"missing {_MANIFEST_PATH}"
 
         try:
-            root = etree.fromstring(z.read(_MANIFEST_PATH))
+            # Untrusted input: hardened parse (no external-entity resolution).
+            root = safe_fromstring(z.read(_MANIFEST_PATH))
         except etree.XMLSyntaxError as exc:
             return False, f"manifest is not well-formed XML: {exc}"
 
@@ -132,7 +134,9 @@ def _gate_xml(path: Path) -> tuple[bool, str]:
                     bad.append(f"{name}: empty/whitespace-only required part")
                 continue
             try:
-                etree.fromstring(data)
+                # Untrusted input: hardened parse (no external-entity resolution,
+                # bounded expansion) — well-formedness is all this gate asserts.
+                safe_fromstring(data)
             except etree.XMLSyntaxError as exc:
                 bad.append(f"{name}: {exc}")
     if bad:

@@ -136,3 +136,44 @@ def test_cli_check_writes_report(tmp_path, sample_text_doc, monkeypatch):
     assert "# ODF 檢測報告" in text
     # The written file is exactly the report body printed to stdout.
     assert text.strip() in _out(result)
+
+
+# ---------------------------------------------------------------------------
+# Security: XXE hardening. check_odf parses the user-pointed content.xml /
+# styles.xml (via validate_odf and the style-reference pass). An external SYSTEM
+# entity must never be resolved — mirroring extract.py's hardening.
+# ---------------------------------------------------------------------------
+
+_XXE_CONTENT_TEMPLATE = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<!DOCTYPE office:document-content [<!ENTITY xxe SYSTEM "{uri}">]>'
+    '<office:document-content '
+    'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+    'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" '
+    'office:version="1.2">'
+    "<office:body><office:presentation>"
+    "<text:p>&xxe;</text:p>"
+    "</office:presentation></office:body>"
+    "</office:document-content>"
+)
+
+
+def test_external_entity_is_not_resolved(tmp_path, monkeypatch):
+    monkeypatch.setattr("odforge.check.find_soffice", lambda: None)
+    from odforge.package import ODP_MIMETYPE, write_odf_package
+
+    secret = tmp_path / "secret.txt"
+    marker = "TOPSECRET_check_51e7bd"
+    secret.write_text(marker, encoding="utf-8")
+    content = _XXE_CONTENT_TEMPLATE.format(uri=secret.resolve().as_uri())
+    out = tmp_path / "xxe.odp"
+    write_odf_package(out, ODP_MIMETYPE, {"content.xml": content})
+
+    report = check_odf(out)  # must not raise or hang
+    # (b) the local file's content was never disclosed in the report.
+    assert marker not in report
+    # (c) the entity was left unresolved: content.xml parsed cleanly (no external
+    # read), so the xml gate is OK and the style-reference pass ran rather than
+    # bailing with the bare parser's "無法解析" parse error.
+    assert "xml: OK" in report
+    assert "無法解析" not in report

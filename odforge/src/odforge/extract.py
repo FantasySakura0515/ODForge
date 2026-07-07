@@ -54,6 +54,8 @@ from odforge.ir import (
     contrast_ratio,
 )
 from odforge.themes import THEMES
+from odforge.xmlsafe import SAFE_PARSER as _SAFE_XML_PARSER
+from odforge.xmlsafe import safe_fromstring
 
 # The preset the extractor backfills from when a field can't be confidently
 # determined or fails contrast. Academic is the project default art direction.
@@ -72,23 +74,10 @@ _NS = {
 # drawing-page + font-face-decls; content.xml carries per-page automatic styles.
 _PARTS = ("styles.xml", "content.xml")
 
-# Hardened XML parser for UNTRUSTED input. ``extract_design`` parses
-# attacker-controllable ODF templates ("eat an existing template"), so it must
-# never resolve external entities (an XXE ``file://`` SYSTEM entity would
-# disclose local files — lxml's ``no_network`` default does NOT block local-file
-# entities) and must bound entity expansion (billion-laughs DoS). ODF
-# styles/content never legitimately need custom entity expansion, so disabling it
-# is safe:
-#   * resolve_entities=False — leave entity refs unexpanded (no local-file read),
-#   * load_dtd=False + no_network=True — never load an external DTD,
-#   * huge_tree=False — keep libxml2's built-in entity-expansion / tree-size caps
-#     so a nested-entity bomb raises instead of exhausting memory.
-_SAFE_XML_PARSER = etree.XMLParser(
-    resolve_entities=False,
-    no_network=True,
-    load_dtd=False,
-    huge_tree=False,
-)
+# ``extract_design`` parses attacker-controllable ODF templates ("eat an existing
+# template"), so it parses through the shared hardened parser (no external-entity
+# resolution, bounded expansion). ``_SAFE_XML_PARSER`` is re-exported from the
+# single source of truth in :mod:`odforge.xmlsafe` for white-box tests.
 
 # A colour counts as "chromatic" (an accent candidate, not a grey/near-white/
 # near-black) when the spread between its max and min RGB channel exceeds this.
@@ -148,8 +137,8 @@ def _read_roots(template_path: Path) -> dict[str, etree._Element]:
                 continue
             try:
                 # Untrusted input: parse with the hardened parser (no external
-                # entity resolution, bounded expansion) — see _SAFE_XML_PARSER.
-                roots[part] = etree.fromstring(data, _SAFE_XML_PARSER)
+                # entity resolution, bounded expansion) — see odforge.xmlsafe.
+                roots[part] = safe_fromstring(data)
             except etree.XMLSyntaxError:
                 # A malformed part is skipped; if every part is malformed we
                 # raise below.

@@ -25,6 +25,7 @@ from pathlib import Path
 from lxml import etree
 
 from .validate import find_soffice, run_soffice_convert, validate_odf
+from .xmlsafe import safe_fromstring
 
 # ---------------------------------------------------------------------------
 # Namespaces
@@ -115,7 +116,8 @@ def _style_reference_issues(path: Path) -> tuple[list[str], str | None]:
     refs: set[str] = set()
 
     try:
-        content_root = etree.fromstring(content)
+        # Untrusted input: hardened parse (no external-entity resolution).
+        content_root = safe_fromstring(content)
     except etree.XMLSyntaxError as exc:
         return [], f"content.xml 無法解析:{exc}"
 
@@ -131,7 +133,8 @@ def _style_reference_issues(path: Path) -> tuple[list[str], str | None]:
     styles = _read_part(path, "styles.xml")
     if styles is not None:
         try:
-            styles_root = etree.fromstring(styles)
+            # Untrusted input: hardened parse (no external-entity resolution).
+            styles_root = safe_fromstring(styles)
         except etree.XMLSyntaxError:
             styles_root = None
         if styles_root is not None:
@@ -240,7 +243,8 @@ def _count_docx(docx: Path) -> dict[str, int]:
     data = _read_part(docx, "word/document.xml")
     if data is None:
         raise ValueError("word/document.xml 缺失")
-    root = etree.fromstring(data)
+    # Untrusted input: hardened parse (no external-entity resolution).
+    root = safe_fromstring(data)
 
     paragraphs = len(root.findall(f".//{{{_W_NS}}}p"))
     tables = len(root.findall(f".//{{{_W_NS}}}tbl"))
@@ -266,7 +270,8 @@ def _count_odt(odt: Path) -> dict[str, int]:
     data = _read_part(odt, "content.xml")
     if data is None:
         raise ValueError("content.xml 缺失")
-    root = etree.fromstring(data)
+    # Untrusted input: hardened parse (no external-entity resolution).
+    root = safe_fromstring(data)
     return {
         "paragraph": len(root.findall(f".//{{{_TEXT_NS}}}p")),
         "table": len(root.findall(f".//{{{_TABLE_NS}}}table")),

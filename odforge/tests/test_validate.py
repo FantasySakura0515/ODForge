@@ -126,3 +126,68 @@ def test_soffice_gate_on_valid_file(tmp_path, sample_presentation):
 def test_find_soffice_returns_path_or_none():
     p = find_soffice()
     assert p is None or Path(p).exists()
+
+
+# ---------------------------------------------------------------------------
+# Security: XXE hardening. validate_odf parses attacker-controllable ODF XML
+# (the manifest in the structure gate, every .xml member in the xml gate). Its
+# parser must never resolve external entities (local-file disclosure) nor expand
+# nested entities (billion-laughs DoS) — mirroring extract.py's hardening.
+# ---------------------------------------------------------------------------
+
+# ODF content.xml declaring an external SYSTEM entity (the canonical XXE vector)
+# and referencing it in element text. A hardened parser leaves &xxe; unresolved
+# and never reads the target file; the bare default parser instead raised
+# "Entity not defined", failing the xml gate.
+_XXE_CONTENT_TEMPLATE = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<!DOCTYPE office:document-content [<!ENTITY xxe SYSTEM "{uri}">]>'
+    '<office:document-content '
+    'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+    'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" '
+    'office:version="1.2">'
+    "<office:body><office:presentation>"
+    "<text:p>&xxe;</text:p>"
+    "</office:presentation></office:body>"
+    "</office:document-content>"
+)
+
+
+def test_external_entity_in_xml_gate_is_not_resolved(tmp_path):
+    from odforge.package import ODP_MIMETYPE, write_odf_package
+
+    secret = tmp_path / "secret.txt"
+    marker = "TOPSECRET_validate_9c1f2a"
+    secret.write_text(marker, encoding="utf-8")
+    content = _XXE_CONTENT_TEMPLATE.format(uri=secret.resolve().as_uri())
+    out = tmp_path / "xxe.odp"
+    write_odf_package(out, ODP_MIMETYPE, {"content.xml": content})
+
+    report = validate_odf(out)  # must not raise or hang
+    # (b) the local file's content was never disclosed anywhere in the report.
+    assert marker not in repr(report)
+    # (c) the entity was left unresolved: the doc is well-formed (no external
+    # read, no expansion), so the hardened xml gate passes rather than raising
+    # "Entity not defined" the way the bare parser did.
+    assert report.gates["xml"][0] is True, report.gates["xml"]
+
+
+def test_safe_parser_leaves_external_entity_unresolved(tmp_path):
+    # White-box guard on the shared helper: an external SYSTEM entity must be
+    # left unresolved (not dereferenced), mirroring extract.py's parser test.
+    import lxml.etree as etree
+
+    from odforge.xmlsafe import safe_fromstring
+
+    secret = tmp_path / "secret.txt"
+    marker = "TOPSECRET_helper_7a3d10"
+    secret.write_text(marker, encoding="utf-8")
+    probe = (
+        '<?xml version="1.0"?>'
+        f'<!DOCTYPE r [<!ENTITY e SYSTEM "{secret.resolve().as_uri()}">]>'
+        "<r><c>&e;</c></r>"
+    ).encode("utf-8")
+
+    root = safe_fromstring(probe)  # must not raise or read the file
+    assert root[0].text is None  # entity left unresolved
+    assert marker not in etree.tostring(root).decode("utf-8")
