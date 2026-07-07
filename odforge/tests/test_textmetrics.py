@@ -106,6 +106,27 @@ def test_chart_area_skipped_but_insights_estimated():
     assert not any("chart-area" in m for m in msgs), msgs
 
 
+def test_agenda_items_ignore_nested_children():
+    # The renderer's agenda path (_numbered_items_xml) draws only each item's
+    # top-level text via _line_text — BulletItem children are silently dropped.
+    # The estimator must not charge height the renderer never draws: an agenda
+    # slide with children estimates exactly like the same slide without them.
+    from odforge.textmetrics import _frame_content_height
+    from odforge.themes import LAYOUTS
+
+    items_frame = LAYOUTS["agenda"][1]
+    assert items_frame.role == "items"
+    flat = Slide(layout="agenda", title="議程", bullets=["一", "二"])
+    nested = Slide(
+        layout="agenda",
+        title="議程",
+        bullets=[BulletItem(text="一", children=["子項一", "子項二"]), "二"],
+    )
+    flat_h = _frame_content_height(flat, THEME, items_frame, "agenda")
+    nested_h = _frame_content_height(nested, THEME, items_frame, "agenda")
+    assert nested_h == pytest.approx(flat_h)
+
+
 def test_nested_children_add_height():
     flat = Slide(layout="title-content", title="t", bullets=["一", "二"])
     nested = Slide(

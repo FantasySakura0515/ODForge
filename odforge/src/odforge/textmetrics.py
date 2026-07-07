@@ -197,9 +197,17 @@ def _frame_content_height(
             h += estimate_height_cm(slide.subtitle, theme.body_pt, frame.w)
         return h
 
-    # agenda: numbered items at body_pt with loose-bullet spacing.
+    # agenda: numbered items at body_pt with loose-bullet spacing. The renderer
+    # (_numbered_items_xml) draws only each item's top-level text via _line_text
+    # — BulletItem children are silently dropped — so children are NOT charged.
     if role == "items":
-        return _list_height(lines, theme.body_pt, frame.w)
+        total = 0.0
+        for item in lines:
+            text, _ = _item_text_children(item)
+            total += (
+                estimate_height_cm(text, theme.body_pt, frame.w) + _MARGIN_BOTTOM_CM
+            )
+        return total
 
     # chart insights: a caption-size bullet list.
     if role == "insights":
