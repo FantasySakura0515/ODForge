@@ -195,10 +195,16 @@ def new(
             _err.print(f"[red]FAIL[/red] 內容產生失敗：{_concise(exc)}")
             raise typer.Exit(code=1)
 
-    # --theme only matters for presentations. When given, it always overrides
-    # the LLM's theme; when omitted (None), the LLM's choice is respected.
+    # --theme only matters for presentations. When given, it locks a built-in
+    # preset: the theme is overridden AND any LLM-attached DesignSpec is dropped.
+    # Dropping the design is essential — resolve_design lets a present design win
+    # over p.theme, so leaving it intact would make --theme a silent no-op on the
+    # two-stage path. When omitted (None), the LLM's own choice is respected.
     if doc_type == "presentation" and theme is not None:
-        ir = ir.model_copy(update={"theme": theme.value})
+        dropped_design = ir.design is not None
+        ir = ir.model_copy(update={"theme": theme.value, "design": None})
+        if dropped_design:
+            _err.print("[dim]--theme 指定,已改用預設主題(捨棄 AI 自選設計)[/dim]")
 
     # Soft layout-budget gate: warn (never fail) when a slide's text overruns its
     # frames. The hard enforcement + LLM retry loop is Task 15.2's job; here we

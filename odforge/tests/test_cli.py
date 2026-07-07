@@ -164,6 +164,8 @@ def test_interactive_prints_outline_and_design(tmp_path, monkeypatch, sample_pre
     out = _out(result)
     assert "標題頁" in out  # the outline table rendered a page title
     assert "已取消" in out
+    assert "#1A4B8C" in out  # a palette hex from the design summary appears verbatim
+    assert "presenter" in out  # the narrative mode string appears verbatim
 
 
 def test_mode_override_passes_through(tmp_path, monkeypatch, sample_presentation):
@@ -284,6 +286,42 @@ def test_theme_omitted_respects_llm(tmp_path, monkeypatch, sample_presentation):
     with zipfile.ZipFile(tmp_path / "out.odp") as z:
         styles = z.read("styles.xml").decode("utf-8")
     assert THEMES["dark"].bg in styles
+
+
+def test_theme_override_discards_deck_design(tmp_path, monkeypatch, sample_presentation):
+    # An explicit --theme locks a built-in preset: it must win over any
+    # DesignSpec the two-stage pipeline attached, otherwise resolve_design lets
+    # the design's palette win and --theme is a silent no-op. Here the deck
+    # carries a dark-ish design (bg #171826); --theme academic must drop it, so
+    # styles.xml shows the academic bg, not the design's, plus a discard note.
+    from odforge.ir import DesignSpec, FontPair, Palette
+    from odforge.themes import THEMES
+
+    design = DesignSpec(
+        palette=Palette(
+            bg="#171826",
+            surface="#252842",
+            text="#E8EAF2",
+            muted="#9BA0C4",
+            accent="#3DD6E6",
+        ),
+        fonts=FontPair(display="Noto Sans TC", body="Noto Sans TC"),
+        scale="standard",
+        mode="presenter",
+    )
+    designed = sample_presentation.model_copy(update={"design": design})
+    assert designed.design is not None
+    _mock_two_stage(monkeypatch, designed)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["new", "做簡報", "-o", "out.odp", "--theme", "academic", "--no-soffice"]
+    )
+    assert result.exit_code == 0, _out(result)
+    with zipfile.ZipFile(tmp_path / "out.odp") as z:
+        styles = z.read("styles.xml").decode("utf-8")
+    assert THEMES["academic"].bg in styles
+    assert "#171826" not in styles  # the discarded design's bg must not leak in
+    assert "捨棄 AI 自選設計" in _out(result)  # informational discard note
 
 
 def test_over_budget_deck_warns_but_exits_0(tmp_path, monkeypatch):
