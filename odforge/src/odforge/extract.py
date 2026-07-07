@@ -72,6 +72,24 @@ _NS = {
 # drawing-page + font-face-decls; content.xml carries per-page automatic styles.
 _PARTS = ("styles.xml", "content.xml")
 
+# Hardened XML parser for UNTRUSTED input. ``extract_design`` parses
+# attacker-controllable ODF templates ("eat an existing template"), so it must
+# never resolve external entities (an XXE ``file://`` SYSTEM entity would
+# disclose local files — lxml's ``no_network`` default does NOT block local-file
+# entities) and must bound entity expansion (billion-laughs DoS). ODF
+# styles/content never legitimately need custom entity expansion, so disabling it
+# is safe:
+#   * resolve_entities=False — leave entity refs unexpanded (no local-file read),
+#   * load_dtd=False + no_network=True — never load an external DTD,
+#   * huge_tree=False — keep libxml2's built-in entity-expansion / tree-size caps
+#     so a nested-entity bomb raises instead of exhausting memory.
+_SAFE_XML_PARSER = etree.XMLParser(
+    resolve_entities=False,
+    no_network=True,
+    load_dtd=False,
+    huge_tree=False,
+)
+
 # A colour counts as "chromatic" (an accent candidate, not a grey/near-white/
 # near-black) when the spread between its max and min RGB channel exceeds this.
 _CHROMA_MIN = 28
@@ -129,7 +147,9 @@ def _read_roots(template_path: Path) -> dict[str, etree._Element]:
             except (KeyError, zipfile.BadZipFile):
                 continue
             try:
-                roots[part] = etree.fromstring(data)
+                # Untrusted input: parse with the hardened parser (no external
+                # entity resolution, bounded expansion) — see _SAFE_XML_PARSER.
+                roots[part] = etree.fromstring(data, _SAFE_XML_PARSER)
             except etree.XMLSyntaxError:
                 # A malformed part is skipped; if every part is malformed we
                 # raise below.
