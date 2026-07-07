@@ -10,10 +10,13 @@ dependencies = [
   "PyMuPDF>=1.24",
 ]
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "httpx>=0.27"]
 # Vision critic (Task 16.2). Imported lazily inside critic.py's claude backend,
 # so it is never required to import the package or run the off/ollama paths.
 vision = ["anthropic>=0.40"]
+# Web API (Task 18.1). Imported only by webapi.py / the `serve` command, never at
+# package import — the core suite runs without these installed.
+web = ["fastapi>=0.110", "uvicorn>=0.29", "sse-starlette>=2.0"]
 [project.scripts]
 odforge = "odforge.cli:app"
 [build-system]

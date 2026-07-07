@@ -361,6 +361,37 @@ def new(
 
 
 @app.command()
+def serve(
+    host: str = typer.Option(
+        "127.0.0.1", "--host", help="伺服器綁定的位址（本機工具預設 127.0.0.1）。"
+    ),
+    port: int = typer.Option(8000, "--port", help="伺服器連接埠。"),
+) -> None:
+    """啟動 ODForge Web API 伺服器（FastAPI + SSE），供前端控制台驅動兩段式生成。
+
+    需安裝 web 相依：``pip install "odforge[web]"``。fastapi / uvicorn /
+    sse-starlette 只在此指令內延遲載入，核心套件不因它們而變重。
+    """
+    try:
+        import uvicorn
+
+        from odforge.webapi import create_app
+    except ImportError as exc:  # noqa: BLE001 - concise message, no traceback
+        _err.print(
+            "[red]FAIL[/red] 缺少 web 相依，請先安裝："
+            "[cyan]pip install \"odforge[web]\"[/cyan]"
+            f"（{_concise(exc)}）"
+        )
+        raise typer.Exit(code=1)
+
+    _out.print(
+        f"[green]ODForge Web API[/green] 啟動於 http://{escape(host)}:{port}  "
+        "（Ctrl+C 結束）"
+    )
+    uvicorn.run(create_app(), host=host, port=port)
+
+
+@app.command()
 def check(
     file: Path = typer.Argument(
         ..., help="要檢測的檔案；.odt/.odp/.ods 做 ODF 檢測，.docx 做結構比對。"
