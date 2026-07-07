@@ -133,6 +133,20 @@ LAYOUTS: dict[str, list[Frame]] = {
 }
 
 
+# Layout / role sets shared by the renderer (render.odp) and the budget gate
+# (textmetrics). Kept here — the single source both modules import — so a future
+# layout change can never let the two drift apart (which would silently diverge
+# the budget estimate from what the renderer actually draws).
+#
+# Layouts whose title frame renders "bare": no kicker eyebrow, no page-number /
+# footer furniture (the opening title, the full-accent section divider, and the
+# inverted closing page).
+PLAIN_LAYOUTS: frozenset[str] = frozenset({"title", "section", "closing"})
+# Frame roles whose (left-aligned) multi-item content renders as a semantic
+# bullet list; centred frames (e.g. the big-fact caption) stay bare paragraphs.
+LIST_ROLES: frozenset[str] = frozenset({"bullets", "left", "right"})
+
+
 _STANDARD = SCALES["standard"]
 
 

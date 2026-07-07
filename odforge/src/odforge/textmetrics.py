@@ -32,7 +32,7 @@ from __future__ import annotations
 import math
 
 from odforge.ir import BulletItem, Slide
-from odforge.themes import LAYOUTS, Frame, Theme
+from odforge.themes import LAYOUTS, LIST_ROLES, PLAIN_LAYOUTS, Frame, Theme
 
 # ── constants ──────────────────────────────────────────────────────────────
 # Points → centimetres (1pt = 1/72in, 1in = 2.54cm ⇒ 0.035277…; rounded).
@@ -54,11 +54,9 @@ _LEVEL2_NARROW_CM = 1.0
 # Small on purpose: the gate should fire on real overruns, not hairline ones.
 _FRAME_PADDING_CM = 0.2
 
-# Layouts whose title frame renders "bare" (no kicker eyebrow) — mirrors
-# render.odp._PLAIN_LAYOUTS, which gates the kicker paragraph.
-_PLAIN_LAYOUTS = frozenset({"title", "section", "closing"})
-# Roles the renderer draws as a semantic bullet list when left-aligned.
-_LIST_ROLES = frozenset({"bullets", "left", "right"})
+# PLAIN_LAYOUTS (bare title frames) and LIST_ROLES (semantic bullet lists) are
+# imported from odforge.themes — the single source shared with render.odp so the
+# budget gate can never drift from what the renderer actually draws.
 
 # CJK / full-width Unicode blocks charged a full em. Kept deliberately small and
 # documented rather than exhaustive (the brief's "keep it simple"):
@@ -225,12 +223,12 @@ def _frame_content_height(
     # content-page title: optional kicker eyebrow (caption_pt) + title (size_pt).
     if role == "title":
         h = 0.0
-        if slide.kicker and layout not in _PLAIN_LAYOUTS:
+        if slide.kicker and layout not in PLAIN_LAYOUTS:
             h += estimate_height_cm(slide.kicker, theme.caption_pt, frame.w)
         return h + _plain_height(lines, frame.size_pt, frame.w)
 
     # standard semantic list (title-content bullets, two-col columns).
-    if role in _LIST_ROLES and not frame.center:
+    if role in LIST_ROLES and not frame.center:
         return _list_height(lines, frame.size_pt, frame.w)
 
     # bare centred / single-line text (subtitle, fact, quote, attribution,

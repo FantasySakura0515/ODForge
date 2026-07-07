@@ -19,7 +19,17 @@ from xml.sax.saxutils import escape
 
 from odforge.ir import BulletItem, ChartSpec, Presentation, Slide
 from odforge.package import ODP_MIMETYPE, write_odf_package
-from odforge.themes import LAYOUTS, PAGE_H, PAGE_W, THEMES, Frame, Theme, resolve_design
+from odforge.themes import (
+    LAYOUTS,
+    LIST_ROLES,
+    PAGE_H,
+    PAGE_W,
+    PLAIN_LAYOUTS,
+    THEMES,
+    Frame,
+    Theme,
+    resolve_design,
+)
 
 # ---------------------------------------------------------------------------
 # Namespace declarations
@@ -57,9 +67,8 @@ _NOTES_SIZE_PT = 14
 
 # Task 13.3: master pages, inverted section pages, accent system.
 #
-# Layouts that render "bare" (no page-number/footer/kicker furniture): the
-# opening title, the full-accent section divider, and the inverted closing page.
-_PLAIN_LAYOUTS = frozenset({"title", "section", "closing"})
+# PLAIN_LAYOUTS (layouts rendered "bare": no page-number/footer/kicker furniture)
+# is imported from odforge.themes — the single source shared with textmetrics.
 # Layouts painted with a full-bleed accent background (inverted pages): the
 # section divider and the closing page. The giant chapter-number watermark is
 # gated on layout=="section" specifically (closing pages must not display or
@@ -120,9 +129,9 @@ _LIST_STYLE_NAME = "L1"
 _BULLET_LINE_HEIGHT = "145%"
 _BULLET_MARGIN_BOTTOM = "0.35cm"
 _KICKER_LETTER_SPACING = "0.15cm"
-# Frame roles whose (left-aligned) multi-item content renders as a bullet list.
-# Centred frames (e.g. the big-fact caption) stay bare centred paragraphs.
-_LIST_ROLES = frozenset({"bullets", "left", "right"})
+# LIST_ROLES (frame roles whose left-aligned multi-item content renders as a
+# semantic bullet list) is imported from odforge.themes — the single source
+# shared with textmetrics. Centred frames stay bare centred paragraphs.
 # Per bullet level: (text:level, space-before cm, min-label-width cm). Level 2
 # indents deeper so nested items read as a sub-list.
 _LIST_LEVELS: tuple[tuple[int, float, float], ...] = (
@@ -989,7 +998,7 @@ def _page_xml(
 ) -> str:
     """Build one ``draw:page`` for a slide, registering its paragraph styles.
 
-    Master page + drawing-page style are chosen by layout: :data:`_PLAIN_LAYOUTS`
+    Master page + drawing-page style are chosen by layout: :data:`PLAIN_LAYOUTS`
     use the furniture-free "Plain" master, and :data:`_ACCENT_BG_LAYOUTS` swap in
     the full-accent drawing-page style. Content-page titles gain a vertical accent
     bar (and an optional ``kicker`` eyebrow); ``fact`` text is up-sized to display
@@ -1103,7 +1112,7 @@ def _page_xml(
         # Content-page title: optional vertical accent bar + optional kicker
         # eyebrow (accent, letter-spaced) rendered above the title text.
         if role == "title":
-            if layout not in _PLAIN_LAYOUTS:
+            if layout not in PLAIN_LAYOUTS:
                 bar_style = graphics.name_for_fill(theme.accent)
                 parts.append(
                     _rect_xml(
@@ -1115,7 +1124,7 @@ def _page_xml(
             color = theme.bg if layout in _ACCENT_BG_LAYOUTS else theme.title_color
             title_style = styles.name_for(frame.size_pt, frame.bold, frame.center, color)
             inner = ""
-            if slide.kicker and layout not in _PLAIN_LAYOUTS:
+            if slide.kicker and layout not in PLAIN_LAYOUTS:
                 inner += _kicker_paragraph_xml(slide.kicker, styles, theme)
             inner += "".join(
                 f'<text:p text:style-name="{_attr(title_style)}">'
@@ -1126,7 +1135,7 @@ def _page_xml(
             continue
 
         # Standard semantic list (title-content bullets, two-col columns).
-        if role in _LIST_ROLES and not frame.center:
+        if role in LIST_ROLES and not frame.center:
             inner = _list_xml(
                 lines,
                 styles,
@@ -1161,7 +1170,7 @@ def _page_xml(
         notes_style = styles.name_for(_NOTES_SIZE_PT, False, False, theme.text_color)
         parts.append(_notes_xml(slide.notes, notes_style))
 
-    master = _PLAIN_MASTER_NAME if layout in _PLAIN_LAYOUTS else _MASTER_PAGE_NAME
+    master = _PLAIN_MASTER_NAME if layout in PLAIN_LAYOUTS else _MASTER_PAGE_NAME
     dp_style = (
         _SECTION_DRAWING_PAGE_STYLE
         if layout in _ACCENT_BG_LAYOUTS
