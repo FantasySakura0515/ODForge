@@ -12,7 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from odforge import llm
-from odforge.ir import Outline, PageRole, Presentation
+from odforge.ir import BulletItem, Outline, PageRole, Presentation
 
 
 # ---------------------------------------------------------------------------
@@ -482,3 +482,310 @@ def test_generate_outline_facade_uses_backend(monkeypatch):
     result = llm.generate_outline("x")
     assert isinstance(result, Outline)
     assert result.design is not None
+
+
+# ---------------------------------------------------------------------------
+# Task 15.2 — generate_slides (stage-2: fill pages + layout-budget feedback)
+# ---------------------------------------------------------------------------
+
+# A two-page outline (no design → preset "academic"): title + title-content.
+_SLIDES_OUTLINE = Outline.model_validate(
+    {
+        "mode": "presenter",
+        "pages": [
+            {"role": "title", "title": "光合作用", "gist": "開場,點出主題"},
+            {"role": "title-content", "title": "反應原理", "gist": "光反應與暗反應"},
+        ],
+    }
+)
+
+# Same outline but carrying a validated DesignSpec (to prove design carries over).
+_SLIDES_OUTLINE_DESIGNED = Outline.model_validate(
+    {
+        "mode": "presenter",
+        "design": {
+            "palette": _GOOD_PALETTE,
+            "fonts": _GOOD_FONTS,
+            "scale": "display",
+            "mode": "presenter",
+        },
+        "pages": [
+            {"role": "title", "title": "光合作用", "gist": "開場"},
+            {"role": "title-content", "title": "反應原理", "gist": "兩階段"},
+        ],
+    }
+)
+
+# A structurally matching deck whose text comfortably fits (no design in payload —
+# the outline's design, if any, is re-attached by generate_slides).
+_FITTING_DECK = {
+    "title": "光合作用入門",
+    "slides": [
+        {"layout": "title", "title": "光合作用", "subtitle": "生物", "notes": "開場白"},
+        {
+            "layout": "title-content",
+            "title": "反應原理",
+            "bullets": ["光反應", "暗反應"],
+            "notes": "講述兩階段",
+        },
+    ],
+}
+
+# 48-CJK-char bullet × 10 → the title-content page overruns its 11cm frame.
+_LONG_BULLET = "版面預算測試" * 8  # 6 chars × 8 = 48 chars
+_OVERLOADED_DECK = {
+    "title": "光合作用入門",
+    "slides": [
+        {"layout": "title", "title": "光合作用", "notes": "開場"},
+        {
+            "layout": "title-content",
+            "title": "反應原理",
+            "bullets": [_LONG_BULLET] * 10,
+            "notes": "細節",
+        },
+    ],
+}
+
+# Structurally matching count, but the first slide's layout is wrong (section vs
+# the outline's title role) → a structural mismatch, must retry-then-raise.
+_WRONG_LAYOUT_DECK = {
+    "title": "壞版型",
+    "slides": [
+        {"layout": "section", "title": "光合作用", "notes": "n"},
+        {"layout": "title-content", "title": "反應原理", "bullets": ["a"], "notes": "n"},
+    ],
+}
+
+# A single title-content bullet with 8 children → overruns; dropping children
+# (not the whole item) is enough to make it fit.
+_CHILD_HEAVY_DECK = {
+    "title": "巢狀",
+    "slides": [
+        {"layout": "title", "title": "光合作用", "notes": "n"},
+        {
+            "layout": "title-content",
+            "title": "細節",
+            "bullets": [
+                {
+                    "text": "主要要點",
+                    "children": [
+                        "子項一",
+                        "子項二",
+                        "子項三",
+                        "子項四",
+                        "子項五",
+                        "子項六",
+                        "子項七",
+                        "子項八",
+                    ],
+                }
+            ],
+            "notes": "n",
+        },
+    ],
+}
+
+
+def _user_text(messages) -> str:
+    """Join only the role=='user' message contents (assert on user turns only)."""
+    return " ".join(m["content"] for m in messages if m["role"] == "user")
+
+
+# ① valid return → Presentation, design carried from the Outline
+def test_generate_slides_carries_design_from_outline(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_FITTING_DECK))]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    result = backend.generate_slides(_SLIDES_OUTLINE_DESIGNED)
+    assert isinstance(result, Presentation)
+    assert [s.layout for s in result.slides] == ["title", "title-content"]
+    # design comes from the outline, not from the (design-less) payload
+    assert result.design is not None
+    assert result.design.scale == "display"
+    assert result.design.palette.accent == _GOOD_PALETTE["accent"]
+    assert len(client.completions.calls) == 1  # fits first try, no retry
+
+
+def test_generate_slides_valid_roundtrip_no_design(monkeypatch):
+    backend = _backend(monkeypatch, [_make_response(json.dumps(_FITTING_DECK))])
+    result = backend.generate_slides(_SLIDES_OUTLINE)
+    assert isinstance(result, Presentation)
+    assert result.design is None  # outline had none → preset fallback
+    assert [s.layout for s in result.slides] == ["title", "title-content"]
+
+
+# ② one page over budget → second call's USER message names the page and 超載
+def test_generate_slides_over_budget_feeds_back_page(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch,
+        [
+            _make_response(json.dumps(_OVERLOADED_DECK)),  # page 2 overruns
+            _make_response(json.dumps(_FITTING_DECK)),  # shortened deck fits
+        ],
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    result = backend.generate_slides(_SLIDES_OUTLINE)
+    assert len(client.completions.calls) == 2  # exactly one budget retry
+    combined = _user_text(client.completions.calls[1]["messages"])
+    assert "超載" in combined
+    assert "第 2 頁" in combined
+    # the fitting retry deck is what we return
+    assert result.slides[1].bullets == ["光反應", "暗反應"]
+    # ...and 超載 never leaks into the *first* call's user turn (retry-only)
+    assert "超載" not in _user_text(client.completions.calls[0]["messages"])
+
+
+# ③ both attempts over budget → the offending page's bullets are truncated and
+#    a note records the omission (never raises for budget)
+def test_generate_slides_both_over_budget_degrades(monkeypatch):
+    from odforge.textmetrics import check_budget
+    from odforge.themes import resolve_design
+
+    client = _install_fake_openai(
+        monkeypatch,
+        [
+            _make_response(json.dumps(_OVERLOADED_DECK)),
+            _make_response(json.dumps(_OVERLOADED_DECK)),
+        ],
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    result = backend.generate_slides(_SLIDES_OUTLINE)
+    assert len(client.completions.calls) == 2  # one budget retry, no more
+    slide = result.slides[1]
+    assert 1 <= len(slide.bullets) < 10  # truncated from the end, ≥1 kept
+    assert "部分要點因版面限制省略" in slide.notes
+    # degradation actually resolved the overflow
+    assert check_budget(slide, resolve_design(result)) == []
+
+
+def test_generate_slides_degrade_drops_children_first(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch,
+        [
+            _make_response(json.dumps(_CHILD_HEAVY_DECK)),
+            _make_response(json.dumps(_CHILD_HEAVY_DECK)),
+        ],
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    result = backend.generate_slides(_SLIDES_OUTLINE)
+    slide = result.slides[1]
+    # whole item kept; only a child was shed (children dropped before items)
+    assert len(slide.bullets) == 1
+    assert isinstance(slide.bullets[0], BulletItem)
+    assert len(slide.bullets[0].children) < 8
+    assert "部分要點因版面限制省略" in slide.notes
+
+
+# layout-mismatch: retry once, then raise
+def test_generate_slides_layout_mismatch_retries_then_raises(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch,
+        [
+            _make_response(json.dumps(_WRONG_LAYOUT_DECK)),
+            _make_response(json.dumps(_WRONG_LAYOUT_DECK)),
+        ],
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    with pytest.raises(RuntimeError):
+        backend.generate_slides(_SLIDES_OUTLINE)
+    assert len(client.completions.calls) == 2
+    # the retry fed the mismatch back on the user turn
+    combined = _user_text(client.completions.calls[1]["messages"])
+    assert "版型" in combined and "第 1 頁" in combined
+
+
+def test_generate_slides_layout_mismatch_recovers_on_retry(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch,
+        [
+            _make_response(json.dumps(_WRONG_LAYOUT_DECK)),
+            _make_response(json.dumps(_FITTING_DECK)),
+        ],
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    result = backend.generate_slides(_SLIDES_OUTLINE)
+    assert [s.layout for s in result.slides] == ["title", "title-content"]
+    assert len(client.completions.calls) == 2
+
+
+def test_generate_slides_count_mismatch_retries_then_raises(monkeypatch):
+    one_slide = {
+        "title": "少一張",
+        "slides": [{"layout": "title", "title": "光合作用", "notes": "n"}],
+    }
+    client = _install_fake_openai(
+        monkeypatch,
+        [
+            _make_response(json.dumps(one_slide)),
+            _make_response(json.dumps(one_slide)),
+        ],
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    with pytest.raises(RuntimeError):
+        backend.generate_slides(_SLIDES_OUTLINE)
+    assert len(client.completions.calls) == 2
+
+
+def test_generate_slides_no_tool_call_raises(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(None), _make_response(None)]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    with pytest.raises(RuntimeError):
+        backend.generate_slides(_SLIDES_OUTLINE)
+    assert len(client.completions.calls) == 2
+
+
+def test_generate_slides_tool_choice_and_schema_sent(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_FITTING_DECK))]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    backend.generate_slides(_SLIDES_OUTLINE)
+    call = client.completions.calls[0]
+    assert call["tool_choice"] == {
+        "type": "function",
+        "function": {"name": llm.SLIDES_TOOL_NAME},
+    }
+    assert call["tools"][0]["function"]["name"] == llm.SLIDES_TOOL_NAME
+    assert call["tools"][0]["function"]["parameters"] == Presentation.model_json_schema()
+
+
+def test_generate_slides_max_tokens_default_16384(monkeypatch):
+    monkeypatch.delenv("ODFORGE_MAX_TOKENS", raising=False)
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_FITTING_DECK))]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    backend.generate_slides(_SLIDES_OUTLINE)
+    assert client.completions.calls[0]["max_tokens"] == 16384
+
+
+def test_generate_slides_max_tokens_env_override(monkeypatch):
+    monkeypatch.setenv("ODFORGE_MAX_TOKENS", "5000")
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_FITTING_DECK))]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    backend.generate_slides(_SLIDES_OUTLINE)
+    assert client.completions.calls[0]["max_tokens"] == 5000
+
+
+def test_generate_ir_still_defaults_8192(monkeypatch):
+    # the 16384 bump is stage-2 only: generate_ir must stay untouched at 8192.
+    monkeypatch.delenv("ODFORGE_MAX_TOKENS", raising=False)
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_VALID_PRESENTATION))]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    backend.generate_ir("x", "presentation")
+    assert client.completions.calls[0]["max_tokens"] == 8192
+
+
+def test_generate_slides_facade_uses_backend(monkeypatch):
+    _install_fake_openai(monkeypatch, [_make_response(json.dumps(_FITTING_DECK))])
+    monkeypatch.setenv("ODFORGE_BACKEND", "ollama")
+    result = llm.generate_slides(_SLIDES_OUTLINE)
+    assert isinstance(result, Presentation)
+    assert [s.layout for s in result.slides] == ["title", "title-content"]

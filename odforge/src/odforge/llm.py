@@ -20,7 +20,16 @@ import json_repair
 from openai import OpenAI
 from pydantic import ValidationError
 
-from odforge.ir import Outline, Presentation, Spreadsheet, TextDoc, parse_ir
+from odforge.ir import (
+    BulletItem,
+    Outline,
+    Presentation,
+    Spreadsheet,
+    TextDoc,
+    parse_ir,
+)
+from odforge.textmetrics import check_budget
+from odforge.themes import Theme, resolve_design
 
 Document = Union[TextDoc, Presentation, Spreadsheet]
 
@@ -109,6 +118,44 @@ title、agenda、section、title-content、two-col、comparison、big-fact、quo
 請據此輸出一份「設計已定案、骨架已排好」的大綱。"""
 
 
+SLIDES_TOOL_NAME = "emit_slides"
+
+SLIDES_SYSTEM_PROMPT = """\
+你是 ODForge 的簡報撰稿人,負責兩段式流程的第二段:大綱與美術方向都已定案,
+你要「逐頁填內容」,把每一頁的角色(role)實作成一張完整的投影片(Slide)。
+
+【語言】
+- 一律以繁體中文(zh-TW)撰寫,用詞、標點皆採台灣慣用寫法。
+
+【輸出方式】
+- 只透過 emit_slides 工具輸出結果,不要輸出任何一般文字。
+- 產出必須完全符合工具參數的 JSON Schema,且為嚴格合法的 JSON(所有字串以雙引號包裹)。
+- 投影片的「張數」與「每一頁的版型(layout)」必須與大綱完全一致、逐頁對齊,
+  不得增刪、不得改動順序、不得換版型。
+
+【蒸餾鐵則(依講述型態 mode)】
+- presenter(講者型):每一條 bullet ≤ 16 字、每頁 ≤ 4 條;靠大字與口述,寧缺勿雜。
+- detailed(自讀型):每一條 bullet ≤ 30 字、每頁 ≤ 6 條;文字可完整、能獨立閱讀。
+- 內容文字裡「不要」寫出版型名稱(如「title-content」「two-col」),
+  那是給引擎看的,不是給讀者看的。
+
+【各版型填寫要點】
+- title / section / closing:標題精煉;closing 以 title 欄寫收尾語。
+- agenda:items 逐條對應大綱各分節(section)的標題,順序一致。
+- title-content:bullets 逐條列重點,必要時用巢狀 children 補一層次要細節。
+- two-col:left / right 兩欄各放各自的重點。
+- comparison:left[0] 與 right[0] 是兩欄的「欄位標題」,其後才是各欄內容。
+- big-fact:fact 放關鍵數據或一句重話,bullets 放一行輔助說明。
+- quote:quote 放引言原文,attribution 放出處。
+- chart:chart 欄必須給「真數據」——labels 與 values 一一對應,
+  數據來源是該頁 gist 或使用者需求,不可捏造。
+
+【講者備忘稿】
+- 每一張投影片都必須填寫 notes(講者備忘稿),說明這頁怎麼講與延伸重點,不可留空。
+
+請依大綱逐頁填出完整、精簡、可直接上台的投影片內容。"""
+
+
 @runtime_checkable
 class LLMBackend(Protocol):
     """A source that turns a prompt into a validated Document IR."""
@@ -117,6 +164,9 @@ class LLMBackend(Protocol):
         ...
 
     def generate_outline(self, prompt: str) -> Outline:  # pragma: no cover
+        ...
+
+    def generate_slides(self, outline: Outline) -> Presentation:  # pragma: no cover
         ...
 
 
@@ -167,6 +217,131 @@ def _outline_parses_without_design(data: dict) -> bool:
         return True
     except ValidationError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Stage-2 (generate_slides) helpers: outline → prompt, structural + budget gates
+# ---------------------------------------------------------------------------
+
+
+def _render_outline_for_prompt(outline: Outline) -> str:
+    """Serialize an outline into a page-numbered brief for the stage-2 prompt."""
+    lines: list[str] = []
+    if outline.mode == "presenter":
+        lines.append("【講述型態】presenter(講者型):每條 bullet ≤ 16 字、每頁 ≤ 4 條。")
+    else:
+        lines.append("【講述型態】detailed(自讀型):每條 bullet ≤ 30 字、每頁 ≤ 6 條。")
+    if outline.design is not None:
+        d = outline.design
+        pal = d.palette
+        lines.append(
+            f"【美術方向】scale={d.scale};display 字體={d.fonts.display}、"
+            f"body 字體={d.fonts.body};色盤 bg={pal.bg}/surface={pal.surface}/"
+            f"text={pal.text}/muted={pal.muted}/accent={pal.accent}"
+        )
+    else:
+        lines.append("【美術方向】未指定(引擎將套用預設主題)。")
+    lines.append("【頁面大綱】請「逐頁」填內容;張數與每頁版型(layout)必須與下列完全一致:")
+    for i, page in enumerate(outline.pages, start=1):
+        lines.append(
+            f"  第 {i} 頁 | 版型(layout)={page.role} | 標題={page.title} | "
+            f"這頁要點(gist):{page.gist}"
+        )
+    return "\n".join(lines)
+
+
+def _slides_user_content(outline: Outline) -> str:
+    """The base user turn for stage-2: the instruction plus the outline brief."""
+    return (
+        "請根據以下「已定案」的大綱與美術方向,逐頁填出完整的投影片內容,"
+        "並透過 emit_slides 工具回傳整份簡報:\n\n" + _render_outline_for_prompt(outline)
+    )
+
+
+def _with_error_feedback(base: str, error_summary: Optional[str]) -> str:
+    """Append a structural-error retry hint to ``base`` (no-op when None)."""
+    if error_summary is None:
+        return base
+    return (
+        f"{base}\n\n[系統提示] 上一次的輸出無法通過驗證,錯誤如下,請修正後重新輸出:\n"
+        f"{error_summary}"
+    )
+
+
+def _slides_structure_errors(pres: Presentation, outline: Outline) -> Optional[str]:
+    """Return a zh-TW summary if the deck's shape drifts from the outline, else None.
+
+    Enforces the two structural invariants: the slide count equals the outline's
+    page count, and each ``slide.layout`` matches the outline's role at that index.
+    """
+    expected = [page.role for page in outline.pages]
+    got = pres.slides
+    problems: list[str] = []
+    if len(got) != len(expected):
+        problems.append(
+            f"投影片張數不符:大綱共 {len(expected)} 頁,但收到 {len(got)} 張——"
+            "必須逐頁對齊,不得增刪。"
+        )
+    for i, (slide, role) in enumerate(zip(got, expected), start=1):
+        if slide.layout != role:
+            problems.append(
+                f"第 {i} 頁版型不符:大綱要求 layout「{role}」,但收到「{slide.layout}」。"
+            )
+    return " ".join(problems) if problems else None
+
+
+def _budget_overloads(pres: Presentation, theme: Theme) -> list[tuple[int, list[str]]]:
+    """List ``(page_number, messages)`` for every slide that overruns its frames."""
+    overloads: list[tuple[int, list[str]]] = []
+    for i, slide in enumerate(pres.slides, start=1):
+        msgs = check_budget(slide, theme)
+        if msgs:
+            overloads.append((i, msgs))
+    return overloads
+
+
+def _budget_feedback(overloads: list[tuple[int, list[str]]]) -> str:
+    """One retry turn naming the overloaded pages and asking to shorten only them."""
+    header = (
+        "下列頁面的文字超出版面(超載)。請「只」精簡這些頁面——縮短字數或減少每頁條數,"
+        "其餘頁面維持不變——並重新輸出「完整」的簡報:"
+    )
+    lines = [f"第 {n} 頁超載:{' '.join(msgs)}" for n, msgs in overloads]
+    return header + "\n" + "\n".join(lines)
+
+
+def _degrade_slide(slide, theme: Theme) -> None:
+    """Truncate an over-budget slide's bullets in place until it fits.
+
+    Algorithm — repeat while :func:`check_budget` still complains:
+      1. If any bullet is a ``BulletItem`` carrying children, drop the **last**
+         child of the last such bullet (children are finer-grained than items).
+      2. Otherwise, if more than one bullet remains, drop the last bullet.
+      3. Otherwise stop (always keep at least one bullet).
+    If (and only if) anything was dropped, append an honesty note to ``notes``.
+    A slide that overruns on a non-bullet frame (e.g. a very long title) has no
+    bullets to shed — it is left as-is; budget never raises.
+    """
+    dropped = False
+    while check_budget(slide, theme):
+        child_idx: Optional[int] = None
+        for i in range(len(slide.bullets) - 1, -1, -1):
+            item = slide.bullets[i]
+            if isinstance(item, BulletItem) and item.children:
+                child_idx = i
+                break
+        if child_idx is not None:
+            item = slide.bullets[child_idx]
+            item.children = list(item.children)[:-1]
+            dropped = True
+        elif len(slide.bullets) > 1:
+            slide.bullets = list(slide.bullets)[:-1]
+            dropped = True
+        else:
+            break
+    if dropped:
+        note = "(部分要點因版面限制省略)"
+        slide.notes = f"{slide.notes}\n{note}" if slide.notes else note
 
 
 class OpenAICompatBackend:
@@ -339,6 +514,137 @@ class OpenAICompatBackend:
         assert last_exc is not None
         raise last_exc
 
+    def _emit_slides(
+        self,
+        messages: list,
+        outline: Outline,
+        tools: list,
+        tool_choice: dict,
+    ) -> tuple[Optional[Presentation], Optional[Exception]]:
+        """One stage-2 LLM round.
+
+        Returns ``(Presentation, None)`` when the call yields a structurally
+        valid deck (outline's design re-attached, slide count + layouts aligned),
+        otherwise ``(None, exc)`` whose ``str(exc)`` is fed back as the retry hint.
+        """
+        resp = self._client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            # Stage-2 fills every page, so it defaults higher than the one-shot
+            # generate_ir/generate_outline paths (8192). Env override still wins.
+            max_tokens=int(os.environ.get("ODFORGE_MAX_TOKENS", "16384")),
+        )
+
+        tool_calls = resp.choices[0].message.tool_calls
+        if not tool_calls:
+            return None, RuntimeError(
+                "模型未透過 emit_slides 工具輸出,請務必以該工具回傳完整簡報。"
+            )
+
+        try:
+            data = _loads_tool_args(tool_calls[0].function.arguments)
+        except (json.JSONDecodeError, TypeError) as exc:
+            return None, exc
+
+        data["type"] = "presentation"
+        # Art direction comes from stage 1, not from whatever the model returns.
+        data["design"] = (
+            outline.design.model_dump(mode="json")
+            if outline.design is not None
+            else None
+        )
+
+        try:
+            pres = Presentation.model_validate(data)
+        except ValidationError as exc:
+            return None, exc
+
+        structural = _slides_structure_errors(pres, outline)
+        if structural is not None:
+            return None, RuntimeError(structural)
+        return pres, None
+
+    def generate_slides(self, outline: Outline) -> Presentation:
+        """Stage-2 of the pipeline: fill every outline page into a full deck.
+
+        ONE LLM call fills all pages against ``Presentation.model_json_schema()``
+        (chosen over a slides-only sub-schema for parity with ``generate_ir``);
+        the outline's ``design`` is always re-attached so art direction comes
+        from stage 1. Two gates then guard the result:
+
+        * **Structural consistency** — the returned slide count and each
+          ``slide.layout`` must match the outline's page roles, index-for-index.
+          A mismatch (or an unparseable / schema-invalid payload) is fed back and
+          retried once, then raised.
+        * **Layout budget** — every slide is run through :func:`check_budget`.
+          Overloaded pages are fed back exactly once ("第 N 頁超載:…") asking the
+          model to shorten *only* those pages and return the full deck. If any
+          page is still over budget afterwards it is **auto-degraded**
+          (:func:`_degrade_slide` truncates its bullets with an honesty note) —
+          budget never raises.
+        """
+        schema = Presentation.model_json_schema()
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": SLIDES_TOOL_NAME,
+                    "description": "輸出填好每頁內容的完整簡報(Presentation)",
+                    "parameters": schema,
+                },
+            }
+        ]
+        tool_choice = {"type": "function", "function": {"name": SLIDES_TOOL_NAME}}
+        base_user = _slides_user_content(outline)
+
+        # -- Gate 1: obtain a structurally valid deck (retry once, then raise) --
+        error_summary: Optional[str] = None
+        last_exc: Optional[Exception] = None
+        presentation: Optional[Presentation] = None
+        for _attempt in range(2):
+            messages = [
+                {"role": "system", "content": SLIDES_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": _with_error_feedback(base_user, error_summary),
+                },
+            ]
+            pres, exc = self._emit_slides(messages, outline, tools, tool_choice)
+            if pres is not None:
+                presentation = pres
+                break
+            last_exc = exc
+            error_summary = str(exc)
+        if presentation is None:
+            assert last_exc is not None
+            raise last_exc
+
+        # -- Gate 2: layout budget (feed back once, then auto-degrade) ----------
+        theme = resolve_design(presentation)
+        overloads = _budget_overloads(presentation, theme)
+        if not overloads:
+            return presentation
+
+        messages = [
+            {"role": "system", "content": SLIDES_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": base_user + "\n\n" + _budget_feedback(overloads),
+            },
+        ]
+        retry_pres, _exc = self._emit_slides(messages, outline, tools, tool_choice)
+        if retry_pres is not None:
+            # A structurally valid (hopefully lighter) deck. If the retry itself
+            # failed structurally we keep the previous deck and degrade that.
+            presentation = retry_pres
+
+        theme = resolve_design(presentation)
+        for n, _msgs in _budget_overloads(presentation, theme):
+            _degrade_slide(presentation.slides[n - 1], theme)
+        return presentation
+
 
 # ---------------------------------------------------------------------------
 # Backend registry + facade
@@ -384,3 +690,10 @@ def generate_ir(
 def generate_outline(prompt: str, backend: Optional[str] = None) -> Outline:
     """Facade: resolve a backend and generate a stage-1 design + outline."""
     return get_backend(backend).generate_outline(prompt)
+
+
+def generate_slides(
+    outline: Outline, backend: Optional[str] = None
+) -> Presentation:
+    """Facade: resolve a backend and fill a stage-1 outline into a full deck."""
+    return get_backend(backend).generate_slides(outline)
