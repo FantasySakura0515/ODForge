@@ -11,6 +11,9 @@ dependencies = [
 ]
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# Vision critic (Task 16.2). Imported lazily inside critic.py's claude backend,
+# so it is never required to import the package or run the off/ollama paths.
+vision = ["anthropic>=0.40"]
 [project.scripts]
 odforge = "odforge.cli:app"
 [build-system]
