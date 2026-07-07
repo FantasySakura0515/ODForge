@@ -532,11 +532,20 @@ _FITTING_DECK = {
 }
 
 # 48-CJK-char bullet × 10 → the title-content page overruns its 11cm frame.
+# Page 1 carries a distinctive subtitle that exists ONLY in this deck (never in
+# the outline or any prompt text) so tests can detect the prior deck being echoed
+# back to the model in the budget-retry user turn.
 _LONG_BULLET = "版面預算測試" * 8  # 6 chars × 8 = 48 chars
+_PRIOR_DECK_MARKER = "高一生物講義"
 _OVERLOADED_DECK = {
     "title": "光合作用入門",
     "slides": [
-        {"layout": "title", "title": "光合作用", "notes": "開場"},
+        {
+            "layout": "title",
+            "title": "光合作用",
+            "subtitle": _PRIOR_DECK_MARKER,
+            "notes": "開場",
+        },
         {
             "layout": "title-content",
             "title": "反應原理",
@@ -615,7 +624,8 @@ def test_generate_slides_valid_roundtrip_no_design(monkeypatch):
     assert [s.layout for s in result.slides] == ["title", "title-content"]
 
 
-# ② one page over budget → second call's USER message names the page and 超載
+# ② one page over budget → second call's USER message names the page and 超載,
+#    and echoes the prior deck so 「其餘頁面照抄」 is a keepable instruction
 def test_generate_slides_over_budget_feeds_back_page(monkeypatch):
     client = _install_fake_openai(
         monkeypatch,
@@ -630,10 +640,15 @@ def test_generate_slides_over_budget_feeds_back_page(monkeypatch):
     combined = _user_text(client.completions.calls[1]["messages"])
     assert "超載" in combined
     assert "第 2 頁" in combined
+    # the retry turn must carry the prior deck (marker lives only in that deck's
+    # unaffected page 1) — a stateless model can't "keep the rest" otherwise
+    assert _PRIOR_DECK_MARKER in combined
     # the fitting retry deck is what we return
     assert result.slides[1].bullets == ["光反應", "暗反應"]
-    # ...and 超載 never leaks into the *first* call's user turn (retry-only)
-    assert "超載" not in _user_text(client.completions.calls[0]["messages"])
+    # ...and neither 超載 nor the prior deck leaks into the *first* user turn
+    first_user = _user_text(client.completions.calls[0]["messages"])
+    assert "超載" not in first_user
+    assert _PRIOR_DECK_MARKER not in first_user
 
 
 # ③ both attempts over budget → the offending page's bullets are truncated and
@@ -789,3 +804,85 @@ def test_generate_slides_facade_uses_backend(monkeypatch):
     result = llm.generate_slides(_SLIDES_OUTLINE)
     assert isinstance(result, Presentation)
     assert [s.layout for s in result.slides] == ["title", "title-content"]
+
+
+# agenda pages render from Slide.bullets (there is no Slide.items field) —
+# content returned there must survive parsing and reach the final deck
+def test_generate_slides_agenda_content_in_bullets_survives(monkeypatch):
+    agenda_outline = Outline.model_validate(
+        {
+            "mode": "presenter",
+            "pages": [
+                {"role": "title", "title": "光合作用", "gist": "開場"},
+                {"role": "agenda", "title": "本日大綱", "gist": "預告三節"},
+            ],
+        }
+    )
+    agenda_deck = {
+        "title": "光合作用",
+        "slides": [
+            {"layout": "title", "title": "光合作用", "notes": "n"},
+            {
+                "layout": "agenda",
+                "title": "本日大綱",
+                "bullets": ["反應原理", "影響因素", "生活應用"],
+                "notes": "n",
+            },
+        ],
+    }
+    backend = _backend(monkeypatch, [_make_response(json.dumps(agenda_deck))])
+    result = backend.generate_slides(agenda_outline)
+    assert result.slides[1].layout == "agenda"
+    assert result.slides[1].bullets == ["反應原理", "影響因素", "生活應用"]
+
+
+def test_slides_prompt_layout_lines_name_only_real_fields():
+    # The per-layout guidance must only name fields the Slide schema actually
+    # has (plus BulletItem / ChartSpec / PageRole sub-fields and layout names) —
+    # a hallucinated field like "items" is silently dropped by pydantic and the
+    # page ships empty. In particular, agenda content goes in "bullets".
+    import re
+
+    from odforge.ir import ChartSpec, PageRole, Slide
+
+    prompt = llm.SLIDES_SYSTEM_PROMPT
+    section = prompt.split("【各版型填寫要點】")[1].split("【")[0]
+    agenda_line = next(
+        line for line in section.splitlines() if line.strip().startswith("- agenda")
+    )
+    assert "bullets" in agenda_line
+    layouts = {
+        "title", "agenda", "section", "title-content", "two-col",
+        "comparison", "big-fact", "quote", "chart", "closing",
+    }
+    allowed = (
+        layouts
+        | set(Slide.model_fields)
+        | set(BulletItem.model_fields)
+        | set(ChartSpec.model_fields)
+        | set(PageRole.model_fields)
+    )
+    tokens = set(re.findall(r"[A-Za-z][A-Za-z0-9-]*", section))
+    assert tokens <= allowed, f"non-schema field names in prompt: {tokens - allowed}"
+    assert "items" not in tokens  # Slide has no "items" field
+
+
+# worst case: structural retry (call 2) then budget retry (call 3) — 3 calls total
+def test_generate_slides_worst_case_three_calls(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch,
+        [
+            _make_response(json.dumps(_WRONG_LAYOUT_DECK)),  # 1: layout mismatch
+            _make_response(json.dumps(_OVERLOADED_DECK)),  # 2: valid but overloaded
+            _make_response(json.dumps(_FITTING_DECK)),  # 3: shortened, fits
+        ],
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    result = backend.generate_slides(_SLIDES_OUTLINE)
+    assert len(client.completions.calls) == 3
+    assert [s.layout for s in result.slides] == ["title", "title-content"]
+    assert result.slides[1].bullets == ["光反應", "暗反應"]
+    assert "部分要點因版面限制省略" not in result.slides[1].notes  # no degrade
+    # call 2's user turn carries the structural feedback, call 3's the budget one
+    assert "版型" in _user_text(client.completions.calls[1]["messages"])
+    assert "超載" in _user_text(client.completions.calls[2]["messages"])

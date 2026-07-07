@@ -141,7 +141,7 @@ SLIDES_SYSTEM_PROMPT = """\
 
 【各版型填寫要點】
 - title / section / closing:標題精煉;closing 以 title 欄寫收尾語。
-- agenda:items 逐條對應大綱各分節(section)的標題,順序一致。
+- agenda:bullets 逐條對應大綱各分節(section)的標題,順序一致。
 - title-content:bullets 逐條列重點,必要時用巢狀 children 補一層次要細節。
 - two-col:left / right 兩欄各放各自的重點。
 - comparison:left[0] 與 right[0] 是兩欄的「欄位標題」,其後才是各欄內容。
@@ -300,11 +300,20 @@ def _budget_overloads(pres: Presentation, theme: Theme) -> list[tuple[int, list[
     return overloads
 
 
-def _budget_feedback(overloads: list[tuple[int, list[str]]]) -> str:
-    """One retry turn naming the overloaded pages and asking to shorten only them."""
+def _budget_feedback(
+    overloads: list[tuple[int, list[str]]], prior_deck_json: str
+) -> str:
+    """One retry turn naming the overloaded pages and asking to shorten only them.
+
+    The previous deck's JSON is echoed back so 「其餘頁面照抄」 is an instruction a
+    stateless retry can actually keep — without it the model has no record of
+    what "the rest" contained.
+    """
     header = (
-        "下列頁面的文字超出版面(超載)。請「只」精簡這些頁面——縮短字數或減少每頁條數,"
-        "其餘頁面維持不變——並重新輸出「完整」的簡報:"
+        "這是你上一次的輸出:\n"
+        f"{prior_deck_json}\n\n"
+        "其中下列頁面的文字超出版面(超載)。請「只」精簡這些頁面——縮短字數或"
+        "減少每頁條數——其餘頁面照抄上面的輸出,並重新輸出「完整」的簡報:"
     )
     lines = [f"第 {n} 頁超載:{' '.join(msgs)}" for n, msgs in overloads]
     return header + "\n" + "\n".join(lines)
@@ -631,7 +640,9 @@ class OpenAICompatBackend:
             {"role": "system", "content": SLIDES_SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": base_user + "\n\n" + _budget_feedback(overloads),
+                "content": base_user
+                + "\n\n"
+                + _budget_feedback(overloads, presentation.model_dump_json()),
             },
         ]
         retry_pres, _exc = self._emit_slides(messages, outline, tools, tool_choice)
