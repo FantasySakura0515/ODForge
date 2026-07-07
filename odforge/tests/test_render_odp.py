@@ -3,8 +3,12 @@ import re
 from odforge.themes import LAYOUTS, THEMES, PAGE_W, PAGE_H, Frame, Theme
 
 
-def test_all_five_layouts_exist():
-    assert set(LAYOUTS) == {"title", "title-content", "two-col", "section", "big-fact"}
+def test_all_layouts_exist():
+    # v1's five plus Task 14.1's five new page-role layouts.
+    assert set(LAYOUTS) == {
+        "title", "title-content", "two-col", "section", "big-fact",
+        "quote", "agenda", "comparison", "chart", "closing",
+    }
 
 
 def test_frames_within_page_bounds():
@@ -1002,3 +1006,230 @@ def test_chart_all_zero_values_have_zero_width():
     assert len(rects) == 3
     for r in rects:
         assert _cm_value(r.get(_q("svg", "width"))) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Task 14.1: five new page-role layouts + kicker + resolve_design wiring
+# ---------------------------------------------------------------------------
+
+from odforge.ir import BulletItem  # noqa: E402
+
+
+def test_new_layouts_registered_and_in_bounds():
+    # ② the five new keys exist; the parameterized boundary test above already
+    #    proves every frame (including the new ones) sits within 28×15.75.
+    for key in ("quote", "agenda", "comparison", "chart", "closing"):
+        assert key in LAYOUTS and LAYOUTS[key]
+
+
+# --- quote -----------------------------------------------------------------
+def test_quote_page_renders_quote_attribution_and_mark():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="quote", quote="知識就是力量", attribution="— 培根")])
+    croot = _content_root(p, theme)
+    page = croot.find(".//draw:page", NS)
+    text = "".join(page.itertext())
+    assert "知識就是力量" in text
+    assert "— 培根" in text
+    # decorative quote mark glyph present (deterministic engine text, not LLM).
+    assert "“" in text
+    # quote text is h1_pt, centred; attribution is caption_pt, muted, centred.
+    qp = _text_p_with(page, "知識就是力量")
+    qs = _style_by_name(croot, qp.get(_q("text", "style-name")))
+    assert qs.find("style:text-properties", NS).get(_q("fo", "font-size")) == \
+        f"{theme.h1_pt}pt"
+    assert qs.find("style:paragraph-properties", NS).get(_q("fo", "text-align")) == \
+        "center"
+    ap = _text_p_with(page, "— 培根")
+    as_ = _style_by_name(croot, ap.get(_q("text", "style-name")))
+    atp = as_.find("style:text-properties", NS)
+    assert atp.get(_q("fo", "font-size")) == f"{theme.caption_pt}pt"
+    assert atp.get(_q("fo", "color")) == theme.muted
+
+
+# --- agenda ----------------------------------------------------------------
+def test_agenda_numbers_are_accent_colored():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="agenda", title="議程", bullets=["背景", "方法", "成果"])])
+    croot = _content_root(p, theme)
+    page = croot.find(".//draw:page", NS)
+    text = "".join(page.itertext())
+    assert "01" in text and "02" in text and "03" in text
+    span = next(s for s in page.findall(".//text:span", NS) if s.text == "01")
+    stp = _style_by_name(croot, span.get(_q("text", "style-name"))).find(
+        "style:text-properties", NS)
+    assert stp.get(_q("fo", "color")) == theme.accent
+    # numbers keep CJK three-track sizing at body_pt.
+    assert stp.get(_q("fo", "font-size")) == f"{theme.body_pt}pt"
+    assert stp.get(_q("style", "font-size-asian")) == f"{theme.body_pt}pt"
+
+
+# --- comparison ------------------------------------------------------------
+def test_comparison_headers_bold_accent_body_pt_and_cards():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="comparison", title="比較",
+              left=["傳統", "慢", "貴"], right=["ODForge", "快", "省"])])
+    croot = _content_root(p, theme)
+    page = croot.find(".//draw:page", NS)
+    for header in ("傳統", "ODForge"):
+        hp = _text_p_with(page, header)
+        tp = _style_by_name(croot, hp.get(_q("text", "style-name"))).find(
+            "style:text-properties", NS)
+        assert tp.get(_q("fo", "color")) == theme.accent
+        assert tp.get(_q("fo", "font-weight")) == "bold"
+        assert tp.get(_q("fo", "font-size")) == f"{theme.body_pt}pt"
+    # remaining items render as bullet lists (one per column).
+    assert len(page.findall(".//text:list", NS)) == 2
+    # cards still appear automatically via the left/right roles (13.4 gating).
+    cards = [r for r in page.findall(".//draw:rect", NS)
+             if r.get(_q("draw", "corner-radius")) == "0.3cm"]
+    assert len(cards) == 2
+
+
+# --- chart -----------------------------------------------------------------
+def test_chart_layout_renders_bars_and_insights():
+    from odforge.ir import ChartSpec
+
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="chart", title="成長",
+              chart=ChartSpec(labels=["Q1", "Q2", "Q3"], values=[10, 20, 40],
+                              unit="萬", highlight=2),
+              bullets=["洞見一", "洞見二"])])
+    croot = _content_root(p, theme)
+    page = croot.find(".//draw:page", NS)
+    text = "".join(page.itertext())
+    assert "Q1" in text and "40萬" in text
+    assert "洞見一" in text and "洞見二" in text
+    # three data bars (bar rects have the chart corner radius 0.08cm).
+    bars = [r for r in page.findall(".//draw:rect", NS)
+            if r.get(_q("draw", "corner-radius")) == "0.08cm"]
+    assert len(bars) == 3
+    # insights render at caption_pt.
+    ip = _text_p_with(page, "洞見一")
+    itp = _style_by_name(croot, ip.get(_q("text", "style-name"))).find(
+        "style:text-properties", NS)
+    assert itp.get(_q("fo", "font-size")) == f"{theme.caption_pt}pt"
+
+
+# --- closing ---------------------------------------------------------------
+def test_closing_inverted_no_watermark_with_subtitle():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="section", title="第一節"),
+        Slide(layout="closing", title="謝謝聆聽", subtitle="Q&A")])
+    croot = _content_root(p, theme)
+    pages = croot.findall(".//draw:page", NS)
+    closing = pages[1]
+    assert closing.get(_q("draw", "master-page-name")) == "Plain"
+    dp = _style_by_name(croot, closing.get(_q("draw", "style-name")))
+    props = dp.find("style:drawing-page-properties", NS)
+    assert props.get(_q("draw", "fill")) == "solid"
+    assert props.get(_q("draw", "fill-color")) == theme.accent
+    mp = _text_p_with(closing, "謝謝聆聽")
+    mtp = _style_by_name(croot, mp.get(_q("text", "style-name"))).find(
+        "style:text-properties", NS)
+    assert mtp.get(_q("fo", "color")) == theme.bg
+    # subtitle rendered as the message's second line.
+    assert "Q&A" in "".join(closing.itertext())
+    # NO giant ordinal watermark on the closing page.
+    ct = "".join(closing.itertext())
+    assert "01" not in ct and "02" not in ct
+    # closing must NOT consume the section ordinal counter.
+    assert "01" in "".join(pages[0].itertext())
+
+
+def test_section_ordinals_skip_closing_pages():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="section", title="第一"),
+        Slide(layout="closing", title="結束"),
+        Slide(layout="section", title="第二")])
+    pages = _content_root(p, theme).findall(".//draw:page", NS)
+    assert "01" in "".join(pages[0].itertext())
+    assert "02" in "".join(pages[2].itertext())
+
+
+def test_closing_without_section_still_paints_accent_bg():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[Slide(layout="closing", title="謝謝")])
+    croot = _content_root(p, theme)
+    page = croot.find(".//draw:page", NS)
+    dp = _style_by_name(croot, page.get(_q("draw", "style-name")))
+    assert dp.find("style:drawing-page-properties", NS).get(
+        _q("draw", "fill-color")) == theme.accent
+
+
+def test_closing_has_no_section_watermark_shape():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[Slide(layout="closing", title="尾聲")])
+    page = _content_root(p, theme).find(".//draw:page", NS)
+    # the giant watermark is a 96pt text frame; closing must have none.
+    for tp in page.findall(".//text:p", NS):
+        assert tp.text != "01"
+
+
+# --- kicker ----------------------------------------------------------------
+def test_kicker_renders_above_title_with_letter_spacing():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="title-content", title="大綱", kicker="第一部分",
+              bullets=["a"])])
+    croot = _content_root(p, theme)
+    page = croot.find(".//draw:page", NS)
+    kp = _text_p_with(page, "第一部分")
+    ktp = _style_by_name(croot, kp.get(_q("text", "style-name"))).find(
+        "style:text-properties", NS)
+    assert ktp.get(_q("fo", "letter-spacing")) == "0.15cm"
+    assert ktp.get(_q("fo", "color")) == theme.accent
+    # kicker paragraph precedes the title paragraph inside the same frame.
+    title_frame = next(
+        f for f in page.findall(".//draw:frame", NS)
+        if any(x.text == "大綱" for x in f.findall(".//text:p", NS)))
+    ps = title_frame.findall(".//text:p", NS)
+    assert ps[0].text == "第一部分" and ps[1].text == "大綱"
+
+
+def test_no_kicker_leaves_title_frame_unchanged():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="title-content", title="大綱", bullets=["a"])])
+    page = _content_root(p, theme).find(".//draw:page", NS)
+    title_frame = next(
+        f for f in page.findall(".//draw:frame", NS)
+        if any(x.text == "大綱" for x in f.findall(".//text:p", NS)))
+    assert len(title_frame.findall(".//text:p", NS)) == 1
+
+
+# --- nested BulletItem renders a two-level list -----------------------------
+def test_nested_bulletitem_renders_two_level_list(tmp_path):
+    p = Presentation(title="t", slides=[
+        Slide(layout="title-content", title="T",
+              bullets=[BulletItem(text="父", children=["子一", "子二"]), "葉"])])
+    root = content_root(render_odp(p, tmp_path / "p.odp"))
+    outer = root.find(".//text:list", NS)
+    top = outer.findall("text:list-item", NS)
+    assert top[0].find("text:p", NS).text == "父"
+    assert top[0].find("text:list", NS) is not None
+    assert top[1].find("text:p", NS).text == "葉"
+
+
+# --- resolve_design wiring --------------------------------------------------
+def test_custom_designspec_renders_with_palette_colors(tmp_path):
+    design = DesignSpec(
+        palette=Palette(bg="#0B1020", surface="#1B2340", text="#F0F3FF",
+                        muted="#9AA6D0", accent="#5AD0E0"),
+        fonts=FontPair(display="Noto Serif TC", body="Noto Sans TC"))
+    p = Presentation(title="設計", design=design, slides=[
+        Slide(layout="title-content", title="標題", bullets=["內容"])])
+    out = render_odp(p, tmp_path / "p.odp")
+    with zipfile.ZipFile(out) as z:
+        styles = z.read("styles.xml").decode("utf-8")
+        content = z.read("content.xml").decode("utf-8")
+    assert "#0B1020" in styles          # custom bg reaches styles.xml
+    assert "#0B1020" in content         # ... and the per-page fill in content.xml
+    assert "#5AD0E0" in content         # custom accent (bullet char / accent bar)
+    assert "#F0F3FF" in content         # custom text colour

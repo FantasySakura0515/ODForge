@@ -104,6 +104,32 @@ LAYOUTS: dict[str, list[Frame]] = {
         Frame("fact", 2, 5, 24, 4, 48, bold=True, center=True),
         Frame("bullets", 2, 10, 24, 3, 16, center=True),
     ],
+    # -- Task 14.1 page-role layouts ----------------------------------------
+    # size_pt values below are the 'standard' scale defaults; the renderer
+    # re-sizes these roles from the resolved Theme tokens (h1_pt / body_pt /
+    # caption_pt) so a per-deck DesignSpec scale is honoured, exactly as the
+    # 'fact' role is up-sized to display_pt.
+    "quote": [
+        Frame("quote", 3, 4.8, 22, 4.5, 28, center=True),
+        Frame("attribution", 3, 10, 22, 1.2, 13, center=True),
+    ],
+    "agenda": [
+        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("items", 3, 3.8, 22, 10.5, 18),
+    ],
+    "comparison": [
+        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("left", 1.5, 3.2, 12.2, 11.3, 18),
+        Frame("right", 14.3, 3.2, 12.2, 11.3, 18),
+    ],
+    "chart": [
+        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("chart-area", 1.5, 3.5, 15.5, 11, 18),
+        Frame("insights", 17.6, 3.5, 8.9, 11, 13),
+    ],
+    "closing": [
+        Frame("message", 2, 6, 24, 3, 28, bold=True, center=True),
+    ],
 }
 
 

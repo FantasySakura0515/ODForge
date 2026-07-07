@@ -74,15 +74,18 @@ class TextDoc(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class Slide(BaseModel):
-    layout: Literal["title", "title-content", "two-col", "section", "big-fact"]
-    title: str = ""
-    subtitle: str = ""
-    bullets: List[str] = Field(default_factory=list)
-    left: List[str] = Field(default_factory=list)
-    right: List[str] = Field(default_factory=list)
-    fact: str = ""
-    notes: str = ""
+class BulletItem(BaseModel):
+    """A nested bullet: a line of ``text`` with an optional list of ``children``.
+
+    ``Slide.bullets`` accepts either a plain ``str`` (a leaf bullet — the v1
+    shape, still valid) or a ``BulletItem`` carrying children. The renderer lowers
+    a ``BulletItem`` onto the ``(text, children)`` tuple its semantic-list builder
+    already understands (Task 13.2 contract). Children are one level deep (plain
+    strings) — all the two-level bullet list style renders.
+    """
+
+    text: str
+    children: List[str] = Field(default_factory=list)
 
 
 class ChartSpec(BaseModel):
@@ -128,6 +131,45 @@ class ChartSpec(BaseModel):
             raise ValueError(
                 f"highlight index {self.highlight} out of range for {n} bars "
                 f"(expected 0..{n - 1})"
+            )
+        return self
+
+
+class Slide(BaseModel):
+    layout: Literal[
+        "title", "title-content", "two-col", "section", "big-fact",
+        "quote", "agenda", "comparison", "chart", "closing",
+    ]
+    title: str = ""
+    subtitle: str = ""
+    # Either plain strings (v1) or nested ``BulletItem``\\ s. Coerced by pydantic's
+    # smart union: a str stays a str, a dict/object becomes a BulletItem — so v1
+    # all-string decks pass through transparently.
+    bullets: List[Union[str, BulletItem]] = Field(default_factory=list)
+    left: List[str] = Field(default_factory=list)
+    right: List[str] = Field(default_factory=list)
+    fact: str = ""
+    # Task 14.1 page-role fields. ``quote``/``attribution`` feed the quote layout;
+    # ``kicker`` is an eyebrow above a content-page title; ``chart`` carries a
+    # ChartSpec onto the chart layout.
+    quote: str = ""
+    attribution: str = ""
+    kicker: str = ""
+    chart: Optional[ChartSpec] = None
+    notes: str = ""
+
+    @model_validator(mode="after")
+    def _check_layout_fields(self) -> "Slide":
+        """Cross-field checks: a layout must carry the content it draws."""
+        if self.layout == "chart" and self.chart is None:
+            raise ValueError(
+                'layout="chart" requires a chart: set Slide.chart to a ChartSpec '
+                "(labels/values). Got chart=None."
+            )
+        if self.layout == "quote" and not self.quote.strip():
+            raise ValueError(
+                'layout="quote" requires non-empty quote text: set Slide.quote. '
+                "Got an empty quote."
             )
         return self
 

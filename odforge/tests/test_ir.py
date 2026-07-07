@@ -239,3 +239,92 @@ def test_chart_spec_highlight_out_of_range_rejected():
 
     with pytest.raises(ValidationError):
         ChartSpec(labels=["a", "b"], values=[1, 2], highlight=5)
+
+
+# ---------------------------------------------------------------------------
+# Task 14.1: new page-role layouts + IR fields (quote/agenda/comparison/
+# chart/closing), nested BulletItem, cross-field validators
+# ---------------------------------------------------------------------------
+
+from odforge.ir import BulletItem, ChartSpec, Slide  # noqa: E402
+
+
+def test_all_ten_layout_literals_parse():
+    """① Every new layout literal parses on a minimally-valid slide."""
+    slides = [
+        {"layout": "title", "title": "T"},
+        {"layout": "title-content", "title": "T", "bullets": ["a"]},
+        {"layout": "two-col", "title": "T", "left": ["a"], "right": ["b"]},
+        {"layout": "section", "title": "S"},
+        {"layout": "big-fact", "fact": "9"},
+        {"layout": "quote", "quote": "引言", "attribution": "— 某人"},
+        {"layout": "agenda", "title": "議程", "bullets": ["a", "b"]},
+        {"layout": "comparison", "title": "比較",
+         "left": ["A", "x"], "right": ["B", "y"]},
+        {"layout": "chart", "title": "圖",
+         "chart": {"labels": ["a"], "values": [1]}},
+        {"layout": "closing", "title": "謝謝"},
+    ]
+    p = parse_ir({"type": "presentation", "title": "t", "slides": slides})
+    assert [s.layout for s in p.slides] == [
+        "title", "title-content", "two-col", "section", "big-fact",
+        "quote", "agenda", "comparison", "chart", "closing",
+    ]
+
+
+def test_chart_layout_without_chart_rejected_with_message():
+    """③ layout="chart" but chart is None → clear ValidationError."""
+    with pytest.raises(ValidationError) as exc:
+        Slide(layout="chart", title="圖")
+    assert "chart" in str(exc.value).lower()
+
+
+def test_quote_layout_without_quote_rejected_with_message():
+    """③ layout="quote" but quote is empty → clear ValidationError."""
+    with pytest.raises(ValidationError) as exc:
+        Slide(layout="quote", title="x")
+    assert "quote" in str(exc.value).lower()
+
+
+def test_chart_layout_with_chart_accepted():
+    s = Slide(layout="chart", title="圖",
+              chart=ChartSpec(labels=["甲", "乙"], values=[3, 5]))
+    assert s.chart is not None and s.chart.values == [3.0, 5.0]
+
+
+def test_closing_agenda_comparison_need_no_extra_fields():
+    # closing = title as message; agenda uses bullets; comparison uses left/right.
+    Slide(layout="closing", title="結束")
+    Slide(layout="agenda", title="議程", bullets=["x"])
+    Slide(layout="comparison", title="比較", left=["a"], right=["b"])
+
+
+def test_bullet_item_nested_and_plain_str_coexist():
+    """Nested BulletItem and plain strings live together (v1 compat)."""
+    s = Slide(layout="title-content", title="T",
+              bullets=["純字串", BulletItem(text="父", children=["子一", "子二"])])
+    assert s.bullets[0] == "純字串"
+    assert isinstance(s.bullets[1], BulletItem)
+    assert s.bullets[1].children == ["子一", "子二"]
+
+
+def test_bullet_item_parses_from_dict():
+    p = parse_ir({"type": "presentation", "title": "t", "slides": [
+        {"layout": "title-content", "title": "T",
+         "bullets": ["a", {"text": "父", "children": ["子"]}]}]})
+    assert p.slides[0].bullets[0] == "a"
+    assert isinstance(p.slides[0].bullets[1], BulletItem)
+    assert p.slides[0].bullets[1].text == "父"
+
+
+def test_plain_string_bullets_still_valid():
+    # Hard v1-compat requirement: an all-string bullet list stays valid & plain.
+    s = Slide(layout="title-content", title="T", bullets=["甲", "乙", "丙"])
+    assert s.bullets == ["甲", "乙", "丙"]
+    assert all(isinstance(b, str) for b in s.bullets)
+
+
+def test_new_slide_fields_default_empty():
+    s = Slide(layout="title", title="T")
+    assert s.quote == "" and s.attribution == "" and s.kicker == ""
+    assert s.chart is None

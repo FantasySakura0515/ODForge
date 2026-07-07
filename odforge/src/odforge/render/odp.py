@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import Callable
 from xml.sax.saxutils import escape
 
-from odforge.ir import ChartSpec, Presentation, Slide
+from odforge.ir import BulletItem, ChartSpec, Presentation, Slide
 from odforge.package import ODP_MIMETYPE, write_odf_package
-from odforge.themes import LAYOUTS, PAGE_H, PAGE_W, THEMES, Frame, Theme
+from odforge.themes import LAYOUTS, PAGE_H, PAGE_W, THEMES, Frame, Theme, resolve_design
 
 # ---------------------------------------------------------------------------
 # Namespace declarations
@@ -58,12 +58,13 @@ _NOTES_SIZE_PT = 14
 # Task 13.3: master pages, inverted section pages, accent system.
 #
 # Layouts that render "bare" (no page-number/footer/kicker furniture): the
-# opening title and the full-accent section divider. "closing" (Task 14.1)
-# joins both these sets — keeping them as small frozensets makes that a
-# one-word edit with no branching to touch.
-_PLAIN_LAYOUTS = frozenset({"title", "section"})
-# Layouts painted with a full-bleed accent background (inverted pages).
-_ACCENT_BG_LAYOUTS = frozenset({"section"})
+# opening title, the full-accent section divider, and the inverted closing page.
+_PLAIN_LAYOUTS = frozenset({"title", "section", "closing"})
+# Layouts painted with a full-bleed accent background (inverted pages): the
+# section divider and the closing page. The giant chapter-number watermark is
+# gated on layout=="section" specifically (closing pages must not display or
+# consume a section ordinal — see _page_xml / build_content_xml).
+_ACCENT_BG_LAYOUTS = frozenset({"section", "closing"})
 
 # Vertical accent bar flush with a content-page title's left edge.
 _ACCENT_BAR_W = 0.18  # cm
@@ -75,6 +76,15 @@ _SECTION_NUMBER_PT = 96
 _SECTION_NUMBER_BLEND = 0.15
 # (x, y, w, h) cm — upper-right, right edge aligned with the footer line.
 _SECTION_NUMBER_BOX = (18.5, 1.0, 8.0, 4.5)
+
+# Task 14.1: quote layout's decorative quotation-mark watermark. Drawn as a big
+# glyph tinted 75% from accent toward the bg (i.e. ~25% "opacity") — the same
+# reliable precomputed-blend trick the section number uses, since ODF 1.2 has no
+# dependable per-run text opacity. Deterministic (a pure function of the theme).
+_QUOTE_MARK_GLYPH = "“"  # left double quotation mark
+_QUOTE_MARK_PT = 120
+_QUOTE_MARK_BLEND = 0.75  # _blend(accent, bg, this) → faint accent tint
+_QUOTE_MARK_BOX = (2.2, 2.8, 6.0, 6.0)  # (x, y, w, h) cm — behind the quote text
 
 # Master-page furniture geometry + style names.
 _FOOTER_LINE_Y = 14.9
@@ -299,6 +309,17 @@ def _font_size_attrs(size_pt: int) -> str:
     )
 
 
+def _font_weight_attrs(bold: bool) -> str:
+    """Three-track ``font-weight`` attributes (Western + ``*-asian`` + ``*-complex``)."""
+    if not bold:
+        return ""
+    return (
+        ' fo:font-weight="bold"'
+        ' style:font-weight-asian="bold"'
+        ' style:font-weight-complex="bold"'
+    )
+
+
 def _paragraph_style_xml(
     name: str,
     font: str,
@@ -400,6 +421,50 @@ def _graphic_style_xml(name: str, key: tuple) -> str:
     return (
         f'<style:style style:name="{_attr(name)}" style:family="graphic">'
         f"<style:graphic-properties {props}/>"
+        f"</style:style>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Text-span style cache (inline runs whose colour/weight differs from the
+# enclosing paragraph — e.g. agenda's accent-tinted 01/02 numbers)
+# ---------------------------------------------------------------------------
+
+
+class _SpanStyles:
+    """Collects unique ``style:family="text"`` styles, naming them T1, T2, … .
+
+    De-duplicated on ``(size_pt, bold, color)``. Mirrors :class:`_ParagraphStyles`
+    but emits ``family="text"`` so the style can dress a ``<text:span>`` inside a
+    paragraph without disturbing the surrounding text's colour.
+    """
+
+    def __init__(self, font: str) -> None:
+        self._font = font
+        self._names: dict[tuple, str] = {}
+
+    def name_for(self, size_pt: int, bold: bool, color: str) -> str:
+        key = (size_pt, bold, color)
+        name = self._names.get(key)
+        if name is None:
+            name = f"T{len(self._names) + 1}"
+            self._names[key] = name
+        return name
+
+    def xml(self) -> str:
+        return "".join(
+            _text_span_style_xml(name, self._font, *key)
+            for key, name in self._names.items()
+        )
+
+
+def _text_span_style_xml(name: str, font: str, size_pt: int, bold: bool, color: str) -> str:
+    """Build one ``style:family="text"`` automatic style (three-track CJK sizing)."""
+    return (
+        f'<style:style style:name="{_attr(name)}" style:family="text">'
+        f"<style:text-properties{_font_size_attrs(size_pt)}{_font_weight_attrs(bold)}"
+        f' fo:color="{_attr(color)}" style:font-name="{_attr(font)}"'
+        f' style:font-name-asian="{_attr(font)}"/>'
         f"</style:style>"
     )
 
@@ -530,16 +595,49 @@ def _deco_frame_xml() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _role_lines(slide: Slide, role: str) -> list[str]:
-    """Return the text lines a frame's ``role`` contributes, or [] if empty."""
+def _coerce_bullet_items(items) -> list:
+    """Lower ``Slide.bullets`` (``str | BulletItem``) onto the renderer's list
+    contract (``str | (text, children)`` — Task 13.2). A plain ``str`` passes
+    through unchanged (v1 decks stay byte-identical); a ``BulletItem`` with
+    children becomes a ``(text, children)`` tuple; a childless ``BulletItem``
+    collapses to its bare text so it renders as a leaf bullet.
+    """
+    out: list = []
+    for it in items:
+        if isinstance(it, BulletItem):
+            out.append((it.text, list(it.children)) if it.children else it.text)
+        else:
+            out.append(it)
+    return out
+
+
+def _line_text(item) -> str:
+    """The display string for a list/bare item (``str`` or ``(text, children)``)."""
+    return item[0] if isinstance(item, tuple) else item
+
+
+def _role_lines(slide: Slide, role: str) -> list:
+    """Return the content items a frame's ``role`` contributes, or [] if empty.
+
+    Bullet-family roles (``bullets``/``items``/``insights``) all draw from
+    ``slide.bullets`` and are coerced onto the semantic-list contract; the rest
+    are plain single-line text fields.
+    """
     if role == "title":
         return [slide.title] if slide.title else []
     if role == "subtitle":
         return [slide.subtitle] if slide.subtitle else []
     if role == "fact":
         return [slide.fact] if slide.fact else []
-    if role == "bullets":
-        return list(slide.bullets)
+    if role == "quote":
+        return [slide.quote] if slide.quote else []
+    if role == "attribution":
+        return [slide.attribution] if slide.attribution else []
+    if role == "message":
+        # closing's message is the slide title (subtitle handled in the branch).
+        return [slide.title] if slide.title else []
+    if role in ("bullets", "items", "insights"):
+        return _coerce_bullet_items(slide.bullets)
     if role == "left":
         return list(slide.left)
     if role == "right":
@@ -563,7 +661,8 @@ def _frame_xml(
 ) -> str:
     """Build a ``draw:frame`` of bare ``text:p`` paragraphs (non-list content)."""
     paragraphs = "".join(
-        f'<text:p text:style-name="{_attr(style_name)}">{escape(line)}</text:p>'
+        f'<text:p text:style-name="{_attr(style_name)}">'
+        f"{escape(_line_text(line))}</text:p>"
         for line in lines
     )
     return _frame_box_xml(frame, paragraphs)
@@ -826,12 +925,66 @@ def _section_number_xml(
     return _frame_box_xml(frame, para)
 
 
+def _quote_mark_xml(theme: Theme, styles: _ParagraphStyles) -> str:
+    """Build the quote layout's big decorative quotation-mark watermark.
+
+    A large glyph tinted :data:`_QUOTE_MARK_BLEND` of the way from accent toward
+    the bg — faint enough to read as decoration behind the quote text. Emitted
+    before the quote so the text paints on top. Deterministic.
+    """
+    color = _blend(theme.accent, theme.bg, _QUOTE_MARK_BLEND)
+    style_name = styles.name_for(_QUOTE_MARK_PT, True, False, color)
+    x, y, w, h = _QUOTE_MARK_BOX
+    frame = Frame("quote-mark", x, y, w, h, _QUOTE_MARK_PT, bold=True)
+    para = (
+        f'<text:p text:style-name="{_attr(style_name)}">'
+        f"{escape(_QUOTE_MARK_GLYPH)}</text:p>"
+    )
+    return _frame_box_xml(frame, para)
+
+
+def _numbered_items_xml(
+    items: list,
+    frame: Frame,
+    theme: Theme,
+    para_styles: _ParagraphStyles,
+    span_styles: _SpanStyles,
+) -> str:
+    """Build the agenda layout's numbered items (accent-tinted 01/02… numbers).
+
+    Explicit numbered paragraphs (not an ODF list): each item is one ``text:p``
+    at ``body_pt`` whose leading ``<text:span>`` carries a zero-padded ordinal in
+    the accent colour, followed by the item text in the body colour. Zero-padding
+    ("01") is why this is drawn by hand — ``style:num-format`` cannot pad. Loose
+    bullet typography (line-height + bottom margin) spaces the rows.
+    """
+    num_style = span_styles.name_for(theme.body_pt, True, theme.accent)
+    text_style = para_styles.name_for(
+        theme.body_pt,
+        False,
+        False,
+        theme.text_color,
+        line_height=_BULLET_LINE_HEIGHT,
+        margin_bottom=_BULLET_MARGIN_BOTTOM,
+    )
+    paras = []
+    for i, item in enumerate(items, start=1):
+        paras.append(
+            f'<text:p text:style-name="{_attr(text_style)}">'
+            f'<text:span text:style-name="{_attr(num_style)}">'
+            f"{escape(f'{i:02d}')}</text:span>"
+            f"{escape('  ' + _line_text(item))}</text:p>"
+        )
+    return _frame_box_xml(frame, "".join(paras))
+
+
 def _page_xml(
     index: int,
     slide: Slide,
     theme: Theme,
     styles: _ParagraphStyles,
     graphics: _GraphicStyles,
+    spans: _SpanStyles,
     section_ordinal: int | None,
 ) -> str:
     """Build one ``draw:page`` for a slide, registering its paragraph styles.
@@ -839,24 +992,44 @@ def _page_xml(
     Master page + drawing-page style are chosen by layout: :data:`_PLAIN_LAYOUTS`
     use the furniture-free "Plain" master, and :data:`_ACCENT_BG_LAYOUTS` swap in
     the full-accent drawing-page style. Content-page titles gain a vertical accent
-    bar; ``fact`` text is up-sized to display + accent; big-fact bullets go muted.
+    bar (and an optional ``kicker`` eyebrow); ``fact`` text is up-sized to display
+    + accent; the Task 14.1 page-role layouts (quote/agenda/comparison/chart/
+    closing) are dispatched by frame role below.
     """
+    layout = slide.layout
     parts: list[str] = []
-    # Title pages carry a low-key decorative SVG in the bottom-right corner,
-    # emitted first so it sits behind the title/subtitle text.
-    if slide.layout in _DECO_LAYOUTS:
+    # Pre-content decorations, emitted first so they sit behind the text.
+    if layout in _DECO_LAYOUTS:
         parts.append(_deco_frame_xml())
-    if slide.layout in _ACCENT_BG_LAYOUTS and section_ordinal is not None:
+    # Giant chapter-number watermark: section pages only (closing must neither
+    # display nor consume an ordinal).
+    if layout == "section" and section_ordinal is not None:
         parts.append(_section_number_xml(section_ordinal, theme, styles))
+    if layout == "quote":
+        parts.append(_quote_mark_xml(theme, styles))
 
-    for frame in LAYOUTS[slide.layout]:
-        lines = _role_lines(slide, frame.role)
+    for frame in LAYOUTS[layout]:
+        role = frame.role
+
+        # chart-area draws a ChartSpec (shapes + labels), not text lines.
+        if role == "chart-area":
+            if slide.chart is not None:
+                parts.append(
+                    _chart_xml(
+                        slide.chart, frame.x, frame.y, frame.w, frame.h,
+                        theme, graphics, styles,
+                    )
+                )
+            continue
+
+        lines = _role_lines(slide, role)
         if not lines:
             continue
-        # Column frames (two-col left/right) get a rounded surface card behind
-        # them — emitted before the text frame so document order keeps the text
-        # on top.
-        if frame.role in _CARD_ROLES:
+
+        # Column frames (two-col + comparison left/right) get a rounded surface
+        # card behind them — emitted before the text frame so document order
+        # keeps the text on top.
+        if role in _CARD_ROLES:
             card_style = graphics.name_for_fill(theme.surface)
             parts.append(
                 _rect_xml(
@@ -869,7 +1042,91 @@ def _page_xml(
                     style_name=card_style,
                 )
             )
-        if frame.role in _LIST_ROLES and not frame.center:
+
+        # closing: inverted message (title + optional subtitle) in the bg colour.
+        if role == "message":
+            msg_style = styles.name_for(
+                theme.h1_pt, frame.bold, frame.center, theme.bg
+            )
+            inner = (
+                f'<text:p text:style-name="{_attr(msg_style)}">'
+                f"{escape(slide.title)}</text:p>"
+            )
+            if slide.subtitle:
+                sub_style = styles.name_for(
+                    theme.body_pt, False, frame.center, theme.bg
+                )
+                inner += (
+                    f'<text:p text:style-name="{_attr(sub_style)}">'
+                    f"{escape(slide.subtitle)}</text:p>"
+                )
+            parts.append(_frame_box_xml(frame, inner))
+            continue
+
+        # agenda: explicit numbered items with accent-tinted 01/02… numbers.
+        if role == "items":
+            parts.append(_numbered_items_xml(lines, frame, theme, styles, spans))
+            continue
+
+        # chart insights: a caption-size bullet list.
+        if role == "insights":
+            inner = _list_xml(
+                lines,
+                styles,
+                size_pt=theme.caption_pt,
+                color=theme.text_color,
+                style_name=_LIST_STYLE_NAME,
+            )
+            parts.append(_frame_box_xml(frame, inner))
+            continue
+
+        # comparison columns: first item is a bold accent column header, the rest
+        # are normal bullets (contract decided by the controller).
+        if layout == "comparison" and role in ("left", "right"):
+            header_style = styles.name_for(theme.body_pt, True, False, theme.accent)
+            inner = (
+                f'<text:p text:style-name="{_attr(header_style)}">'
+                f"{escape(_line_text(lines[0]))}</text:p>"
+            )
+            rest = lines[1:]
+            if rest:
+                inner += _list_xml(
+                    rest,
+                    styles,
+                    size_pt=theme.body_pt,
+                    color=theme.text_color,
+                    style_name=_LIST_STYLE_NAME,
+                )
+            parts.append(_frame_box_xml(frame, inner))
+            continue
+
+        # Content-page title: optional vertical accent bar + optional kicker
+        # eyebrow (accent, letter-spaced) rendered above the title text.
+        if role == "title":
+            if layout not in _PLAIN_LAYOUTS:
+                bar_style = graphics.name_for_fill(theme.accent)
+                parts.append(
+                    _rect_xml(
+                        frame.x, frame.y, _ACCENT_BAR_W, frame.h,
+                        fill=theme.accent, style_name=bar_style,
+                    )
+                )
+            # Section/closing titles invert onto the accent background.
+            color = theme.bg if layout in _ACCENT_BG_LAYOUTS else theme.title_color
+            title_style = styles.name_for(frame.size_pt, frame.bold, frame.center, color)
+            inner = ""
+            if slide.kicker and layout not in _PLAIN_LAYOUTS:
+                inner += _kicker_paragraph_xml(slide.kicker, styles, theme)
+            inner += "".join(
+                f'<text:p text:style-name="{_attr(title_style)}">'
+                f"{escape(_line_text(line))}</text:p>"
+                for line in lines
+            )
+            parts.append(_frame_box_xml(frame, inner))
+            continue
+
+        # Standard semantic list (title-content bullets, two-col columns).
+        if role in _LIST_ROLES and not frame.center:
             inner = _list_xml(
                 lines,
                 styles,
@@ -880,28 +1137,22 @@ def _page_xml(
             parts.append(_frame_box_xml(frame, inner))
             continue
 
+        # Bare centred / single-line text (subtitle, fact, quote, attribution,
+        # big-fact caption bullets).
         size_pt = frame.size_pt
-        if frame.role == "title":
-            # Section titles invert onto the accent background.
-            color = theme.bg if slide.layout in _ACCENT_BG_LAYOUTS else theme.title_color
-        elif frame.role == "fact":
+        if role == "fact":
             size_pt = theme.display_pt
             color = theme.accent
-        elif frame.role == "bullets" and slide.layout == "big-fact":
+        elif role == "quote":
+            size_pt = theme.h1_pt
+            color = theme.text_color
+        elif role == "attribution":
+            size_pt = theme.caption_pt
+            color = theme.muted
+        elif role == "bullets" and layout == "big-fact":
             color = theme.muted
         else:
             color = theme.text_color
-
-        # Vertical accent bar flush with a content-page title's left edge (never
-        # on Plain layouts — the opening title / inverted section stand alone).
-        if frame.role == "title" and slide.layout not in _PLAIN_LAYOUTS:
-            bar_style = graphics.name_for_fill(theme.accent)
-            parts.append(
-                _rect_xml(
-                    frame.x, frame.y, _ACCENT_BAR_W, frame.h,
-                    fill=theme.accent, style_name=bar_style,
-                )
-            )
 
         style_name = styles.name_for(size_pt, frame.bold, frame.center, color)
         parts.append(_frame_xml(frame, lines, style_name))
@@ -910,10 +1161,10 @@ def _page_xml(
         notes_style = styles.name_for(_NOTES_SIZE_PT, False, False, theme.text_color)
         parts.append(_notes_xml(slide.notes, notes_style))
 
-    master = _PLAIN_MASTER_NAME if slide.layout in _PLAIN_LAYOUTS else _MASTER_PAGE_NAME
+    master = _PLAIN_MASTER_NAME if layout in _PLAIN_LAYOUTS else _MASTER_PAGE_NAME
     dp_style = (
         _SECTION_DRAWING_PAGE_STYLE
-        if slide.layout in _ACCENT_BG_LAYOUTS
+        if layout in _ACCENT_BG_LAYOUTS
         else _DRAWING_PAGE_STYLE
     )
     return (
@@ -949,27 +1200,32 @@ def build_content_xml(p: Presentation, theme: Theme) -> str:
     styles = _ParagraphStyles(theme.font)
     # Graphic styles for shapes drawn on pages (accent bars, etc.).
     graphics = _GraphicStyles()
+    # Text-span styles for inline accent runs (agenda's 01/02… numbers).
+    spans = _SpanStyles(theme.font)
 
-    # Section slides carry an auto-computed 1-based ordinal (the giant chapter
-    # number); non-section slides map to None.
+    # Only "section" slides carry an auto-computed 1-based ordinal (the giant
+    # chapter number); closing pages are inverted too but must not consume or
+    # display an ordinal, so they are excluded here.
     section_ordinal: dict[int, int] = {}
     for i, slide in enumerate(p.slides):
-        if slide.layout in _ACCENT_BG_LAYOUTS:
+        if slide.layout == "section":
             section_ordinal[i] = len(section_ordinal) + 1
 
-    # Build pages first so every referenced paragraph/graphic style is registered.
+    # Build pages first so every referenced paragraph/graphic/span style is
+    # registered.
     pages = "".join(
-        _page_xml(i, slide, theme, styles, graphics, section_ordinal.get(i))
+        _page_xml(i, slide, theme, styles, graphics, spans, section_ordinal.get(i))
         for i, slide in enumerate(p.slides)
     )
 
     # Default content drawing-page carries the bg fill and surfaces the master's
-    # page-number placeholder. The accent (inverted) drawing-page is emitted only
-    # when a section slide actually needs it.
+    # page-number placeholder. The accent (inverted) drawing-page is emitted
+    # whenever any inverted page (section OR closing) needs it — decoupled from
+    # the section-ordinal count so a closing-only deck still gets its accent fill.
     drawing_pages = _drawing_page_style_xml(
         _DRAWING_PAGE_STYLE, _page_fill_attrs(theme), display_page_number=True
     )
-    if section_ordinal:
+    if any(slide.layout in _ACCENT_BG_LAYOUTS for slide in p.slides):
         drawing_pages += _drawing_page_style_xml(
             _SECTION_DRAWING_PAGE_STYLE,
             f'draw:fill="solid" draw:fill-color="{_attr(theme.accent)}"',
@@ -979,6 +1235,7 @@ def build_content_xml(p: Presentation, theme: Theme) -> str:
         "<office:automatic-styles>"
         f"{styles.xml()}"
         f"{graphics.xml()}"
+        f"{spans.xml()}"
         f"{_list_style_xml(_LIST_STYLE_NAME, theme)}"
         f"{drawing_pages}"
         f'<style:style style:name="{_GRAPHIC_STYLE}" style:family="graphic">'
@@ -1165,7 +1422,10 @@ def build_meta_xml(title: str) -> str:
 
 def render_odp(p: Presentation, out_path: Path) -> Path:
     """Render presentation ``p`` to a native ``.odp`` file at ``out_path``."""
-    theme = THEMES.get(p.theme, THEMES["academic"])
+    # resolve_design returns the preset THEMES[p.theme] for v1 decks (design is
+    # None) and a custom Theme built from the per-deck DesignSpec otherwise, so a
+    # deck carrying design tokens actually renders with them.
+    theme = resolve_design(p)
     parts: dict[str, str | bytes] = {
         "content.xml": build_content_xml(p, theme),
         "styles.xml": build_styles_xml(theme, p.title),
