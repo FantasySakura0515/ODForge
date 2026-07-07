@@ -73,8 +73,8 @@ def new(
         "--out",
         help="輸出檔案路徑；副檔名決定文件類型（.odt / .odp / .ods）。",
     ),
-    theme: Theme = typer.Option(
-        Theme.academic, "--theme", help="簡報主題，僅對 .odp 有效。"
+    theme: Optional[Theme] = typer.Option(
+        None, "--theme", help="簡報主題，僅對 .odp 有效；省略則尊重 LLM 的選擇。"
     ),
     backend: Optional[Backend] = typer.Option(
         None, "--backend", help="LLM 後端；省略則使用預設。"
@@ -102,8 +102,9 @@ def new(
         _err.print(f"[red]FAIL[/red] 內容產生失敗：{_concise(exc)}")
         raise typer.Exit(code=1)
 
-    # --theme only means anything for presentations; leave the default alone.
-    if doc_type == "presentation" and theme != Theme.academic:
+    # --theme only matters for presentations. When given, it always overrides
+    # the LLM's theme; when omitted (None), the LLM's choice is respected.
+    if doc_type == "presentation" and theme is not None:
         ir = ir.model_copy(update={"theme": theme.value})
 
     out_path = out.resolve()
