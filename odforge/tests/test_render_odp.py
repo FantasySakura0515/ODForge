@@ -283,6 +283,21 @@ def test_resolve_design_scale_selects_sizes():
 # ---------------------------------------------------------------------------
 
 
+def _q(prefix: str, local: str) -> str:
+    """Clark-notation name for a namespaced attribute/element in the NS dict."""
+    return "{%s}%s" % (NS[prefix], local)
+
+
+def parse_fragment(fragment: str):
+    """Parse a builder's XML fragment inside a namespaced root element.
+
+    Proves the fragment is well-formed and enables namespace-qualified
+    assertions instead of raw substring matching.
+    """
+    decls = " ".join(f'xmlns:{p}="{u}"' for p, u in NS.items())
+    return etree.fromstring(f"<root {decls}>{fragment}</root>".encode("utf-8"))
+
+
 def test_graphic_styles_dedup_and_sequential_names():
     gs = _GraphicStyles()
     a = gs.name_for_fill("#FF0000")
@@ -297,50 +312,70 @@ def test_graphic_styles_dedup_and_sequential_names():
 def test_rect_xml_emits_draw_rect_and_style_fill_color():
     gs = _GraphicStyles()
     name = gs.name_for_fill("#1A4B8C")
-    rect = _rect_xml(1, 2, 5.5, 3, fill="#1A4B8C", style_name=name)
-    assert rect.startswith("<draw:rect")
-    assert f'draw:style-name="{name}"' in rect
-    assert 'svg:x="1cm"' in rect and 'svg:y="2cm"' in rect
-    assert 'svg:width="5.5cm"' in rect and 'svg:height="3cm"' in rect
-    styles = gs.xml()
-    assert 'draw:fill="solid"' in styles
-    assert 'draw:fill-color="#1A4B8C"' in styles
-    assert 'draw:stroke="none"' in styles          # a pure fill draws no border
+    root = parse_fragment(
+        _rect_xml(1, 2, 5.5, 3, fill="#1A4B8C", style_name=name) + gs.xml()
+    )
+    rect = root.find("draw:rect", NS)
+    assert rect is not None
+    assert rect.get(_q("draw", "style-name")) == name
+    assert rect.get(_q("svg", "x")) == "1cm"
+    assert rect.get(_q("svg", "y")) == "2cm"
+    assert rect.get(_q("svg", "width")) == "5.5cm"
+    assert rect.get(_q("svg", "height")) == "3cm"
+    style = root.find("style:style", NS)
+    assert style is not None
+    assert style.get(_q("style", "name")) == name
+    assert style.get(_q("style", "family")) == "graphic"
+    props = style.find("style:graphic-properties", NS)
+    assert props.get(_q("draw", "fill")) == "solid"
+    assert props.get(_q("draw", "fill-color")) == "#1A4B8C"
+    assert props.get(_q("draw", "stroke")) == "none"  # a pure fill draws no border
 
 
 def test_rect_fill_opacity_below_one_emits_percentage():
     gs = _GraphicStyles()
     gs.name_for_fill("#000000", opacity=0.5)
-    assert 'draw:opacity="50%"' in gs.xml()
+    props = parse_fragment(gs.xml()).find(".//style:graphic-properties", NS)
+    assert props.get(_q("draw", "opacity")) == "50%"
     # full opacity omits the attribute entirely
     solid = _GraphicStyles()
     solid.name_for_fill("#000000")
-    assert "draw:opacity" not in solid.xml()
+    props = parse_fragment(solid.xml()).find(".//style:graphic-properties", NS)
+    assert props.get(_q("draw", "opacity")) is None
 
 
 def test_rounded_rect_emits_corner_radius_only_when_positive():
     gs = _GraphicStyles()
     name = gs.name_for_fill("#FFFFFF")
-    rounded = _rect_xml(0, 0, 4, 3, fill="#FFFFFF",
-                        corner_radius_cm=0.4, style_name=name)
-    assert 'draw:corner-radius="0.4cm"' in rounded
-    sharp = _rect_xml(0, 0, 4, 3, fill="#FFFFFF", style_name=name)
-    assert "corner-radius" not in sharp
+    rounded = parse_fragment(
+        _rect_xml(0, 0, 4, 3, fill="#FFFFFF", corner_radius_cm=0.4, style_name=name)
+    ).find("draw:rect", NS)
+    assert rounded.get(_q("draw", "corner-radius")) == "0.4cm"
+    sharp = parse_fragment(
+        _rect_xml(0, 0, 4, 3, fill="#FFFFFF", style_name=name)
+    ).find("draw:rect", NS)
+    assert sharp.get(_q("draw", "corner-radius")) is None
 
 
 def test_line_xml_emits_draw_line_and_stroke_style():
     gs = _GraphicStyles()
     name = gs.name_for_stroke("#3DD6E6", 2.0)
-    line = _line_xml(1, 1, 10, 1, color="#3DD6E6", width_pt=2.0, style_name=name)
-    assert line.startswith("<draw:line")
-    assert f'draw:style-name="{name}"' in line
-    assert 'svg:x1="1cm"' in line and 'svg:x2="10cm"' in line
-    assert 'svg:y1="1cm"' in line and 'svg:y2="1cm"' in line
-    styles = gs.xml()
-    assert 'draw:stroke="solid"' in styles
-    assert 'svg:stroke-color="#3DD6E6"' in styles
-    assert 'svg:stroke-width="2pt"' in styles
-    assert 'draw:fill="none"' in styles            # a pure stroke has no fill
+    root = parse_fragment(
+        _line_xml(1, 1, 10, 1, color="#3DD6E6", width_pt=2.0, style_name=name)
+        + gs.xml()
+    )
+    line = root.find("draw:line", NS)
+    assert line is not None
+    assert line.get(_q("draw", "style-name")) == name
+    assert line.get(_q("svg", "x1")) == "1cm"
+    assert line.get(_q("svg", "y1")) == "1cm"
+    assert line.get(_q("svg", "x2")) == "10cm"
+    assert line.get(_q("svg", "y2")) == "1cm"
+    props = root.find(".//style:graphic-properties", NS)
+    assert props.get(_q("draw", "stroke")) == "solid"
+    assert props.get(_q("svg", "stroke-color")) == "#3DD6E6"
+    assert props.get(_q("svg", "stroke-width")) == "2pt"
+    assert props.get(_q("draw", "fill")) == "none"  # a pure stroke has no fill
 
 
 def test_dark_theme_styles_use_gradient_background():
@@ -366,4 +401,45 @@ def test_light_themes_keep_solid_background():
         assert all(p.get("{%s}fill" % NS["draw"]) == "solid" for p in dpp)
         assert all(
             p.get("{%s}fill-color" % NS["draw"]) == THEMES[preset].bg for p in dpp
+        )
+
+
+def test_dark_theme_content_page_style_uses_gradient():
+    """The per-page drawing-page style in content.xml overrides the master's, so
+    the dark gradient must be wired there too or it never paints a slide."""
+    p = Presentation(title="t", theme="dark",
+                     slides=[Slide(layout="title", title="T")])
+    croot = etree.fromstring(build_content_xml(p, THEMES["dark"]).encode("utf-8"))
+    # the gradient content.xml references must be the one styles.xml defines
+    sroot = etree.fromstring(build_styles_xml(THEMES["dark"]).encode("utf-8"))
+    grad_name = sroot.findall(".//draw:gradient", NS)[0].get(_q("draw", "name"))
+    dpp = croot.findall(".//style:drawing-page-properties", NS)
+    assert dpp
+    assert all(pr.get(_q("draw", "fill")) == "gradient" for pr in dpp)
+    assert all(
+        pr.get(_q("draw", "fill-gradient-name")) == grad_name for pr in dpp
+    )
+    # and every page references that (sole) drawing-page automatic style
+    dp_styles = [
+        s for s in croot.findall(".//style:style", NS)
+        if s.get(_q("style", "family")) == "drawing-page"
+    ]
+    assert len(dp_styles) == 1
+    dp_name = dp_styles[0].get(_q("style", "name"))
+    for page in croot.findall(".//draw:page", NS):
+        assert page.get(_q("draw", "style-name")) == dp_name
+
+
+def test_light_theme_content_page_style_stays_solid():
+    for preset in ("academic", "minimal"):
+        p = Presentation(title="t", theme=preset,
+                         slides=[Slide(layout="title", title="T")])
+        croot = etree.fromstring(
+            build_content_xml(p, THEMES[preset]).encode("utf-8")
+        )
+        dpp = croot.findall(".//style:drawing-page-properties", NS)
+        assert dpp
+        assert all(pr.get(_q("draw", "fill")) == "solid" for pr in dpp)
+        assert all(
+            pr.get(_q("draw", "fill-color")) == THEMES[preset].bg for pr in dpp
         )

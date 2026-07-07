@@ -82,6 +82,33 @@ def _lighten(hex_color: str, amount: float) -> str:
     return f"#{r:02X}{g:02X}{b:02X}"
 
 
+def _uses_gradient_bg(theme: Theme) -> bool:
+    """True when this theme paints pages with the background gradient.
+
+    Only the built-in dark preset qualifies; light presets and per-deck
+    ``DesignSpec`` themes keep a flat solid fill.
+    """
+    return theme is THEMES["dark"]
+
+
+def _page_fill_attrs(theme: Theme) -> str:
+    """Fill attributes for a drawing-page style (gradient for dark, else solid).
+
+    Used by *both* ``build_styles_xml`` (master page) and ``build_content_xml``
+    (per-page ``dp1``): per ODF style resolution a page's own drawing-page style
+    overrides the master's, so the gradient must be referenced from content.xml
+    too or it would never paint a slide. The ``<draw:gradient>`` definition
+    lives in styles.xml ``office:styles`` and is document-scoped, hence
+    referenceable from content.xml automatic styles.
+    """
+    if _uses_gradient_bg(theme):
+        return (
+            'draw:fill="gradient"'
+            f' draw:fill-gradient-name="{_attr(_GRADIENT_NAME)}"'
+        )
+    return f'draw:fill="solid" draw:fill-color="{_attr(theme.bg)}"'
+
+
 def _ns_decls(ns: dict[str, str]) -> str:
     """Render ``xmlns:`` declarations for the given namespace mapping."""
     return " ".join(f'xmlns:{prefix}="{uri}"' for prefix, uri in ns.items())
@@ -369,8 +396,7 @@ def build_content_xml(p: Presentation, theme: Theme) -> str:
         f"{graphics.xml()}"
         f'<style:style style:name="{_DRAWING_PAGE_STYLE}"'
         f' style:family="drawing-page">'
-        f'<style:drawing-page-properties draw:fill="solid"'
-        f' draw:fill-color="{_attr(theme.bg)}"/>'
+        f"<style:drawing-page-properties {_page_fill_attrs(theme)}/>"
         f"</style:style>"
         f'<style:style style:name="{_GRAPHIC_STYLE}" style:family="graphic">'
         f'<style:graphic-properties draw:fill="none" draw:stroke="none"/>'
@@ -397,7 +423,7 @@ def build_styles_xml(theme: Theme) -> str:
     fading to a slightly lighter variant); light presets keep a flat solid fill.
     """
     font_family = f"'{theme.font}','微軟正黑體',sans-serif"
-    if theme is THEMES["dark"]:
+    if _uses_gradient_bg(theme):
         office_styles = (
             f"<office:styles>"
             f'<draw:gradient draw:name="{_attr(_GRADIENT_NAME)}"'
@@ -408,12 +434,9 @@ def build_styles_xml(theme: Theme) -> str:
             f' draw:angle="450" draw:border="0%"/>'
             f"</office:styles>"
         )
-        page_fill = (
-            f'draw:fill="gradient" draw:fill-gradient-name="{_attr(_GRADIENT_NAME)}"'
-        )
     else:
         office_styles = ""
-        page_fill = f'draw:fill="solid" draw:fill-color="{_attr(theme.bg)}"'
+    page_fill = _page_fill_attrs(theme)
     return (
         f"{_XML_DECL}"
         f"<office:document-styles {_ns_decls(_STYLES_NS)}"
