@@ -1,7 +1,7 @@
 :root {
   --page-bg:#eceae4; --bg:#f6f5f2; --surface:#ffffff; --surface2:#eef1f7; --text:#191d24;
   --muted:#6b7079; --line:#e3e0d9; --accent:#234e9e; --accent2:#8a6d1f; --glow:rgba(35,78,158,.20);
-  --pass:#2e8b57; --warn:#b6841c; --crit:#c0453f; --grid-op:0;
+  --pass:#2e8b57; --warn:#b6841c; --crit:#c0453f; --grid-op:0; --on-accent:#ffffff;
   --f-brand:Georgia,"Noto Serif TC","Times New Roman",serif;
   --f-ui:"微軟正黑體","Microsoft JhengHei",system-ui,-apple-system,"Segoe UI",sans-serif;
   --f-mono:"Consolas","SFMono-Regular",ui-monospace,monospace;
@@ -11,18 +11,18 @@
   :root {
     --page-bg:#070a0e; --bg:#0b0e14; --surface:#12161f; --surface2:#171d29; --text:#d6dee8;
     --muted:#6d7787; --line:#212a38; --accent:#35d0ba; --accent2:#6aa9ff; --glow:rgba(53,208,186,.45);
-    --pass:#4ade80; --warn:#fbbf44; --crit:#f87171; --grid-op:.5;
+    --pass:#4ade80; --warn:#fbbf44; --crit:#f87171; --grid-op:.5; --on-accent:#06221d;
     --f-title:"微軟正黑體","Microsoft JhengHei",system-ui,sans-serif;
   }
 }
 :root[data-theme="light"] {
   --page-bg:#eceae4; --bg:#f6f5f2; --surface:#ffffff; --surface2:#eef1f7; --text:#191d24;
   --muted:#6b7079; --line:#e3e0d9; --accent:#234e9e; --accent2:#8a6d1f; --glow:rgba(35,78,158,.20);
-  --pass:#2e8b57; --warn:#b6841c; --crit:#c0453f; --grid-op:0; --f-title:Georgia,"Noto Serif TC",serif;
+  --pass:#2e8b57; --warn:#b6841c; --crit:#c0453f; --grid-op:0; --on-accent:#ffffff; --f-title:Georgia,"Noto Serif TC",serif;
 }
 :root[data-theme="dark"] {
   --page-bg:#070a0e; --bg:#0b0e14; --surface:#12161f; --surface2:#171d29; --text:#d6dee8;
   --muted:#6d7787; --line:#212a38; --accent:#35d0ba; --accent2:#6aa9ff; --glow:rgba(53,208,186,.45);
-  --pass:#4ade80; --warn:#fbbf44; --crit:#f87171; --grid-op:.5;
+  --pass:#4ade80; --warn:#fbbf44; --crit:#f87171; --grid-op:.5; --on-accent:#06221d;
   --f-title:"微軟正黑體","Microsoft JhengHei",system-ui,sans-serif;
 }
