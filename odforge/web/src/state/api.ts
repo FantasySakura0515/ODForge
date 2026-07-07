@@ -1,28 +1,15 @@
-import type { DocType, Outline } from "./types";
+import type { DocType } from "./types";
 
-export async function postGenerate(docType: DocType, outline: Outline): Promise<string> {
-  const response = await fetch("/api/jobs", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ docType, outline }),
+export interface GenerateBody { prompt: string; doc_type: DocType; mode?: string; theme?: string; interactive?: boolean; qa?: boolean; }
+
+export async function postGenerate(body: GenerateBody): Promise<{ job_id: string }> {
+  const res = await fetch("/api/generate", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
-
-  if (!response.ok) {
-    throw new Error(`API error: ${response.statusText}`);
-  }
-
-  const data = await response.json();
-  return data.jobId;
+  if (!res.ok) throw new Error(`generate 失敗:${res.status}`);
+  return res.json();
 }
 
-export function eventsUrl(jobId: string): string {
-  return `/api/jobs/${jobId}/events`;
-}
-
-export function previewUrl(jobId: string, unitNo: number): string {
-  return `/api/jobs/${jobId}/preview/${unitNo}.png`;
-}
-
-export function downloadUrl(jobId: string): string {
-  return `/api/jobs/${jobId}/download`;
-}
+export const eventsUrl = (jobId: string) => `/api/jobs/${jobId}/events`;
+export const previewUrl = (jobId: string, n: number) => `/api/jobs/${jobId}/preview/${n}.png`;
+export const downloadUrl = (jobId: string) => `/api/jobs/${jobId}/download`;
