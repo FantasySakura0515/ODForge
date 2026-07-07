@@ -12,7 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from odforge import llm
-from odforge.ir import Presentation
+from odforge.ir import Outline, PageRole, Presentation
 
 
 # ---------------------------------------------------------------------------
@@ -268,3 +268,182 @@ def test_unknown_doc_type_raises(monkeypatch):
         backend.generate_ir("x", "banana")
     # no API call should have been made
     assert len(client.completions.calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 15.1 — generate_outline (stage-1: design + page-role outline)
+# ---------------------------------------------------------------------------
+
+# A palette whose contrasts all clear WCAG against a white bg (reused from ir).
+_GOOD_PALETTE = {
+    "bg": "#FFFFFF",
+    "surface": "#F5F5F5",
+    "text": "#1A1A1A",
+    "muted": "#6B7280",
+    "accent": "#2563EB",
+}
+_GOOD_FONTS = {"display": "Noto Serif TC", "body": "Noto Sans TC"}
+
+_VALID_OUTLINE = {
+    "mode": "presenter",
+    "design": {
+        "palette": _GOOD_PALETTE,
+        "fonts": _GOOD_FONTS,
+        "scale": "display",
+        "mode": "presenter",
+    },
+    "pages": [
+        {"role": "title", "title": "光合作用", "gist": "開場,點出主題"},
+        {"role": "agenda", "title": "本日大綱", "gist": "三個段落預告"},
+        {"role": "section", "title": "反應原理", "gist": "進入第一節"},
+        {"role": "closing", "title": "結語", "gist": "回顧與提問"},
+    ],
+}
+
+# Design fails contrast (text #EEEEEE on #FFFFFF ≈ 1.1:1 < 4.5) but the pages
+# are perfectly valid → a *design-only* failure.
+_BAD_DESIGN_OUTLINE = {
+    "mode": "presenter",
+    "design": {
+        "palette": {
+            "bg": "#FFFFFF",
+            "surface": "#FFFFFF",
+            "text": "#EEEEEE",
+            "muted": "#F0F0F0",
+            "accent": "#FAFAFA",
+        },
+        "fonts": _GOOD_FONTS,
+        "scale": "standard",
+        "mode": "presenter",
+    },
+    "pages": [
+        {"role": "title", "title": "標題", "gist": "開場"},
+        {"role": "closing", "title": "結語", "gist": "收尾"},
+    ],
+}
+
+# Design is fine; a page carries an unknown role → a *pages-invalid* failure
+# that survives dropping "design", so it must retry-then-raise (not be tolerated).
+_INVALID_PAGES_OUTLINE = {
+    "mode": "presenter",
+    "design": {
+        "palette": _GOOD_PALETTE,
+        "fonts": _GOOD_FONTS,
+        "scale": "standard",
+        "mode": "presenter",
+    },
+    "pages": [{"role": "banana", "title": "壞版型", "gist": "x"}],
+}
+
+
+def test_outline_model_defaults():
+    o = Outline.model_validate(
+        {"pages": [{"role": "title", "title": "封面", "gist": "開場"}]}
+    )
+    assert o.mode == "presenter"  # default when omitted
+    assert o.design is None  # optional
+    assert isinstance(o.pages[0], PageRole)
+    # JSON-serializable for the front-end.
+    assert json.loads(o.model_dump_json())["pages"][0]["role"] == "title"
+
+
+def test_outline_requires_at_least_one_page():
+    with pytest.raises(ValidationError):
+        Outline.model_validate({"pages": []})
+
+
+# ① fake tool_call returning valid Outline JSON → Outline instance
+def test_generate_outline_valid_roundtrip(monkeypatch):
+    backend = _backend(monkeypatch, [_make_response(json.dumps(_VALID_OUTLINE))])
+    result = backend.generate_outline("做一份光合作用簡報")
+    assert isinstance(result, Outline)
+    assert result.mode == "presenter"
+    assert result.design is not None
+    assert result.design.scale == "display"
+    assert [p.role for p in result.pages] == ["title", "agenda", "section", "closing"]
+
+
+# ② design contrast failure → retry once (call count 2); second failure →
+#    design is None and no exception is raised
+def test_generate_outline_design_failure_strips_design(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch,
+        [
+            _make_response(json.dumps(_BAD_DESIGN_OUTLINE)),
+            _make_response(json.dumps(_BAD_DESIGN_OUTLINE)),
+        ],
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    result = backend.generate_outline("x")
+    assert isinstance(result, Outline)
+    assert result.design is None  # bad palette stripped → preset fallback
+    assert len(result.pages) == 2  # the rest of the outline survived
+    assert len(client.completions.calls) == 2  # a retry did happen
+    # the retry must have fed the contrast error back to the model
+    second = client.completions.calls[1]["messages"]
+    combined = " ".join(m["content"] for m in second)
+    assert "contrast" in combined
+
+
+def test_generate_outline_design_recovers_on_retry(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch,
+        [
+            _make_response(json.dumps(_BAD_DESIGN_OUTLINE)),
+            _make_response(json.dumps(_VALID_OUTLINE)),
+        ],
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    result = backend.generate_outline("x")
+    assert result.design is not None  # second (good) design accepted
+    assert len(client.completions.calls) == 2
+
+
+def test_generate_outline_invalid_pages_retries_then_raises(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch,
+        [
+            _make_response(json.dumps(_INVALID_PAGES_OUTLINE)),
+            _make_response(json.dumps(_INVALID_PAGES_OUTLINE)),
+        ],
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    with pytest.raises(ValidationError):
+        backend.generate_outline("x")
+    assert len(client.completions.calls) == 2  # normal retry-once-then-raise
+
+
+# ③ schema assertion: tools param == Outline.model_json_schema(); tool_choice
+#    forces the function
+def test_generate_outline_tool_choice_and_schema_sent(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_VALID_OUTLINE))]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    backend.generate_outline("x")
+    call = client.completions.calls[0]
+    assert call["tool_choice"] == {
+        "type": "function",
+        "function": {"name": llm.OUTLINE_TOOL_NAME},
+    }
+    assert call["tools"][0]["function"]["name"] == llm.OUTLINE_TOOL_NAME
+    assert call["tools"][0]["function"]["parameters"] == Outline.model_json_schema()
+
+
+def test_generate_outline_no_tool_call_raises(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(None), _make_response(None)]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    with pytest.raises(RuntimeError, match="did not return a tool call"):
+        backend.generate_outline("x")
+    assert len(client.completions.calls) == 2
+
+
+def test_generate_outline_facade_uses_backend(monkeypatch):
+    # ollama backend needs no API key; OpenAI is patched to the fake client.
+    _install_fake_openai(monkeypatch, [_make_response(json.dumps(_VALID_OUTLINE))])
+    monkeypatch.setenv("ODFORGE_BACKEND", "ollama")
+    result = llm.generate_outline("x")
+    assert isinstance(result, Outline)
+    assert result.design is not None

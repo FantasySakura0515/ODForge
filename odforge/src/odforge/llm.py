@@ -20,7 +20,7 @@ import json_repair
 from openai import OpenAI
 from pydantic import ValidationError
 
-from odforge.ir import Presentation, Spreadsheet, TextDoc, parse_ir
+from odforge.ir import Outline, Presentation, Spreadsheet, TextDoc, parse_ir
 
 Document = Union[TextDoc, Presentation, Spreadsheet]
 
@@ -62,11 +62,61 @@ SYSTEM_PROMPT = """\
 請依使用者的需求,產出恰當且完整的文件內容。"""
 
 
+OUTLINE_TOOL_NAME = "emit_outline"
+
+OUTLINE_SYSTEM_PROMPT = """\
+你是 ODForge 的簡報總監,負責在正式撰稿之前,先為整份簡報「定調」:一次決定
+美術方向(DesignSpec)與整份大綱的頁面角色(page roles)。這是兩段式流程的第一段,
+你只做設計與骨架,不寫每頁的細節內容(那是下一段的工作)。
+
+【語言】
+- 一律以繁體中文(zh-TW)思考與輸出,用詞、標點皆採台灣慣用寫法。
+
+【輸出方式】
+- 只透過 emit_outline 工具輸出結果,不要輸出任何一般文字。
+- 產出必須完全符合工具參數的 JSON Schema,且為嚴格合法的 JSON(所有字串以雙引號包裹)。
+
+【第一步:美術方向(design)】
+1. 先從主題「內心」推導 2–3 個候選美術方向(例如:學術淨白、科技深色控制室、暖調人文…),
+   衡量各自的調性、受眾與場合。
+2. 從中「挑定一個」並具體化為 DesignSpec 輸出,不要交出多個選項:
+   - palette:五色 bg / surface / text / muted / accent,皆為 6 位十六進位色碼("#RRGGBB")。
+   - fonts:display 與 body 各挑一,只能從白名單選:
+     Noto Sans TC、Noto Serif TC、微軟正黑體、標楷體。
+   - scale:compact / standard / display 三選一(講者型偏 display,自讀型偏 compact/standard)。
+3. 對比度自我檢查(務必在送出前自行驗算,否則會被退件):
+   - text 對 bg 的對比度需 ≥ 4.5。
+   - accent 對 bg、muted 對 bg 的對比度需 ≥ 3.0。
+   深色底就搭亮色字、亮色底就搭深色字。若沒把握,寧可選對比明確的安全色。
+
+【第二步:頁面角色大綱(pages)】
+可用的 role(與投影片版型一致):
+title、agenda、section、title-content、two-col、comparison、big-fact、quote、chart、closing。
+排版紀律:
+- 「一頁一個想法」:每頁只承載一個重點,gist 用一句話說清楚這頁要講什麼。
+- 開場第一頁一定是 title;若整份 ≥ 8 頁,title 之後緊接一頁 agenda。
+- 用 section 分節,把內容切成幾個段落區塊。
+- 適時穿插 big-fact(關鍵數據)、quote(引言)、chart(圖表)來調節敘事節奏。
+- 同一種 role 不得連續出現 ≥ 3 頁,避免版面單調。
+- 最後一頁一定是 closing 收尾。
+- chart 只有在「使用者的需求裡有真實數據」時才可出現;沒有數據就不要放 chart 頁(不要編造數字)。
+
+【mode:講述型態】
+- presenter(講者型):大字級、極少字,靠講者口述;適合上台簡報。
+- detailed(自讀型):文字完整,能獨立閱讀;適合講義或寄送。
+從使用者意圖判斷該用哪一種;無明確線索時預設 presenter。
+
+請據此輸出一份「設計已定案、骨架已排好」的大綱。"""
+
+
 @runtime_checkable
 class LLMBackend(Protocol):
     """A source that turns a prompt into a validated Document IR."""
 
     def generate_ir(self, prompt: str, doc_type: str) -> Document:  # pragma: no cover
+        ...
+
+    def generate_outline(self, prompt: str) -> Outline:  # pragma: no cover
         ...
 
 
@@ -80,6 +130,43 @@ def _require_env(name: str) -> str:
             f'    bash:        export {name}="你的金鑰"'
         )
     return value
+
+
+def _loads_tool_args(args_json: str) -> dict:
+    """Parse a tool call's ``arguments`` string into a dict.
+
+    Mirrors ``generate_ir``'s JSON handling: plain ``json.loads`` first, then a
+    best-effort ``json_repair`` (DeepSeek occasionally emits malformed JSON).
+    Raises ``json.JSONDecodeError`` if repair also fails, or ``TypeError`` if the
+    payload is valid JSON but not an object.
+    """
+    try:
+        data = json.loads(args_json)
+    except json.JSONDecodeError:
+        data = json_repair.loads(args_json)
+        if not isinstance(data, dict):
+            raise  # repair failed too: re-raise the original JSONDecodeError
+    if not isinstance(data, dict):
+        raise TypeError(
+            f"tool arguments must be a JSON object, got {type(data).__name__}"
+        )
+    return data
+
+
+def _outline_parses_without_design(data: dict) -> bool:
+    """True iff dropping ``design`` makes ``data`` validate as an Outline.
+
+    Used to tell a *design-only* failure (a bad palette — tolerable, the design
+    can be stripped) apart from a *pages-invalid* failure (structural — must be
+    retried then raised).
+    """
+    probe = dict(data)
+    probe.pop("design", None)
+    try:
+        Outline.model_validate(probe)
+        return True
+    except ValidationError:
+        return False
 
 
 class OpenAICompatBackend:
@@ -167,6 +254,91 @@ class OpenAICompatBackend:
         assert last_exc is not None
         raise last_exc
 
+    def generate_outline(self, prompt: str) -> Outline:
+        """Stage-1 of the pipeline: design + page-role outline in one call.
+
+        Forces a function call against ``Outline.model_json_schema()`` (same
+        mechanics as :meth:`generate_ir`). Failure handling is deliberately
+        asymmetric:
+
+        * A **design-only** failure (a palette that can't clear contrast, while
+          the pages themselves are valid) is fed back and retried once; if the
+          retry still can't produce a legible palette, the design is stripped
+          (``design=None`` → preset fallback) and the rest of the outline is
+          accepted. A bad palette never crashes generation.
+        * A **pages-invalid** failure is retried once then raised, exactly like
+          ``generate_ir``.
+        """
+        schema = Outline.model_json_schema()
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": OUTLINE_TOOL_NAME,
+                    "description": "輸出簡報的美術方向(DesignSpec)與 page-role 大綱",
+                    "parameters": schema,
+                },
+            }
+        ]
+        tool_choice = {"type": "function", "function": {"name": OUTLINE_TOOL_NAME}}
+
+        error_summary: Optional[str] = None
+        last_exc: Optional[Exception] = None
+        for attempt in range(2):
+            is_last = attempt == 1
+            messages = [{"role": "system", "content": OUTLINE_SYSTEM_PROMPT}]
+            user_content = prompt
+            if error_summary is not None:
+                user_content = (
+                    f"{prompt}\n\n"
+                    f"[系統提示] 上一次的輸出無法通過驗證,錯誤如下,請修正後重新輸出:\n"
+                    f"{error_summary}"
+                )
+            messages.append({"role": "user", "content": user_content})
+
+            resp = self._client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                max_tokens=int(os.environ.get("ODFORGE_MAX_TOKENS", "8192")),
+            )
+
+            tool_calls = resp.choices[0].message.tool_calls
+            if not tool_calls:
+                error_summary = "模型未呼叫 emit_outline 工具,請務必透過該工具輸出。"
+                last_exc = RuntimeError("model did not return a tool call")
+                continue
+
+            args_json = tool_calls[0].function.arguments
+            try:
+                data = _loads_tool_args(args_json)
+            except (json.JSONDecodeError, TypeError) as exc:
+                error_summary = str(exc)
+                last_exc = exc
+                continue
+
+            try:
+                return Outline.model_validate(data)
+            except ValidationError as exc:
+                last_exc = exc
+                error_summary = str(exc)
+                # Only-the-design-is-bad? Then the palette is the problem.
+                if _outline_parses_without_design(data):
+                    if is_last:
+                        # Retry already spent on a bad palette: strip it and
+                        # accept the rest — never crash on a bad palette.
+                        stripped = dict(data)
+                        stripped.pop("design", None)
+                        return Outline.model_validate(stripped)
+                    # First design failure: feed the error back, retry once.
+                    continue
+                # Pages are structurally invalid: retry-once-then-raise.
+                continue
+
+        assert last_exc is not None
+        raise last_exc
+
 
 # ---------------------------------------------------------------------------
 # Backend registry + facade
@@ -207,3 +379,8 @@ def generate_ir(
 ) -> Document:
     """Facade: resolve a backend and generate a validated Document IR."""
     return get_backend(backend).generate_ir(prompt, doc_type)
+
+
+def generate_outline(prompt: str, backend: Optional[str] = None) -> Outline:
+    """Facade: resolve a backend and generate a stage-1 design + outline."""
+    return get_backend(backend).generate_outline(prompt)

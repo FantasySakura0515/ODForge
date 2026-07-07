@@ -283,6 +283,51 @@ class Presentation(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Outline — stage-1 of the two-stage LLM pipeline (Task 15.1)
+#
+# Before any content is written, the model designs the deck's art direction
+# (``DesignSpec``) and a page-role outline in one call. Stage 2 later fills each
+# ``PageRole`` with real content. These models are plain, JSON-serializable
+# pydantic so the front-end cockpit can consume an Outline directly.
+# ---------------------------------------------------------------------------
+
+# The page roles mirror ``Slide.layout`` exactly — an outline page names the
+# layout its stage-2 slide will use.
+PageRoleName = Literal[
+    "title", "title-content", "two-col", "section", "big-fact",
+    "quote", "agenda", "comparison", "chart", "closing",
+]
+
+
+class PageRole(BaseModel):
+    """One page in an :class:`Outline`.
+
+    ``role`` is the layout the page will render as (same vocabulary as
+    ``Slide.layout``); ``title`` is its heading; ``gist`` is a one-line summary
+    of what the page says — it guides stage-2 content generation.
+    """
+
+    role: PageRoleName
+    title: str
+    gist: str = ""
+
+
+class Outline(BaseModel):
+    """Stage-1 blueprint: the deck's art direction plus a page-role outline.
+
+    ``design`` is optional — when the model's palette can't pass contrast the
+    pipeline strips it (``None``) and the renderer falls back to a preset theme,
+    rather than crashing on a bad palette. ``mode`` picks the narrative register
+    (``presenter`` = 講者型, large-type/minimal; ``detailed`` = 自讀型, complete
+    text). At least one page is required.
+    """
+
+    design: Optional[DesignSpec] = None
+    mode: Literal["detailed", "presenter"] = "presenter"
+    pages: List[PageRole] = Field(min_length=1)
+
+
+# ---------------------------------------------------------------------------
 # Spreadsheet
 # ---------------------------------------------------------------------------
 
