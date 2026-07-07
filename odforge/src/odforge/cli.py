@@ -20,7 +20,9 @@ from rich.table import Table
 from odforge.check import check_odf, diff_docx_odt
 from odforge.llm import generate_ir
 from odforge.render import render
+from odforge.textmetrics import check_budget
 from odforge.textutil import concise
+from odforge.themes import resolve_design
 from odforge.validate import find_soffice, validate_odf
 
 # Output extension -> IR doc_type. Also the source of the "supported types"
@@ -106,6 +108,15 @@ def new(
     # the LLM's theme; when omitted (None), the LLM's choice is respected.
     if doc_type == "presentation" and theme is not None:
         ir = ir.model_copy(update={"theme": theme.value})
+
+    # Soft layout-budget gate: warn (never fail) when a slide's text overruns its
+    # frames. The hard enforcement + LLM retry loop is Task 15.2's job; here we
+    # only surface the estimate so a human can see it before opening the file.
+    if doc_type == "presentation":
+        resolved = resolve_design(ir)
+        for slide in ir.slides:
+            for warning in check_budget(slide, resolved):
+                _err.print(f"[yellow]WARN[/yellow] {escape(warning)}")
 
     out_path = out.resolve()
     try:

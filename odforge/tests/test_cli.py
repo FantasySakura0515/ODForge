@@ -225,6 +225,35 @@ def test_new_creates_missing_parent_dir(tmp_path, monkeypatch, sample_presentati
     assert (tmp_path / "sub" / "deep" / "out.odp").exists()
 
 
+def test_over_budget_deck_warns_but_exits_0(tmp_path, monkeypatch):
+    # A deck whose slide overflows its frame must emit a yellow WARN but still
+    # succeed (exit 0) — the hard enforcement loop is Task 15.2's, not the CLI's.
+    from odforge.ir import Presentation, Slide
+
+    over = Presentation(
+        title="超載簡報",
+        slides=[
+            Slide(
+                layout="title-content",
+                title="爆量頁",
+                bullets=[f"這是第{i}條非常冗長的項目內容說明文字" for i in range(40)],
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "odforge.cli.generate_ir",
+        lambda prompt, doc_type, backend=None: over,
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["new", "做簡報", "-o", "out.odp", "--no-soffice"])
+    assert result.exit_code == 0, _out(result)
+    out = _out(result)
+    assert "WARN" in out
+    assert "爆量頁" in out
+    assert "bullets" in out
+    assert (tmp_path / "out.odp").exists()
+
+
 def test_validation_failure_exit_1(tmp_path, monkeypatch, sample_text_doc):
     from odforge.validate import ValidationReport
 
