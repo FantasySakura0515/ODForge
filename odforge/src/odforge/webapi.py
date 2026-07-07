@@ -44,6 +44,27 @@ from odforge.render import render
 # The odp mimetype, verbatim per the project's ODF mimetype constants.
 ODP_MIME = "application/vnd.oasis.opendocument.presentation"
 
+# CORS: an explicit localhost dev allowlist (never wildcard-with-credentials).
+# This API has no auth and spends the user's real LLM key, so a permissive
+# ``*`` + credentials origin would let ANY site the user visits drive it from
+# their browser. Override with ``ODFORGE_CORS_ORIGINS`` (comma-separated).
+_DEFAULT_CORS_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+
+def _cors_origins() -> List[str]:
+    """Resolve the CORS allowlist from ``ODFORGE_CORS_ORIGINS`` or the default."""
+    raw = os.environ.get("ODFORGE_CORS_ORIGINS")
+    if raw:
+        origins = [o.strip() for o in raw.split(",") if o.strip()]
+        if origins:
+            return origins
+    return list(_DEFAULT_CORS_ORIGINS)
+
 # How long an idle SSE subscriber sleeps between liveness checks. Small enough
 # that a newly-emitted event is delivered promptly; a fallback only — emits also
 # fire ``job.updated`` to wake the subscriber immediately.
@@ -264,14 +285,22 @@ async def run_job(job: Job) -> None:
         await _emit(job, "error", {"message": str(exc), "stage": stage})
 
 
-async def regenerate_slide(job: Job, n: int, instruction: Optional[str]) -> None:
-    """Regenerate ONLY page ``n`` and push a fresh slide + preview.
+async def regenerate_slide(
+    job: Job, n: int, instruction: Optional[str]
+) -> Dict[str, Any]:
+    """Regenerate ONLY page ``n`` and return the fresh slide + preview URL.
 
     Builds a one-page sub-outline from that page's role/title/gist (the same
     shape the QA repair path uses), folding ``instruction`` into the gist, and
     re-runs stage 2 against just that page. Untouched pages are never re-sent,
     so they cannot drift. Then the deck is re-rendered and page ``n``'s preview
     refreshed.
+
+    This is a **synchronous** operation (unlike initial generation): the result
+    comes back to the caller in the HTTP response, not via the SSE stream — that
+    stream's lifecycle already ended at ``complete``. Returns
+    ``{"n", "slide", "preview_url"}``; ``preview_url`` is ``None`` when previews
+    are unavailable (no soffice).
     """
     assert job.ir is not None and job.outline is not None  # guarded by caller
     base = job.outline.pages[n - 1]
@@ -286,19 +315,18 @@ async def regenerate_slide(job: Job, n: int, instruction: Optional[str]) -> None
     repaired = await asyncio.to_thread(generate_slides, sub, job.backend)
     if repaired.slides:
         job.ir.slides[n - 1] = repaired.slides[0]
-    await _emit(
-        job,
-        "slide_done",
-        {"n": n, "slide": job.ir.slides[n - 1].model_dump(mode="json")},
-    )
 
     await asyncio.to_thread(render, job.ir, job.odp_path)
     try:
         paths = await asyncio.to_thread(render_pages, job.odp_path, job.preview_dir)
     except Exception:  # noqa: BLE001 - best-effort (PreviewUnavailable et al.)
         paths = []
-    if len(paths) >= n:
-        await _emit(job, "preview_ready", {"n": n, "url": _preview_url(job, n)})
+    preview_url = _preview_url(job, n) if len(paths) >= n else None
+    return {
+        "n": n,
+        "slide": job.ir.slides[n - 1].model_dump(mode="json"),
+        "preview_url": preview_url,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -336,11 +364,13 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
     ``%TEMP%/odforge-jobs``); tests point it at a temp path for isolation.
     """
     app = FastAPI(title="ODForge Web API", version=__version__)
-    # Local developer tool: CORS wide open so any front-end origin can drive it.
+    # Explicit origin allowlist, credentials OFF. A local browser can still reach
+    # 127.0.0.1, so binding to localhost is NOT a substitute — the origin check
+    # is what stops a random visited site from driving this tool.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=_cors_origins(),
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -378,7 +408,11 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
         async def event_stream():
             cursor = 0
             while True:
-                # Replay/emit everything appended since our cursor.
+                # Replay/emit everything appended since our cursor. The generation
+                # lifecycle ends at ``complete`` (or ``error``); the stream closes
+                # there. Post-generation edits use the synchronous /regenerate
+                # endpoint (its result comes back in the HTTP response, not here),
+                # so nothing meaningful is appended after the terminal event.
                 while cursor < len(job.events):
                     ev = job.events[cursor]
                     cursor += 1
@@ -433,8 +467,16 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
             )
         if not 1 <= n <= len(job.ir.slides):
             raise HTTPException(status_code=404, detail="slide index out of range")
-        await regenerate_slide(job, n, body.instruction)
-        return {"ok": True, "n": n}
+        try:
+            result = await regenerate_slide(job, n, body.instruction)
+        except Exception as exc:  # noqa: BLE001 - clean error, never a 500 traceback
+            # Clean, structured error (the run_job error shape) instead of a bare
+            # 500 traceback; job.status is left intact — the existing deck is fine.
+            raise HTTPException(
+                status_code=500,
+                detail={"message": str(exc), "stage": "regenerate"},
+            )
+        return {"ok": True, **result}
 
     @app.get("/api/jobs/{job_id}/preview/{n}.png")
     async def preview(job_id: str, n: int) -> FileResponse:

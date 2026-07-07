@@ -114,26 +114,34 @@ def app(tmp_path):
     return webapi.create_app(jobs_dir=tmp_path / "jobs")
 
 
-def _parse_sse(text: str):
-    """Parse a raw SSE body into a list of ``{"event", "data"}`` dicts."""
+def _stream_events(resp, expected):
+    """Read frames off a live SSE response, stopping after ``expected`` events.
+
+    The ``/events`` stream stays open past ``complete`` (``complete`` is a
+    milestone, not the stream terminator — see webapi.md), so reading to EOF
+    would block. We know how many events the job has logged, so we read that
+    many and break, which closes the connection on ``with`` exit.
+    """
     events = []
     cur = {}
-    for line in text.splitlines():
-        if line == "":
-            if cur:
-                events.append(cur)
-                cur = {}
-            continue
-        if line.startswith(":"):  # comment / ping
+    for raw in resp.iter_lines():
+        line = raw.rstrip("\r")
+        if line == "" or line.startswith(":"):  # event boundary / comment
             continue
         field, _, value = line.partition(":")
         value = value[1:] if value.startswith(" ") else value
         if field == "event":
             cur["event"] = value
         elif field == "data":
-            cur["data"] = cur.get("data", "") + value
-    if cur:
-        events.append(cur)
+            # Our emitter writes exactly one single-line data field per event,
+            # always after the event line — so a data line *completes* an event.
+            # Finalise here and stop at ``expected`` WITHOUT waiting for the
+            # trailing blank line (the stream never EOFs, so waiting would hang).
+            cur["data"] = value
+            events.append(cur)
+            cur = {}
+            if len(events) >= expected:
+                break
     return events
 
 
@@ -198,12 +206,12 @@ def test_sse_replay_over_http(app, monkeypatch):
     _install_fakes(monkeypatch, n=2)
     job = webapi.create_job(app, prompt="x")
     asyncio.run(webapi.run_job(job))  # complete before subscribing
+    expected = len(job.events)
 
     with TestClient(app) as client:
         with client.stream("GET", f"/api/jobs/{job.id}/events") as resp:
             assert resp.status_code == 200
-            body = "".join(resp.iter_text())
-    events = _parse_sse(body)
+            events = _stream_events(resp, expected)
     names = [e["event"] for e in events]
     assert names == [
         "outline",
@@ -216,6 +224,19 @@ def test_sse_replay_over_http(app, monkeypatch):
     # data is valid JSON on every frame
     for e in events:
         json.loads(e["data"])
+
+
+def test_sse_stream_terminates_at_complete(app, monkeypatch):
+    """The stream ends at ``complete`` — no infinite hang for a finished job."""
+    _install_fakes(monkeypatch, n=2)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+    with TestClient(app) as client:
+        with client.stream("GET", f"/api/jobs/{job.id}/events") as resp:
+            # read to EOF — a terminating stream closes, so this cannot hang
+            body = "".join(resp.iter_text())
+    assert body.count("event: complete") == 1
+    assert body.rstrip().endswith("}")  # last frame is the complete event's data
 
 
 def test_preview_degrades_when_unavailable(app, monkeypatch):
@@ -418,7 +439,6 @@ def test_regenerate_reruns_only_that_page(app, monkeypatch):
 
     monkeypatch.setattr(webapi, "generate_slides", recording_slides)
 
-    events_before = len(job.events)
     with TestClient(app) as client:
         r = client.post(
             f"/api/jobs/{job.id}/slides/2/regenerate",
@@ -436,10 +456,11 @@ def test_regenerate_reruns_only_that_page(app, monkeypatch):
     assert job.ir.slides[0].title == original_titles[0]
     assert job.ir.slides[2].title == original_titles[2]
 
-    # a fresh slide_done + preview_ready for page 2 were pushed onto the stream
-    new = job.events[events_before:]
-    assert any(e["event"] == "slide_done" and e["data"]["n"] == 2 for e in new)
-    assert any(e["event"] == "preview_ready" and e["data"]["n"] == 2 for e in new)
+    # the fresh slide + preview URL are DELIVERED in the HTTP response body
+    body = r.json()
+    assert body["ok"] is True and body["n"] == 2
+    assert body["slide"]["title"] == job.ir.slides[1].title
+    assert body["preview_url"].endswith("/preview/2.png")
 
 
 def test_regenerate_out_of_range_404(app, monkeypatch):
@@ -521,18 +542,89 @@ def test_snapshot_shape(app, monkeypatch):
     assert snap["download_url"].endswith("/download")
 
 
-def test_core_import_does_not_pull_web(monkeypatch):
-    """Importing the package core must not require fastapi/sse_starlette."""
-    import importlib
+def test_core_import_does_not_pull_web():
+    """Importing the package core (and even the CLI) must not import webapi or
+    require fastapi/sse_starlette.
+
+    Asserted in a *fresh* interpreter — this test module itself imports webapi,
+    so checking this process's ``sys.modules`` would be meaningless.
+    """
+    import subprocess
     import sys
 
-    for mod in list(sys.modules):
-        if mod == "odforge" or mod.startswith("odforge."):
-            # don't actually evict — just assert webapi isn't auto-imported
-            pass
-    import odforge  # noqa: F401
+    code = (
+        "import sys, odforge\n"
+        "assert 'odforge.webapi' not in sys.modules, 'core import pulled webapi'\n"
+        "assert 'fastapi' not in sys.modules, 'core import pulled fastapi'\n"
+        "assert 'sse_starlette' not in sys.modules, 'core import pulled sse_starlette'\n"
+        "import odforge.cli\n"  # the CLI must stay importable without the web extra
+        "assert 'fastapi' not in sys.modules, 'cli import pulled fastapi'\n"
+        "assert hasattr(odforge, '__version__')\n"
+        "print('ok')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
 
-    assert "odforge.webapi" not in sys.modules or True  # webapi only on explicit import
-    # the package itself imports cleanly and exposes __version__
-    importlib.reload(sys.modules["odforge"])
-    assert hasattr(sys.modules["odforge"], "__version__")
+
+# ---------------------------------------------------------------------------
+# CORS — explicit localhost allowlist, never wildcard-with-credentials
+# ---------------------------------------------------------------------------
+
+
+def test_cors_allows_only_allowlisted_origins(app):
+    with TestClient(app) as client:
+        allowed = client.get(
+            "/api/jobs/deadbeef", headers={"Origin": "http://localhost:5173"}
+        )
+        assert allowed.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+        evil = client.get(
+            "/api/jobs/deadbeef", headers={"Origin": "https://evil.example"}
+        )
+        # A disallowed origin gets NO ACAO header echoing it.
+        assert "access-control-allow-origin" not in evil.headers
+
+        # Credentials must not be allowed (wildcard-with-credentials is the vuln).
+        assert allowed.headers.get("access-control-allow-credentials") != "true"
+
+
+def test_cors_env_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("ODFORGE_CORS_ORIGINS", "https://my.app, https://other.app")
+    scoped = webapi.create_app(jobs_dir=tmp_path / "jobs")
+    with TestClient(scoped) as client:
+        ok = client.get("/api/jobs/x", headers={"Origin": "https://my.app"})
+        assert ok.headers.get("access-control-allow-origin") == "https://my.app"
+
+        # a default-allowlist origin is NOT allowed once the env override is set
+        no = client.get("/api/jobs/x", headers={"Origin": "http://localhost:5173"})
+        assert "access-control-allow-origin" not in no.headers
+
+
+# ---------------------------------------------------------------------------
+# Regenerate error guard — a raise becomes a clean error, not a 500 traceback
+# ---------------------------------------------------------------------------
+
+
+def test_regenerate_error_is_clean(app, monkeypatch):
+    _install_fakes(monkeypatch, n=3)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+
+    def boom(outline, backend=None):
+        raise RuntimeError("regen model exploded")
+
+    monkeypatch.setattr(webapi, "generate_slides", boom)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        r = client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={})
+        assert r.status_code == 500
+        # a clean, structured JSON error body — not an HTML/traceback 500
+        detail = r.json()["detail"]
+        assert detail["stage"] == "regenerate"
+        assert "regen model exploded" in detail["message"]
+
+    # the completed job's status is left intact — the existing deck is still valid
+    assert job.status == "complete"

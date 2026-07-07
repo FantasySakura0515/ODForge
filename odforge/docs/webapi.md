@@ -12,7 +12,12 @@ odforge serve --host 127.0.0.1 --port 8000
 ```
 
 `odforge serve` 會以 uvicorn 跑 `odforge.webapi.create_app()`。
-CORS 全開（本機工具）。所有回應與 SSE `data:` 一律為 UTF-8 JSON。
+CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：預設放行本機開發來源
+`http://localhost:5173`、`http://127.0.0.1:5173`、`http://localhost:3000`、
+`http://127.0.0.1:3000`，可用環境變數 `ODFORGE_CORS_ORIGINS`（逗號分隔）覆寫。
+綁定 127.0.0.1 不能取代此檢查——請求來自使用者自己的瀏覽器，故以 Origin 白名單擋下
+任意網站驅動本工具（此 API 無認證且會花用使用者的真實 LLM 金鑰）。所有回應與 SSE
+`data:` 一律為 UTF-8 JSON。
 
 ## 資料模型速覽
 
@@ -97,7 +102,7 @@ CORS 全開（本機工具）。所有回應與 SSE `data:` 一律為 UTF-8 JSON
 | POST | `/api/generate` | `{prompt, mode?, theme?, interactive?: bool, qa?: bool, backend?}` → `{job_id}` |
 | GET | `/api/jobs/{id}/events` | SSE 事件流（見「SSE 事件」） |
 | POST | `/api/jobs/{id}/outline` | `{action: "approve"}` 或 `{action: "edit", outline: Outline}` → `{ok, status}` |
-| POST | `/api/jobs/{id}/slides/{n}/regenerate` | `{instruction?: str}` → `{ok, n}`；重生該頁並在 SSE 推新 `slide_done` + `preview_ready` |
+| POST | `/api/jobs/{id}/slides/{n}/regenerate` | `{instruction?: str}` → `{ok, n, slide, preview_url}`（同步：新頁 + preview 直接回在回應內，**不**走 SSE） |
 | GET | `/api/jobs/{id}/preview/{n}.png` | 第 n 頁 PNG（`image/png`） |
 | GET | `/api/jobs/{id}/download` | 最終 `.odp`（`Content-Disposition: attachment`） |
 | GET | `/api/jobs/{id}` | 狀態快照 `{status, slides_done, outline?, findings?, download_url?, error?}` |
@@ -126,8 +131,22 @@ CORS 全開（本機工具）。所有回應與 SSE `data:` 一律為 UTF-8 JSON
 ### POST `/api/jobs/{id}/slides/{n}/regenerate`
 只重生第 n 頁（以該頁 role/title/gist 組成單頁 sub-outline，把 `instruction`
 併入 gist 後重跑 stage 2），其餘頁不動；接著重渲染並刷新該頁 preview。
+這是**同步**操作（與初次生成不同）：SSE 串流的生命週期在 `complete` 已結束，故結果
+直接回在 HTTP 回應內，前端由發出此請求的元件自行更新該頁。
 請求：`{"instruction": "改用更大膽的視覺，字更少"}`（`instruction` 可省略）。
-回應 `200`：`{"ok": true, "n": 2}`。n 超出範圍回 `404`；job 尚未生成完成回 `409`。
+回應 `200`：
+```json
+{
+  "ok": true,
+  "n": 2,
+  "slide": { "…": "…新的 Slide…" },
+  "preview_url": "/api/jobs/3f0a…/preview/2.png"
+}
+```
+`preview_url` 在無 LibreOffice（preview 不可用）時為 `null`。n 超出範圍回 `404`；
+job 尚未生成完成回 `409`；重生本身失敗回 `500`，body 為
+`{"detail": {"message": "…", "stage": "regenerate"}}`（乾淨的結構化錯誤，非 traceback；
+既有的 deck 仍有效，job 狀態維持 `complete`）。
 
 ### GET `/api/jobs/{id}/preview/{n}.png`
 回第 n 頁 PNG（`image/png`）。n 從 1 起算。超出頁數或該頁 PNG 尚未產生（如無
@@ -277,14 +296,18 @@ data: {"n":1,"slide":{…}}
    後讓使用者確認／編修，再 `POST /outline`。
 4. 逐一收 `slide_done`（更新頁面內容）與 `preview_ready`（載入 `url` 的 PNG）。
 5. 收 `qa_round` 顯示評審結果；收 `complete` 後以 `download_url` 提供下載。
-6. 使用者想改某頁 → `POST /slides/{n}/regenerate`，等 SSE 推新的
-   `slide_done` + `preview_ready`。
+6. 使用者想改某頁 → `POST /slides/{n}/regenerate`，直接用回應裡的 `slide` 與
+   `preview_url` 更新該頁（同步；此路徑不走 SSE）。
 7. 重整／重連 → `GET /api/jobs/{id}` 取快照重建畫面，再重開 SSE 補收後續。
 
-## 安全性（路徑白名單）
+## 安全性
 
-- `job_id` 由伺服器以 `uuid4().hex` 產生，**絕不**把呼叫端輸入寫進檔案路徑；它只當
-  記憶體 dict 的鍵使用，查無即 `404`。
+- **CORS**：明確 Origin 白名單、且 `allow_credentials=False`；絕不用 `*`＋credentials。
+  預設只放行本機開發來源，可用 `ODFORGE_CORS_ORIGINS` 覆寫。此 API 無認證、會花用
+  使用者真實 LLM 金鑰，故白名單是擋下任意網站跨源驅動的關鍵（綁定 127.0.0.1 無法取代
+  它，因請求來自使用者自己的瀏覽器）。
+- **路徑白名單**：`job_id` 由伺服器以 `uuid4().hex` 產生，**絕不**把呼叫端輸入寫進檔案
+  路徑；它只當記憶體 dict 的鍵使用，查無即 `404`。
 - 每個 job 的產物落在伺服器自建的 `%TEMP%/odforge-jobs/{id}/` 之下（`preview/`、
   `deck.odp`）。
 - preview 的頁碼 `n` 由 FastAPI 驗證為整數並檢查落在 1..頁數，再格式化成固定的
