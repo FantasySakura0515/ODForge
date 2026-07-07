@@ -18,7 +18,8 @@ from rich.markup import escape
 from rich.table import Table
 
 from odforge.check import check_odf, diff_docx_odt
-from odforge.llm import generate_ir
+from odforge.ir import Outline
+from odforge.llm import generate_ir, generate_outline, generate_slides
 from odforge.render import render
 from odforge.textmetrics import check_budget
 from odforge.textutil import concise
@@ -45,6 +46,11 @@ class Backend(str, Enum):
     ollama = "ollama"
 
 
+class Mode(str, Enum):
+    detailed = "detailed"
+    presenter = "presenter"
+
+
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
@@ -57,6 +63,44 @@ _err = Console(stderr=True)
 def _concise(exc: Exception) -> str:
     """One-line, length-bounded, rich-markup-safe rendering of an exception."""
     return escape(concise(str(exc)))
+
+
+def _print_outline(outline: Outline) -> None:
+    """Render a stage-1 outline for the interactive checkpoint.
+
+    Prints a page-role table (頁碼 / 版型 / 標題 / gist) and a design summary:
+    the palette shown as five hex colour swatches, the font pairing, density
+    scale and narrative mode. LLM-provided strings (titles, gists, fonts) are
+    ``escape``\\ d before interpolation into rich markup; palette values are
+    already validated ``#RRGGBB`` hex, safe as both a style and displayed text.
+    """
+    table = Table(title="大綱")
+    table.add_column("頁碼", justify="right")
+    table.add_column("版型")
+    table.add_column("標題", overflow="fold")
+    table.add_column("gist", overflow="fold")
+    for i, page in enumerate(outline.pages, start=1):
+        table.add_row(str(i), escape(page.role), escape(page.title), escape(page.gist))
+    _out.print(table)
+
+    design = outline.design
+    if design is not None:
+        pal = design.palette
+        swatches = "  ".join(
+            f"[on {c}]    [/]"
+            for c in (pal.bg, pal.surface, pal.text, pal.muted, pal.accent)
+        )
+        _out.print(
+            f"色盤 {swatches}  bg={pal.bg} surface={pal.surface} "
+            f"text={pal.text} muted={pal.muted} accent={pal.accent}"
+        )
+        _out.print(
+            f"字體 {escape(design.fonts.display)} / {escape(design.fonts.body)}"
+            f"　密度 {escape(design.scale)}"
+        )
+    else:
+        _out.print("美術方向：未指定（將套用預設主題）")
+    _out.print(f"講述型態（mode）：{escape(outline.mode)}")
 
 
 @app.callback()
@@ -78,8 +122,23 @@ def new(
     theme: Optional[Theme] = typer.Option(
         None, "--theme", help="簡報主題，僅對 .odp 有效；省略則尊重 LLM 的選擇。"
     ),
+    mode: Optional[Mode] = typer.Option(
+        None,
+        "--mode",
+        help="講述型態，僅對 .odp 兩段式流程有效：presenter（講者型）/ detailed（自讀型）；省略則沿用大綱的判斷。",
+    ),
     backend: Optional[Backend] = typer.Option(
         None, "--backend", help="LLM 後端；省略則使用預設。"
+    ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        help="簡報兩段式流程：先印出大綱供確認，確認後才生成投影片。",
+    ),
+    one_shot: bool = typer.Option(
+        False,
+        "--one-shot",
+        help="簡報改用 v1 單次呼叫（一段式）產生，供弱模型 / Ollama 的逃生路徑使用。",
     ),
     soffice: bool = typer.Option(
         True,
@@ -87,7 +146,12 @@ def new(
         help="驗證時若找得到 LibreOffice 就跑 soffice 轉檔驗證。",
     ),
 ) -> None:
-    """由 PROMPT 產生一份 ODF 文件並輸出到 -o 指定的檔案。"""
+    """由 PROMPT 產生一份 ODF 文件並輸出到 -o 指定的檔案。
+
+    簡報（.odp）預設走兩段式流程：先產生大綱（美術方向 + 頁面骨架），再逐頁填內容。
+    ``--interactive`` 會在兩段之間停下來印出大綱供確認；``--one-shot`` 則退回單次
+    呼叫的一段式路徑。文字（.odt）與試算表（.ods）一律走單次呼叫。
+    """
     ext = out.suffix.lower()
     doc_type = _EXT_DOC_TYPE.get(ext)
     if doc_type is None:
@@ -98,11 +162,38 @@ def new(
         )
         raise typer.Exit(code=2)
 
-    try:
-        ir = generate_ir(prompt, doc_type, backend=backend.value if backend else None)
-    except Exception as exc:  # noqa: BLE001 - present a concise message, no traceback
-        _err.print(f"[red]FAIL[/red] 內容產生失敗：{_concise(exc)}")
-        raise typer.Exit(code=1)
+    backend_name = backend.value if backend else None
+    # Two-stage (outline -> slides) is the presentation default; .odt/.ods and
+    # the --one-shot escape hatch stay on the v1 single-call generate_ir path.
+    if doc_type == "presentation" and not one_shot:
+        try:
+            outline = generate_outline(prompt, backend=backend_name)
+        except Exception as exc:  # noqa: BLE001 - concise message, no traceback
+            _err.print(f"[red]FAIL[/red] 大綱產生失敗：{_concise(exc)}")
+            raise typer.Exit(code=1)
+
+        # --mode overrides the outline's narrative register before stage 2.
+        if mode is not None:
+            outline = outline.model_copy(update={"mode": mode.value})
+
+        # Interactive checkpoint: show the outline, then gate stage 2 on confirm.
+        if interactive:
+            _print_outline(outline)
+            if not typer.confirm("依此大綱生成?"):
+                _out.print("已取消")
+                raise typer.Exit(code=0)
+
+        try:
+            ir = generate_slides(outline, backend=backend_name)
+        except Exception as exc:  # noqa: BLE001 - concise message, no traceback
+            _err.print(f"[red]FAIL[/red] 內容產生失敗：{_concise(exc)}")
+            raise typer.Exit(code=1)
+    else:
+        try:
+            ir = generate_ir(prompt, doc_type, backend=backend_name)
+        except Exception as exc:  # noqa: BLE001 - concise message, no traceback
+            _err.print(f"[red]FAIL[/red] 內容產生失敗：{_concise(exc)}")
+            raise typer.Exit(code=1)
 
     # --theme only matters for presentations. When given, it always overrides
     # the LLM's theme; when omitted (None), the LLM's choice is respected.
