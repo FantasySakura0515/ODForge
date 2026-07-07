@@ -45,10 +45,62 @@ _META_NS = {
 
 _XML_DECL = '<?xml version="1.0" encoding="UTF-8"?>'
 _MASTER_PAGE_NAME = "Standard"
+_PLAIN_MASTER_NAME = "Plain"
 _DRAWING_PAGE_STYLE = "dp1"
+_SECTION_DRAWING_PAGE_STYLE = "dpsec"
 _GRAPHIC_STYLE = "gr1"
 _GRADIENT_NAME = "grad-bg"
 _NOTES_SIZE_PT = 14
+
+# Task 13.3: master pages, inverted section pages, accent system.
+#
+# Layouts that render "bare" (no page-number/footer/kicker furniture): the
+# opening title and the full-accent section divider. "closing" (Task 14.1)
+# joins both these sets — keeping them as small frozensets makes that a
+# one-word edit with no branching to touch.
+_PLAIN_LAYOUTS = frozenset({"title", "section"})
+# Layouts painted with a full-bleed accent background (inverted pages).
+_ACCENT_BG_LAYOUTS = frozenset({"section"})
+
+# Vertical accent bar flush with a content-page title's left edge.
+_ACCENT_BAR_W = 0.18  # cm
+# Giant watermark chapter number on section pages.
+_SECTION_NUMBER_PT = 96
+# The number is drawn as text tinted 15% from accent toward the theme bg —
+# ODF 1.2 has no reliable per-run text opacity, so this precomputed blend
+# emulates a bg-coloured number at ~15% opacity sitting on the accent fill.
+_SECTION_NUMBER_BLEND = 0.15
+# (x, y, w, h) cm — upper-right, right edge aligned with the footer line.
+_SECTION_NUMBER_BOX = (18.5, 1.0, 8.0, 4.5)
+
+# Master-page furniture geometry + style names.
+_FOOTER_LINE_Y = 14.9
+_FOOTER_LINE_X1 = 1.5
+_FOOTER_LINE_X2 = 26.5
+_FOOTER_LINE_WIDTH_PT = 0.75
+_FURNITURE_Y = 14.95
+_FURNITURE_H = 0.7
+_PAGENUM_X = 24.0
+_PAGENUM_W = 2.5
+_KICKER_W = 18.0
+_MP_LINE_STYLE = "MPline"
+_MP_FRAME_STYLE = "MPframe"
+_MP_PAGENUM_STYLE = "MPpage"
+_MP_KICKER_STYLE = "MPkicker"
+# LibreOffice Impress only paints master-page shapes when the document declares
+# a <draw:layer-set> AND each shape sits on a named layer — without this, plain
+# draw:line/draw:frame on the master silently vanish (only recognised
+# presentation placeholders render). Furniture goes on "backgroundobjects".
+_FURNITURE_LAYER = "backgroundobjects"
+_LAYER_SET_XML = (
+    "<draw:layer-set>"
+    '<draw:layer draw:name="layout"/>'
+    '<draw:layer draw:name="background"/>'
+    '<draw:layer draw:name="backgroundobjects"/>'
+    '<draw:layer draw:name="controls"/>'
+    '<draw:layer draw:name="measurelines"/>'
+    "</draw:layer-set>"
+)
 
 # Semantic-list typography (Task 13.2).
 _LIST_STYLE_NAME = "L1"
@@ -94,6 +146,22 @@ def _lighten(hex_color: str, amount: float) -> str:
     r = _mix(int(hex_color[1:3], 16))
     g = _mix(int(hex_color[3:5], 16))
     b = _mix(int(hex_color[5:7], 16))
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def _blend(from_hex: str, to_hex: str, amount: float) -> str:
+    """Return ``from_hex`` moved ``amount`` (0..1) of the way toward ``to_hex``.
+
+    Generalises :func:`_lighten` (which only blends toward white) to any target
+    colour — used for the section-page watermark number (accent → bg).
+    """
+
+    def _mix(a: int, b: int) -> int:
+        return round(a + (b - a) * amount)
+
+    r = _mix(int(from_hex[1:3], 16), int(to_hex[1:3], 16))
+    g = _mix(int(from_hex[3:5], 16), int(to_hex[3:5], 16))
+    b = _mix(int(from_hex[5:7], 16), int(to_hex[5:7], 16))
     return f"#{r:02X}{g:02X}{b:02X}"
 
 
@@ -174,6 +242,20 @@ class _ParagraphStyles:
         )
 
 
+def _font_size_attrs(size_pt: int) -> str:
+    """Three-track font-size attributes (Western + CJK ``*-asian`` + CTL ``*-complex``).
+
+    LibreOffice applies ``fo:font-size`` to Western script only; CJK glyphs need
+    the ``*-asian`` variant and complex scripts the ``*-complex`` one, so every
+    text style must carry all three or CJK text renders at the wrong size.
+    """
+    return (
+        f' fo:font-size="{size_pt}pt"'
+        f' style:font-size-asian="{size_pt}pt"'
+        f' style:font-size-complex="{size_pt}pt"'
+    )
+
+
 def _paragraph_style_xml(
     name: str,
     font: str,
@@ -187,13 +269,7 @@ def _paragraph_style_xml(
 ) -> str:
     """Build one ``style:family="paragraph"`` automatic style element."""
     align = "center" if center else "start"
-    # LibreOffice applies fo:font-size / fo:font-weight to Western script
-    # only; CJK glyphs need the *-asian variants (and *-complex for CTL).
-    size = (
-        f' fo:font-size="{size_pt}pt"'
-        f' style:font-size-asian="{size_pt}pt"'
-        f' style:font-size-complex="{size_pt}pt"'
-    )
+    size = _font_size_attrs(size_pt)
     weight = (
         ' fo:font-weight="bold"'
         ' style:font-weight-asian="bold"'
@@ -493,11 +569,47 @@ def _notes_xml(notes: str, style_name: str) -> str:
     )
 
 
-def _page_xml(
-    index: int, slide: Slide, theme: Theme, styles: _ParagraphStyles
+def _section_number_xml(
+    ordinal: int, theme: Theme, styles: _ParagraphStyles
 ) -> str:
-    """Build one ``draw:page`` for a slide, registering its paragraph styles."""
+    """Build the giant faded chapter-number watermark for a section page.
+
+    ``ordinal`` is the section's 1-based position among section slides, rendered
+    zero-padded (``01``, ``02`` …). The colour is :func:`_blend`\\ ed 15% from
+    accent toward the theme bg so the number reads as a low-contrast watermark on
+    the accent fill (see :data:`_SECTION_NUMBER_BLEND`). Emitted *before* the
+    title so the title paints on top.
+    """
+    color = _blend(theme.accent, theme.bg, _SECTION_NUMBER_BLEND)
+    style_name = styles.name_for(_SECTION_NUMBER_PT, True, True, color)
+    x, y, w, h = _SECTION_NUMBER_BOX
+    frame = Frame("section-number", x, y, w, h, _SECTION_NUMBER_PT, bold=True, center=True)
+    para = (
+        f'<text:p text:style-name="{_attr(style_name)}">'
+        f"{escape(f'{ordinal:02d}')}</text:p>"
+    )
+    return _frame_box_xml(frame, para)
+
+
+def _page_xml(
+    index: int,
+    slide: Slide,
+    theme: Theme,
+    styles: _ParagraphStyles,
+    graphics: _GraphicStyles,
+    section_ordinal: int | None,
+) -> str:
+    """Build one ``draw:page`` for a slide, registering its paragraph styles.
+
+    Master page + drawing-page style are chosen by layout: :data:`_PLAIN_LAYOUTS`
+    use the furniture-free "Plain" master, and :data:`_ACCENT_BG_LAYOUTS` swap in
+    the full-accent drawing-page style. Content-page titles gain a vertical accent
+    bar; ``fact`` text is up-sized to display + accent; big-fact bullets go muted.
+    """
     parts: list[str] = []
+    if slide.layout in _ACCENT_BG_LAYOUTS and section_ordinal is not None:
+        parts.append(_section_number_xml(section_ordinal, theme, styles))
+
     for frame in LAYOUTS[slide.layout]:
         lines = _role_lines(slide, frame.role)
         if not lines:
@@ -512,18 +624,47 @@ def _page_xml(
             )
             parts.append(_frame_box_xml(frame, inner))
             continue
-        color = theme.title_color if frame.role == "title" else theme.text_color
-        style_name = styles.name_for(frame.size_pt, frame.bold, frame.center, color)
+
+        size_pt = frame.size_pt
+        if frame.role == "title":
+            # Section titles invert onto the accent background.
+            color = theme.bg if slide.layout in _ACCENT_BG_LAYOUTS else theme.title_color
+        elif frame.role == "fact":
+            size_pt = theme.display_pt
+            color = theme.accent
+        elif frame.role == "bullets" and slide.layout == "big-fact":
+            color = theme.muted
+        else:
+            color = theme.text_color
+
+        # Vertical accent bar flush with a content-page title's left edge (never
+        # on Plain layouts — the opening title / inverted section stand alone).
+        if frame.role == "title" and slide.layout not in _PLAIN_LAYOUTS:
+            bar_style = graphics.name_for_fill(theme.accent)
+            parts.append(
+                _rect_xml(
+                    frame.x, frame.y, _ACCENT_BAR_W, frame.h,
+                    fill=theme.accent, style_name=bar_style,
+                )
+            )
+
+        style_name = styles.name_for(size_pt, frame.bold, frame.center, color)
         parts.append(_frame_xml(frame, lines, style_name))
 
     if slide.notes:
         notes_style = styles.name_for(_NOTES_SIZE_PT, False, False, theme.text_color)
         parts.append(_notes_xml(slide.notes, notes_style))
 
+    master = _PLAIN_MASTER_NAME if slide.layout in _PLAIN_LAYOUTS else _MASTER_PAGE_NAME
+    dp_style = (
+        _SECTION_DRAWING_PAGE_STYLE
+        if slide.layout in _ACCENT_BG_LAYOUTS
+        else _DRAWING_PAGE_STYLE
+    )
     return (
         f'<draw:page draw:name="page{index}"'
-        f' draw:style-name="{_DRAWING_PAGE_STYLE}"'
-        f' draw:master-page-name="{_MASTER_PAGE_NAME}">'
+        f' draw:style-name="{dp_style}"'
+        f' draw:master-page-name="{master}">'
         f"{''.join(parts)}"
         f"</draw:page>"
     )
@@ -534,28 +675,57 @@ def _page_xml(
 # ---------------------------------------------------------------------------
 
 
+def _drawing_page_style_xml(
+    name: str, fill_attrs: str, *, display_page_number: bool = False
+) -> str:
+    """Build a ``style:family="drawing-page"`` automatic style element."""
+    extra = (
+        ' presentation:display-page-number="true"' if display_page_number else ""
+    )
+    return (
+        f'<style:style style:name="{_attr(name)}" style:family="drawing-page">'
+        f"<style:drawing-page-properties {fill_attrs}{extra}/>"
+        f"</style:style>"
+    )
+
+
 def build_content_xml(p: Presentation, theme: Theme) -> str:
     """Build ``content.xml`` for a presentation. Pure function."""
     styles = _ParagraphStyles(theme.font)
-    # Graphic styles for shapes. Pages emit no shapes yet (that arrives in a
-    # later task), so this stays empty for now; it is threaded here so the
-    # automatic-styles section can carry `_GraphicStyles` output once slide
-    # composition draws rects/lines.
+    # Graphic styles for shapes drawn on pages (accent bars, etc.).
     graphics = _GraphicStyles()
-    # Build pages first so every referenced paragraph style is registered.
+
+    # Section slides carry an auto-computed 1-based ordinal (the giant chapter
+    # number); non-section slides map to None.
+    section_ordinal: dict[int, int] = {}
+    for i, slide in enumerate(p.slides):
+        if slide.layout in _ACCENT_BG_LAYOUTS:
+            section_ordinal[i] = len(section_ordinal) + 1
+
+    # Build pages first so every referenced paragraph/graphic style is registered.
     pages = "".join(
-        _page_xml(i, slide, theme, styles) for i, slide in enumerate(p.slides)
+        _page_xml(i, slide, theme, styles, graphics, section_ordinal.get(i))
+        for i, slide in enumerate(p.slides)
     )
+
+    # Default content drawing-page carries the bg fill and surfaces the master's
+    # page-number placeholder. The accent (inverted) drawing-page is emitted only
+    # when a section slide actually needs it.
+    drawing_pages = _drawing_page_style_xml(
+        _DRAWING_PAGE_STYLE, _page_fill_attrs(theme), display_page_number=True
+    )
+    if section_ordinal:
+        drawing_pages += _drawing_page_style_xml(
+            _SECTION_DRAWING_PAGE_STYLE,
+            f'draw:fill="solid" draw:fill-color="{_attr(theme.accent)}"',
+        )
 
     automatic_styles = (
         "<office:automatic-styles>"
         f"{styles.xml()}"
         f"{graphics.xml()}"
         f"{_list_style_xml(_LIST_STYLE_NAME, theme)}"
-        f'<style:style style:name="{_DRAWING_PAGE_STYLE}"'
-        f' style:family="drawing-page">'
-        f"<style:drawing-page-properties {_page_fill_attrs(theme)}/>"
-        f"</style:style>"
+        f"{drawing_pages}"
         f'<style:style style:name="{_GRAPHIC_STYLE}" style:family="graphic">'
         f'<style:graphic-properties draw:fill="none" draw:stroke="none"/>'
         f"</style:style>"
@@ -574,26 +744,115 @@ def build_content_xml(p: Presentation, theme: Theme) -> str:
     )
 
 
-def build_styles_xml(theme: Theme) -> str:
-    """Build ``styles.xml`` (page layout + master page + bg). Pure function.
+def _furniture_para_xml(
+    name: str,
+    font: str,
+    size_pt: int,
+    color: str,
+    *,
+    align: str,
+    letter_spacing: str | None = None,
+) -> str:
+    """Build a master-page furniture paragraph style (three-track CJK sizing)."""
+    spacing = (
+        f' fo:letter-spacing="{_attr(letter_spacing)}"'
+        if letter_spacing is not None
+        else ""
+    )
+    return (
+        f'<style:style style:name="{_attr(name)}" style:family="paragraph">'
+        f'<style:paragraph-properties fo:text-align="{align}"/>'
+        f"<style:text-properties{_font_size_attrs(size_pt)}"
+        f' fo:color="{_attr(color)}"{spacing}'
+        f' style:font-name="{_attr(font)}" style:font-name-asian="{_attr(font)}"/>'
+        f"</style:style>"
+    )
 
-    The dark preset gets a subtle two-stop linear gradient background (its ``bg``
-    fading to a slightly lighter variant); light presets keep a flat solid fill.
+
+def _furniture_styles_xml(theme: Theme) -> str:
+    """Automatic styles the "Standard" master's furniture frames/line reference."""
+    line = (
+        f'<style:style style:name="{_MP_LINE_STYLE}" style:family="graphic">'
+        f'<style:graphic-properties draw:fill="none" draw:stroke="solid"'
+        f' svg:stroke-color="{_attr(theme.muted)}"'
+        f' svg:stroke-width="{_pt(_FOOTER_LINE_WIDTH_PT)}"/>'
+        f"</style:style>"
+    )
+    frame = (
+        f'<style:style style:name="{_MP_FRAME_STYLE}" style:family="graphic">'
+        f'<style:graphic-properties draw:fill="none" draw:stroke="none"/>'
+        f"</style:style>"
+    )
+    page_number = _furniture_para_xml(
+        _MP_PAGENUM_STYLE, theme.font, theme.caption_pt, theme.muted, align="end"
+    )
+    kicker = _furniture_para_xml(
+        _MP_KICKER_STYLE,
+        theme.font,
+        theme.caption_pt,
+        theme.muted,
+        align="start",
+        letter_spacing=_KICKER_LETTER_SPACING,
+    )
+    return line + frame + page_number + kicker
+
+
+def _master_furniture_xml(theme: Theme, title: str) -> str:
+    """Standard master-page furniture: footer line, page number, kicker title.
+
+    The kicker carries the presentation title (a per-page kicker field arrives in
+    Task 14.1). The page-number frame is a ``presentation:class="page-number"``
+    placeholder holding ``<text:page-number/>``; content pages surface it via the
+    drawing-page ``presentation:display-page-number`` flag.
+    """
+    footer_line = (
+        f'<draw:line draw:style-name="{_MP_LINE_STYLE}"'
+        f' draw:layer="{_FURNITURE_LAYER}"'
+        f' svg:x1="{_cm(_FOOTER_LINE_X1)}" svg:y1="{_cm(_FOOTER_LINE_Y)}"'
+        f' svg:x2="{_cm(_FOOTER_LINE_X2)}" svg:y2="{_cm(_FOOTER_LINE_Y)}"/>'
+    )
+    page_number = (
+        f'<draw:frame draw:style-name="{_MP_FRAME_STYLE}"'
+        f' draw:layer="{_FURNITURE_LAYER}"'
+        f' presentation:class="page-number"'
+        f' svg:x="{_cm(_PAGENUM_X)}" svg:y="{_cm(_FURNITURE_Y)}"'
+        f' svg:width="{_cm(_PAGENUM_W)}" svg:height="{_cm(_FURNITURE_H)}">'
+        f'<draw:text-box><text:p text:style-name="{_MP_PAGENUM_STYLE}">'
+        f"<text:page-number/></text:p></draw:text-box></draw:frame>"
+    )
+    kicker = (
+        f'<draw:frame draw:style-name="{_MP_FRAME_STYLE}"'
+        f' draw:layer="{_FURNITURE_LAYER}"'
+        f' svg:x="{_cm(_FOOTER_LINE_X1)}" svg:y="{_cm(_FURNITURE_Y)}"'
+        f' svg:width="{_cm(_KICKER_W)}" svg:height="{_cm(_FURNITURE_H)}">'
+        f'<draw:text-box><text:p text:style-name="{_MP_KICKER_STYLE}">'
+        f"{escape(title)}</text:p></draw:text-box></draw:frame>"
+    )
+    return footer_line + page_number + kicker
+
+
+def build_styles_xml(theme: Theme, title: str = "") -> str:
+    """Build ``styles.xml`` (page layout + master pages + bg). Pure function.
+
+    Two master pages are defined: "Standard" (footer line, page-number frame,
+    kicker) for content pages, and "Plain" (no furniture) for title/section
+    pages. ``title`` supplies the kicker text. The dark preset gets a subtle
+    two-stop linear gradient background; light presets keep a flat solid fill.
     """
     font_family = f"'{theme.font}','微軟正黑體',sans-serif"
+    # office:styles carries the layer-set (required for master furniture to
+    # render — see _LAYER_SET_XML) plus, for the dark preset, the bg gradient.
+    gradient = ""
     if _uses_gradient_bg(theme):
-        office_styles = (
-            f"<office:styles>"
+        gradient = (
             f'<draw:gradient draw:name="{_attr(_GRADIENT_NAME)}"'
             f' draw:display-name="ODForge Background" draw:style="linear"'
             f' draw:start-color="{_attr(theme.bg)}"'
             f' draw:end-color="{_attr(_lighten(theme.bg, 0.16))}"'
             f' draw:start-intensity="100%" draw:end-intensity="100%"'
             f' draw:angle="450" draw:border="0%"/>'
-            f"</office:styles>"
         )
-    else:
-        office_styles = ""
+    office_styles = f"<office:styles>{_LAYER_SET_XML}{gradient}</office:styles>"
     page_fill = _page_fill_attrs(theme)
     return (
         f"{_XML_DECL}"
@@ -615,9 +874,15 @@ def build_styles_xml(theme: Theme) -> str:
         f' style:family="drawing-page">'
         f"<style:drawing-page-properties {page_fill}/>"
         f"</style:style>"
+        f"{_furniture_styles_xml(theme)}"
         f"</office:automatic-styles>"
         f"<office:master-styles>"
         f'<style:master-page style:name="{_MASTER_PAGE_NAME}"'
+        f' style:page-layout-name="PM1"'
+        f' draw:style-name="{_DRAWING_PAGE_STYLE}">'
+        f"{_master_furniture_xml(theme, title)}"
+        f"</style:master-page>"
+        f'<style:master-page style:name="{_PLAIN_MASTER_NAME}"'
         f' style:page-layout-name="PM1"'
         f' draw:style-name="{_DRAWING_PAGE_STYLE}"/>'
         f"</office:master-styles>"
@@ -648,7 +913,7 @@ def render_odp(p: Presentation, out_path: Path) -> Path:
     theme = THEMES.get(p.theme, THEMES["academic"])
     parts = {
         "content.xml": build_content_xml(p, theme),
-        "styles.xml": build_styles_xml(theme),
+        "styles.xml": build_styles_xml(theme, p.title),
         "meta.xml": build_meta_xml(p.title),
     }
     return write_odf_package(Path(out_path), ODP_MIMETYPE, parts)

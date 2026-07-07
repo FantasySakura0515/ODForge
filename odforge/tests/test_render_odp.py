@@ -618,3 +618,208 @@ def test_two_col_columns_render_as_lists(tmp_path):
     root = content_root(render_odp(p, tmp_path / "p.odp"))
     lists = root.findall(".//text:list", NS)
     assert len(lists) == 2  # one per column
+
+
+# ---------------------------------------------------------------------------
+# Task 13.3: master pages + inverted section + accent system
+# ---------------------------------------------------------------------------
+
+
+def _styles_root(theme, title="簡報標題"):
+    return etree.fromstring(build_styles_xml(theme, title).encode("utf-8"))
+
+
+def _master_named(root, name):
+    return next(
+        m for m in root.findall(".//style:master-page", NS)
+        if m.get(_q("style", "name")) == name
+    )
+
+
+def _content_root(p, theme):
+    return etree.fromstring(build_content_xml(p, theme).encode("utf-8"))
+
+
+def _text_p_with(page, text):
+    return next(x for x in page.findall(".//text:p", NS) if x.text == text)
+
+
+# ① styles.xml has TWO <style:master-page> (Standard/Plain); Standard has the
+#    page-number frame; Plain has no furniture.
+def test_styles_has_two_master_pages_standard_and_plain():
+    root = _styles_root(THEMES["academic"])
+    names = {m.get(_q("style", "name")) for m in root.findall(".//style:master-page", NS)}
+    assert names == {"Standard", "Plain"}
+
+
+def test_standard_master_contains_page_number_frame():
+    root = _styles_root(THEMES["academic"])
+    standard = _master_named(root, "Standard")
+    pn_frames = [
+        f for f in standard.findall(".//draw:frame", NS)
+        if f.get(_q("presentation", "class")) == "page-number"
+    ]
+    assert pn_frames, "Standard master must contain a page-number frame"
+    assert pn_frames[0].find(".//text:page-number", NS) is not None
+
+
+def test_standard_master_has_footer_line_and_kicker_title():
+    root = _styles_root(THEMES["academic"], "我的簡報")
+    standard = _master_named(root, "Standard")
+    assert standard.findall(".//draw:line", NS), "footer line expected on Standard"
+    # kicker text is the presentation title
+    assert "我的簡報" in "".join(standard.itertext())
+
+
+def test_plain_master_has_no_furniture():
+    root = _styles_root(THEMES["academic"])
+    plain = _master_named(root, "Plain")
+    assert plain.findall(".//draw:frame", NS) == []
+    assert plain.findall(".//draw:line", NS) == []
+
+
+# LibreOffice only paints master-page shapes when a <draw:layer-set> is declared
+# AND each shape carries draw:layer — guard that contract (regression: without
+# it the footer line + kicker silently stop rendering).
+def test_master_furniture_declares_layer_set_and_layer():
+    for preset in ("academic", "minimal", "dark"):
+        root = _styles_root(THEMES[preset])
+        assert root.findall(".//draw:layer-set", NS), preset
+        standard = _master_named(root, "Standard")
+        shapes = (standard.findall(".//draw:line", NS)
+                  + standard.findall(".//draw:frame", NS))
+        assert shapes
+        for shape in shapes:
+            assert shape.get(_q("draw", "layer")) == "backgroundobjects"
+
+
+def test_master_page_assignment_by_layout():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="title", title="T", subtitle="s"),
+        Slide(layout="title-content", title="C", bullets=["a"]),
+        Slide(layout="section", title="S"),
+        Slide(layout="two-col", title="X", left=["l"], right=["r"]),
+        Slide(layout="big-fact", fact="9"),
+    ])
+    pages = _content_root(p, theme).findall(".//draw:page", NS)
+    masters = [pg.get(_q("draw", "master-page-name")) for pg in pages]
+    assert masters == ["Plain", "Standard", "Plain", "Standard", "Standard"]
+
+
+# master furniture text keeps the CJK three-track font-size rule
+def test_master_furniture_text_uses_cjk_three_track():
+    root = _styles_root(THEMES["academic"])
+    para_styles = [
+        s for s in root.findall(".//style:style", NS)
+        if s.get(_q("style", "family")) == "paragraph"
+    ]
+    assert para_styles
+    for s in para_styles:
+        tp = s.find("style:text-properties", NS)
+        if tp is not None and tp.get(_q("fo", "font-size")) is not None:
+            assert tp.get(_q("style", "font-size-asian")) is not None
+            assert tp.get(_q("style", "font-size-complex")) is not None
+
+
+# ② section page's drawing-page style fill == accent AND its title style color == bg
+def test_section_page_inverted_accent_fill_and_bg_title():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", theme="academic",
+                     slides=[Slide(layout="section", title="研究方法")])
+    croot = _content_root(p, theme)
+    page = croot.find(".//draw:page", NS)
+    dp = _style_by_name(croot, page.get(_q("draw", "style-name")))
+    props = dp.find("style:drawing-page-properties", NS)
+    assert props.get(_q("draw", "fill")) == "solid"
+    assert props.get(_q("draw", "fill-color")) == theme.accent
+    title_p = _text_p_with(page, "研究方法")
+    tstyle = _style_by_name(croot, title_p.get(_q("text", "style-name")))
+    assert tstyle.find("style:text-properties", NS).get(_q("fo", "color")) == theme.bg
+    assert page.get(_q("draw", "master-page-name")) == "Plain"
+
+
+def test_section_giant_chapter_number_is_two_digit_ordinal():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="section", title="第一節"),
+        Slide(layout="title-content", title="內容", bullets=["x"]),
+        Slide(layout="section", title="第二節"),
+    ])
+    pages = _content_root(p, theme).findall(".//draw:page", NS)
+    assert "01" in "".join(pages[0].itertext())
+    assert "02" in "".join(pages[2].itertext())
+
+
+def test_section_giant_number_keeps_cjk_three_track():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[Slide(layout="section", title="S")])
+    croot = _content_root(p, theme)
+    num_p = _text_p_with(croot.find(".//draw:page", NS), "01")
+    tp = _style_by_name(croot, num_p.get(_q("text", "style-name"))).find(
+        "style:text-properties", NS)
+    assert tp.get(_q("fo", "font-size")) == "96pt"
+    assert tp.get(_q("style", "font-size-asian")) == "96pt"
+    assert tp.get(_q("style", "font-size-complex")) == "96pt"
+
+
+# section-only decks add exactly one extra (accent) drawing-page style
+def test_section_deck_defines_accent_drawing_page_style():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="title", title="T"),
+        Slide(layout="section", title="S"),
+    ])
+    croot = _content_root(p, theme)
+    dp_styles = [
+        s for s in croot.findall(".//style:style", NS)
+        if s.get(_q("style", "family")) == "drawing-page"
+    ]
+    fills = {
+        s.find("style:drawing-page-properties", NS).get(_q("draw", "fill-color"))
+        for s in dp_styles
+    }
+    assert theme.accent in fills
+
+
+# ③ content pages carry the vertical accent bar rect (w ≈ 0.18cm)
+def test_content_page_has_vertical_accent_bar():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="title-content", title="大綱", bullets=["A", "B"])])
+    croot = _content_root(p, theme)
+    page = croot.find(".//draw:page", NS)
+    bars = [
+        r for r in page.findall(".//draw:rect", NS)
+        if r.get(_q("svg", "width")) == "0.18cm"
+    ]
+    assert bars, "content page must have a vertical accent bar rect w=0.18cm"
+    barstyle = _style_by_name(croot, bars[0].get(_q("draw", "style-name")))
+    props = barstyle.find("style:graphic-properties", NS)
+    assert props.get(_q("draw", "fill-color")) == theme.accent
+    assert page.get(_q("draw", "master-page-name")) == "Standard"
+
+
+def test_title_page_has_no_accent_bar():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[Slide(layout="title", title="T", subtitle="s")])
+    page = _content_root(p, theme).find(".//draw:page", NS)
+    assert page.findall(".//draw:rect", NS) == []
+
+
+# ④ big-fact fact style font-size == display_pt and colour == accent; bullets muted
+def test_big_fact_fact_style_uses_display_pt_and_accent():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="big-fact", fact="99%", bullets=["涵蓋率支撐說明"])])
+    croot = _content_root(p, theme)
+    page = croot.find(".//draw:page", NS)
+    fact_p = _text_p_with(page, "99%")
+    ftp = _style_by_name(croot, fact_p.get(_q("text", "style-name"))).find(
+        "style:text-properties", NS)
+    assert ftp.get(_q("fo", "font-size")) == f"{theme.display_pt}pt"
+    assert ftp.get(_q("fo", "color")) == theme.accent
+    supp_p = _text_p_with(page, "涵蓋率支撐說明")
+    stp = _style_by_name(croot, supp_p.get(_q("text", "style-name"))).find(
+        "style:text-properties", NS)
+    assert stp.get(_q("fo", "color")) == theme.muted
