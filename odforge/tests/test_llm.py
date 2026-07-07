@@ -399,6 +399,41 @@ def test_generate_outline_design_recovers_on_retry(monkeypatch):
     assert len(client.completions.calls) == 2
 
 
+def test_generate_outline_missing_gist_retries_then_succeeds(monkeypatch):
+    # gist is required (and non-blank): a page omitting it, or emitting "", is
+    # a pages-invalid failure → error fed back (mentioning gist), retry once,
+    # and a valid second answer is accepted.
+    missing_gist = {
+        "mode": "presenter",
+        "design": {
+            "palette": _GOOD_PALETTE,
+            "fonts": _GOOD_FONTS,
+            "scale": "standard",
+            "mode": "presenter",
+        },
+        "pages": [
+            {"role": "title", "title": "封面"},  # gist missing
+            {"role": "closing", "title": "結語", "gist": ""},  # gist blank
+        ],
+    }
+    client = _install_fake_openai(
+        monkeypatch,
+        [
+            _make_response(json.dumps(missing_gist)),
+            _make_response(json.dumps(_VALID_OUTLINE)),
+        ],
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    result = backend.generate_outline("x")
+    assert isinstance(result, Outline)
+    assert all(p.gist for p in result.pages)
+    assert len(client.completions.calls) == 2
+    # the retry must carry the gist validation error back to the model
+    second = client.completions.calls[1]["messages"]
+    combined = " ".join(m["content"] for m in second)
+    assert "gist" in combined
+
+
 def test_generate_outline_invalid_pages_retries_then_raises(monkeypatch):
     client = _install_fake_openai(
         monkeypatch,

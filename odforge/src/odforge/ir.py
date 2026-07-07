@@ -135,11 +135,17 @@ class ChartSpec(BaseModel):
         return self
 
 
+# The 10 page layouts a slide can render. Shared verbatim by ``Slide.layout``
+# and ``PageRole.role`` (Task 15.1) — an outline page names the layout its
+# stage-2 slide will use, so the two vocabularies must never drift apart.
+PageRoleName = Literal[
+    "title", "title-content", "two-col", "section", "big-fact",
+    "quote", "agenda", "comparison", "chart", "closing",
+]
+
+
 class Slide(BaseModel):
-    layout: Literal[
-        "title", "title-content", "two-col", "section", "big-fact",
-        "quote", "agenda", "comparison", "chart", "closing",
-    ]
+    layout: PageRoleName
     title: str = ""
     subtitle: str = ""
     # Either plain strings (v1) or nested ``BulletItem``\\ s. Coerced by pydantic's
@@ -291,25 +297,20 @@ class Presentation(BaseModel):
 # pydantic so the front-end cockpit can consume an Outline directly.
 # ---------------------------------------------------------------------------
 
-# The page roles mirror ``Slide.layout`` exactly — an outline page names the
-# layout its stage-2 slide will use.
-PageRoleName = Literal[
-    "title", "title-content", "two-col", "section", "big-fact",
-    "quote", "agenda", "comparison", "chart", "closing",
-]
-
-
 class PageRole(BaseModel):
     """One page in an :class:`Outline`.
 
-    ``role`` is the layout the page will render as (same vocabulary as
-    ``Slide.layout``); ``title`` is its heading; ``gist`` is a one-line summary
-    of what the page says — it guides stage-2 content generation.
+    ``role`` is the layout the page will render as (the ``PageRoleName``
+    vocabulary shared with ``Slide.layout``); ``title`` is its heading;
+    ``gist`` is a one-line summary of what the page says. ``gist`` is required
+    and non-blank — stage 2 depends on it for per-page guidance, so a missing
+    or empty gist must fail validation (and trigger the retry path) rather
+    than slip through silently.
     """
 
     role: PageRoleName
     title: str
-    gist: str = ""
+    gist: str = Field(min_length=1)
 
 
 class Outline(BaseModel):

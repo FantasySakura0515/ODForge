@@ -5,6 +5,7 @@ import odforge
 from odforge.ir import (
     DesignSpec,
     FontPair,
+    PageRole,
     Palette,
     Presentation,
     Sheet,
@@ -328,3 +329,27 @@ def test_new_slide_fields_default_empty():
     s = Slide(layout="title", title="T")
     assert s.quote == "" and s.attribution == "" and s.kicker == ""
     assert s.chart is None
+
+
+# --- Task 15.1 review fix: PageRole.gist is required (no silent "") ---------
+
+
+def test_page_role_gist_required():
+    # Missing gist must fail validation — stage 2 depends on it; a silent ""
+    # default would lose the per-page guidance without any signal.
+    with pytest.raises(ValidationError, match="gist"):
+        PageRole.model_validate({"role": "title", "title": "封面"})
+
+
+def test_page_role_empty_gist_rejected():
+    # A blank gist is as useless as a missing one.
+    with pytest.raises(ValidationError, match="gist"):
+        PageRole(role="title", title="封面", gist="")
+
+
+def test_page_role_shares_slide_layout_vocabulary():
+    # DRY: PageRole.role and Slide.layout use one shared Literal — every layout
+    # a Slide can render is a role an outline page can name, and vice versa.
+    role_lit = PageRole.model_fields["role"].annotation
+    layout_lit = Slide.model_fields["layout"].annotation
+    assert role_lit == layout_lit
