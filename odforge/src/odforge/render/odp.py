@@ -47,6 +47,7 @@ _XML_DECL = '<?xml version="1.0" encoding="UTF-8"?>'
 _MASTER_PAGE_NAME = "Standard"
 _DRAWING_PAGE_STYLE = "dp1"
 _GRAPHIC_STYLE = "gr1"
+_GRADIENT_NAME = "grad-bg"
 _NOTES_SIZE_PT = 14
 
 
@@ -60,6 +61,25 @@ def _cm(value: float) -> str:
     if value == int(value):
         return f"{int(value)}cm"
     return f"{value}cm"
+
+
+def _pt(value: float) -> str:
+    """Format a point measure, dropping a trailing ``.0`` (2.0 -> "2pt")."""
+    if value == int(value):
+        return f"{int(value)}pt"
+    return f"{value}pt"
+
+
+def _lighten(hex_color: str, amount: float) -> str:
+    """Return ``#RRGGBB`` moved ``amount`` (0..1) of the way toward white."""
+
+    def _mix(channel: int) -> int:
+        return round(channel + (255 - channel) * amount)
+
+    r = _mix(int(hex_color[1:3], 16))
+    g = _mix(int(hex_color[3:5], 16))
+    b = _mix(int(hex_color[5:7], 16))
+    return f"#{r:02X}{g:02X}{b:02X}"
 
 
 def _ns_decls(ns: dict[str, str]) -> str:
@@ -120,6 +140,130 @@ def _paragraph_style_xml(
         f' fo:color="{_attr(color)}" style:font-name="{_attr(font)}"'
         f' style:font-name-asian="{_attr(font)}"/>'
         f"</style:style>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Graphic style cache (de-duplicated shape fills and strokes)
+# ---------------------------------------------------------------------------
+
+
+class _GraphicStyles:
+    """Collects unique graphic styles for shapes, naming them G1, G2, … .
+
+    Two kinds of style are de-duplicated, mirroring :class:`_ParagraphStyles`:
+
+    * **fills** keyed on ``(fill_color, opacity)`` — emitted as a solid fill with
+      no stroke; ``draw:opacity`` appears only when ``opacity < 1``. Corner radius
+      is deliberately *not* part of the key: in ODF it is a ``draw:rect`` element
+      attribute (see :func:`_rect_xml`), not a graphic-property, so it never
+      varies the style body.
+    * **strokes** keyed on ``(color, width_pt)`` — emitted as a solid stroke with
+      no fill, for :func:`_line_xml`.
+    """
+
+    def __init__(self) -> None:
+        self._names: dict[tuple, str] = {}
+
+    def name_for_fill(self, fill: str, opacity: float = 1.0) -> str:
+        return self._name(("fill", fill, opacity))
+
+    def name_for_stroke(self, color: str, width_pt: float) -> str:
+        return self._name(("stroke", color, width_pt))
+
+    def _name(self, key: tuple) -> str:
+        name = self._names.get(key)
+        if name is None:
+            name = f"G{len(self._names) + 1}"
+            self._names[key] = name
+        return name
+
+    def xml(self) -> str:
+        return "".join(
+            _graphic_style_xml(name, key) for key, name in self._names.items()
+        )
+
+
+def _graphic_style_xml(name: str, key: tuple) -> str:
+    """Build one ``style:family="graphic"`` automatic style from a registry key."""
+    if key[0] == "fill":
+        _, fill, opacity = key
+        opacity_attr = "" if opacity >= 1.0 else f' draw:opacity="{opacity * 100:g}%"'
+        props = (
+            f'draw:fill="solid" draw:fill-color="{_attr(fill)}"'
+            f'{opacity_attr} draw:stroke="none"'
+        )
+    else:  # "stroke"
+        _, color, width_pt = key
+        props = (
+            'draw:fill="none" draw:stroke="solid"'
+            f' svg:stroke-color="{_attr(color)}"'
+            f' svg:stroke-width="{_pt(width_pt)}"'
+        )
+    return (
+        f'<style:style style:name="{_attr(name)}" style:family="graphic">'
+        f"<style:graphic-properties {props}/>"
+        f"</style:style>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Shape element builders (draw:rect / draw:line)
+# ---------------------------------------------------------------------------
+
+
+def _rect_xml(
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    *,
+    fill: str,
+    opacity: float = 1.0,
+    corner_radius_cm: float = 0.0,
+    style_name: str,
+) -> str:
+    """Build a ``draw:rect`` element referencing the graphic style ``style_name``.
+
+    ``fill`` and ``opacity`` describe the fill that ``style_name`` must provide
+    (register it via :class:`_GraphicStyles`); they are accepted so a call site
+    reads as a complete rectangle spec and are intentionally *not* repeated on
+    the element, because in ODF fill properties live in the referenced graphic
+    style. ``draw:corner-radius`` is written only when ``corner_radius_cm > 0``.
+    """
+    radius = (
+        f' draw:corner-radius="{_cm(corner_radius_cm)}"'
+        if corner_radius_cm > 0
+        else ""
+    )
+    return (
+        f'<draw:rect draw:style-name="{_attr(style_name)}"'
+        f' svg:x="{_cm(x)}" svg:y="{_cm(y)}"'
+        f' svg:width="{_cm(w)}" svg:height="{_cm(h)}"{radius}/>'
+    )
+
+
+def _line_xml(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    *,
+    color: str,
+    width_pt: float,
+    style_name: str,
+) -> str:
+    """Build a ``draw:line`` element referencing the graphic style ``style_name``.
+
+    ``color`` and ``width_pt`` describe the stroke that ``style_name`` must
+    provide (register it via :meth:`_GraphicStyles.name_for_stroke`); like
+    :func:`_rect_xml` the visual attributes are carried by the referenced graphic
+    style rather than repeated on the element.
+    """
+    return (
+        f'<draw:line draw:style-name="{_attr(style_name)}"'
+        f' svg:x1="{_cm(x1)}" svg:y1="{_cm(y1)}"'
+        f' svg:x2="{_cm(x2)}" svg:y2="{_cm(y2)}"/>'
     )
 
 
@@ -209,6 +353,11 @@ def _page_xml(
 def build_content_xml(p: Presentation, theme: Theme) -> str:
     """Build ``content.xml`` for a presentation. Pure function."""
     styles = _ParagraphStyles(theme.font)
+    # Graphic styles for shapes. Pages emit no shapes yet (that arrives in a
+    # later task), so this stays empty for now; it is threaded here so the
+    # automatic-styles section can carry `_GraphicStyles` output once slide
+    # composition draws rects/lines.
+    graphics = _GraphicStyles()
     # Build pages first so every referenced paragraph style is registered.
     pages = "".join(
         _page_xml(i, slide, theme, styles) for i, slide in enumerate(p.slides)
@@ -217,6 +366,7 @@ def build_content_xml(p: Presentation, theme: Theme) -> str:
     automatic_styles = (
         "<office:automatic-styles>"
         f"{styles.xml()}"
+        f"{graphics.xml()}"
         f'<style:style style:name="{_DRAWING_PAGE_STYLE}"'
         f' style:family="drawing-page">'
         f'<style:drawing-page-properties draw:fill="solid"'
@@ -241,8 +391,29 @@ def build_content_xml(p: Presentation, theme: Theme) -> str:
 
 
 def build_styles_xml(theme: Theme) -> str:
-    """Build ``styles.xml`` (page layout + master page + bg). Pure function."""
+    """Build ``styles.xml`` (page layout + master page + bg). Pure function.
+
+    The dark preset gets a subtle two-stop linear gradient background (its ``bg``
+    fading to a slightly lighter variant); light presets keep a flat solid fill.
+    """
     font_family = f"'{theme.font}','微軟正黑體',sans-serif"
+    if theme is THEMES["dark"]:
+        office_styles = (
+            f"<office:styles>"
+            f'<draw:gradient draw:name="{_attr(_GRADIENT_NAME)}"'
+            f' draw:display-name="ODForge Background" draw:style="linear"'
+            f' draw:start-color="{_attr(theme.bg)}"'
+            f' draw:end-color="{_attr(_lighten(theme.bg, 0.16))}"'
+            f' draw:start-intensity="100%" draw:end-intensity="100%"'
+            f' draw:angle="450" draw:border="0%"/>'
+            f"</office:styles>"
+        )
+        page_fill = (
+            f'draw:fill="gradient" draw:fill-gradient-name="{_attr(_GRADIENT_NAME)}"'
+        )
+    else:
+        office_styles = ""
+        page_fill = f'draw:fill="solid" draw:fill-color="{_attr(theme.bg)}"'
     return (
         f"{_XML_DECL}"
         f"<office:document-styles {_ns_decls(_STYLES_NS)}"
@@ -251,6 +422,7 @@ def build_styles_xml(theme: Theme) -> str:
         f'<style:font-face style:name="{_attr(theme.font)}"'
         f' svg:font-family="{_attr(font_family)}"/>'
         f"</office:font-face-decls>"
+        f"{office_styles}"
         f"<office:automatic-styles>"
         f'<style:page-layout style:name="PM1">'
         f'<style:page-layout-properties fo:page-width="{_cm(PAGE_W)}"'
@@ -260,8 +432,7 @@ def build_styles_xml(theme: Theme) -> str:
         f"</style:page-layout>"
         f'<style:style style:name="{_DRAWING_PAGE_STYLE}"'
         f' style:family="drawing-page">'
-        f'<style:drawing-page-properties draw:fill="solid"'
-        f' draw:fill-color="{_attr(theme.bg)}"/>'
+        f"<style:drawing-page-properties {page_fill}/>"
         f"</style:style>"
         f"</office:automatic-styles>"
         f"<office:master-styles>"

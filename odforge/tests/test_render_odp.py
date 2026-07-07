@@ -45,7 +45,14 @@ def test_layout_roles_match_expectation():
 import zipfile
 import lxml.etree as etree
 import pytest
-from odforge.render.odp import render_odp, build_content_xml, build_styles_xml
+from odforge.render.odp import (
+    render_odp,
+    build_content_xml,
+    build_styles_xml,
+    _rect_xml,
+    _line_xml,
+    _GraphicStyles,
+)
 from odforge.render import render
 from odforge.ir import Presentation, Slide
 from odforge.package import ODP_MIMETYPE
@@ -269,3 +276,94 @@ def test_resolve_design_scale_selects_sizes():
                          slides=[Slide(layout="title", title="T")])
         t = resolve_design(p)
         assert (t.display_pt, t.h1_pt, t.body_pt, t.caption_pt) == SCALES[scale]
+
+
+# ---------------------------------------------------------------------------
+# Task 13.1: graphic primitives (rect / line) + gradient background
+# ---------------------------------------------------------------------------
+
+
+def test_graphic_styles_dedup_and_sequential_names():
+    gs = _GraphicStyles()
+    a = gs.name_for_fill("#FF0000")
+    b = gs.name_for_fill("#FF0000")       # identical fill → shared style
+    c = gs.name_for_fill("#00FF00")       # different fill → new style
+    d = gs.name_for_stroke("#0000FF", 2)  # stroke → its own style
+    assert a == b == "G1"
+    assert c == "G2"
+    assert d == "G3"
+
+
+def test_rect_xml_emits_draw_rect_and_style_fill_color():
+    gs = _GraphicStyles()
+    name = gs.name_for_fill("#1A4B8C")
+    rect = _rect_xml(1, 2, 5.5, 3, fill="#1A4B8C", style_name=name)
+    assert rect.startswith("<draw:rect")
+    assert f'draw:style-name="{name}"' in rect
+    assert 'svg:x="1cm"' in rect and 'svg:y="2cm"' in rect
+    assert 'svg:width="5.5cm"' in rect and 'svg:height="3cm"' in rect
+    styles = gs.xml()
+    assert 'draw:fill="solid"' in styles
+    assert 'draw:fill-color="#1A4B8C"' in styles
+    assert 'draw:stroke="none"' in styles          # a pure fill draws no border
+
+
+def test_rect_fill_opacity_below_one_emits_percentage():
+    gs = _GraphicStyles()
+    gs.name_for_fill("#000000", opacity=0.5)
+    assert 'draw:opacity="50%"' in gs.xml()
+    # full opacity omits the attribute entirely
+    solid = _GraphicStyles()
+    solid.name_for_fill("#000000")
+    assert "draw:opacity" not in solid.xml()
+
+
+def test_rounded_rect_emits_corner_radius_only_when_positive():
+    gs = _GraphicStyles()
+    name = gs.name_for_fill("#FFFFFF")
+    rounded = _rect_xml(0, 0, 4, 3, fill="#FFFFFF",
+                        corner_radius_cm=0.4, style_name=name)
+    assert 'draw:corner-radius="0.4cm"' in rounded
+    sharp = _rect_xml(0, 0, 4, 3, fill="#FFFFFF", style_name=name)
+    assert "corner-radius" not in sharp
+
+
+def test_line_xml_emits_draw_line_and_stroke_style():
+    gs = _GraphicStyles()
+    name = gs.name_for_stroke("#3DD6E6", 2.0)
+    line = _line_xml(1, 1, 10, 1, color="#3DD6E6", width_pt=2.0, style_name=name)
+    assert line.startswith("<draw:line")
+    assert f'draw:style-name="{name}"' in line
+    assert 'svg:x1="1cm"' in line and 'svg:x2="10cm"' in line
+    assert 'svg:y1="1cm"' in line and 'svg:y2="1cm"' in line
+    styles = gs.xml()
+    assert 'draw:stroke="solid"' in styles
+    assert 'svg:stroke-color="#3DD6E6"' in styles
+    assert 'svg:stroke-width="2pt"' in styles
+    assert 'draw:fill="none"' in styles            # a pure stroke has no fill
+
+
+def test_dark_theme_styles_use_gradient_background():
+    root = etree.fromstring(build_styles_xml(THEMES["dark"]).encode("utf-8"))
+    grads = root.findall(".//draw:gradient", NS)
+    assert grads, "dark preset must define a <draw:gradient>"
+    grad_name = grads[0].get("{%s}name" % NS["draw"])
+    assert grad_name
+    dpp = root.findall(".//style:drawing-page-properties", NS)
+    assert dpp
+    assert all(p.get("{%s}fill" % NS["draw"]) == "gradient" for p in dpp)
+    assert all(
+        p.get("{%s}fill-gradient-name" % NS["draw"]) == grad_name for p in dpp
+    )
+
+
+def test_light_themes_keep_solid_background():
+    for preset in ("academic", "minimal"):
+        root = etree.fromstring(build_styles_xml(THEMES[preset]).encode("utf-8"))
+        assert not root.findall(".//draw:gradient", NS)
+        dpp = root.findall(".//style:drawing-page-properties", NS)
+        assert dpp
+        assert all(p.get("{%s}fill" % NS["draw"]) == "solid" for p in dpp)
+        assert all(
+            p.get("{%s}fill-color" % NS["draw"]) == THEMES[preset].bg for p in dpp
+        )
