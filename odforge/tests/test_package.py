@@ -27,7 +27,7 @@ def test_manifest_lists_all_parts(tmp_path):
     assert ODP_MIMETYPE in m
 
 def test_manifest_is_wellformed_xml():
-    xml = build_manifest(ODT_MIMETYPE, ["content.xml", "styles.xml", "meta.xml"])
+    xml = build_manifest(ODT_MIMETYPE, {"content.xml": "<a/>", "styles.xml": "<b/>", "meta.xml": "<c/>"})
     root = etree.fromstring(xml.encode())
     assert root.tag.endswith("manifest")
 
@@ -41,3 +41,27 @@ def test_mimetype_constants():
     assert ODT_MIMETYPE == "application/vnd.oasis.opendocument.text"
     assert ODP_MIMETYPE == "application/vnd.oasis.opendocument.presentation"
     assert ODS_MIMETYPE == "application/vnd.oasis.opendocument.spreadsheet"
+
+def test_binary_part_written_and_manifest_media_type(tmp_path):
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"/>'
+    out = write_odf_package(tmp_path / "t.odt", ODT_MIMETYPE,
+                            {"content.xml": "<a/>", "Pictures/a.svg": svg})
+    with zipfile.ZipFile(out) as z:
+        assert "Pictures/a.svg" in z.namelist()
+        assert z.read("Pictures/a.svg") == svg
+        m = z.read("META-INF/manifest.xml").decode()
+    assert 'manifest:full-path="Pictures/a.svg" manifest:media-type="image/svg+xml"' in m
+    # regression: existing XML part is unchanged
+    assert 'manifest:full-path="content.xml" manifest:media-type="text/xml"' in m
+
+def test_binary_media_type_by_extension():
+    m = build_manifest(ODT_MIMETYPE, {
+        "content.xml": "<a/>",
+        "Pictures/p.png": b"\x89PNG",
+        "Pictures/s.svg": b"<svg/>",
+        "Pictures/j.jpg": b"\xff\xd8\xff",
+    })
+    assert 'manifest:full-path="content.xml" manifest:media-type="text/xml"' in m
+    assert 'manifest:full-path="Pictures/p.png" manifest:media-type="image/png"' in m
+    assert 'manifest:full-path="Pictures/s.svg" manifest:media-type="image/svg+xml"' in m
+    assert 'manifest:full-path="Pictures/j.jpg" manifest:media-type="image/jpeg"' in m
