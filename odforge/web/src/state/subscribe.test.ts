@@ -18,7 +18,7 @@ test("subscribeJob 把 SSE 事件解析後回呼", () => {
   const close = subscribeJob("j1", (e) => seen.push(e), Ctor);
 
   expect(src.url).toBe("/api/jobs/j1/events");
-  src.emit("outline", { design: { palette: {}, fonts: {} }, mode: "presenter", units: [] });
+  src.emit("outline", { design: { palette: {}, fonts: {} }, mode: "presenter", pages: [] });
   src.emit("complete", { download_url: "/d" });
   expect(seen.map((e) => e.type)).toEqual(["outline", "complete"]);
 

@@ -17,16 +17,16 @@ function withUnit(units: Unit[], n: number, patch: Partial<Unit>): Unit[] {
 export function cockpitReducer(state: CockpitState, event: SseEvent): CockpitState {
   switch (event.type) {
     case "outline": {
-      const units: Unit[] = event.data.units.map((r) => ({ n: r.n, role: r.role, title: r.title, status: "skeleton" }));
+      const units: Unit[] = event.data.pages.map((p, i) => ({ n: i + 1, role: p.role, title: p.title, status: "skeleton" as const }));
       return { ...state, phase: "outline", outline: event.data, units };
     }
     case "awaiting_approval":
       return { ...state, phase: "await" };
-    case "unit_done": {
-      const { n, unit } = event.data;
+    case "slide_done": {
+      const { n, slide } = event.data;
       const cur = state.units.find((u) => u.n === n);
       const status = cur?.status === "preview" || cur?.status === "done" ? cur.status : "filling";
-      return { ...state, phase: "generating", units: withUnit(state.units, n, { role: unit.role, title: unit.title, ir: unit.ir, status }) };
+      return { ...state, phase: "generating", units: withUnit(state.units, n, { title: slide.title, ir: slide, status }) };
     }
     case "preview_ready": {
       const { n, url } = event.data;
@@ -38,7 +38,7 @@ export function cockpitReducer(state: CockpitState, event: SseEvent): CockpitSta
     }
     case "qa_round": {
       let units = state.units;
-      for (const f of event.data.findings) if (f.severity === "error") units = withUnit(units, f.unit_no, { status: "flagged" });
+      for (const f of event.data.findings) if (f.severity === "error") units = withUnit(units, f.slide_no, { status: "flagged" });
       return { ...state, phase: "qa", units, qaRounds: [...state.qaRounds, event.data], gates: { ...state.gates, design: "active" } };
     }
     case "complete":

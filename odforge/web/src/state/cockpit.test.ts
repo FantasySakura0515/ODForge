@@ -5,7 +5,7 @@ import type { Outline, SseEvent } from "./types";
 const outline: Outline = {
   design: { palette: { bg: "#fff", surface: "#eee", text: "#111", muted: "#888", accent: "#234e9e" }, fonts: { display: "Noto Serif TC", body: "Noto Sans TC" } },
   mode: "presenter",
-  units: [ { n: 1, role: "title", title: "封面", gist: "開場" }, { n: 2, role: "content", title: "內文", gist: "重點" } ],
+  pages: [ { role: "title", title: "封面", gist: "開場" }, { role: "title-content", title: "內文", gist: "重點" } ],
 };
 const send = (s = initialState(), ...evs: SseEvent[]) => evs.reduce(cockpitReducer, s);
 
@@ -25,11 +25,12 @@ describe("cockpitReducer", () => {
     expect(s.units[0].title).toBe("封面");
   });
 
-  test("unit_done 填內容、進 generating", () => {
-    const s = send(initialState(), { type: "outline", data: outline }, { type: "unit_done", data: { n: 1, unit: { role: "title", title: "封面!" } } });
+  test("slide_done 填內容、進 generating、保留 role", () => {
+    const s = send(initialState(), { type: "outline", data: outline }, { type: "slide_done", data: { n: 1, slide: { layout: "title", title: "封面!" } } });
     expect(s.phase).toBe("generating");
     expect(s.units[0].status).toBe("filling");
     expect(s.units[0].title).toBe("封面!");
+    expect(s.units[0].role).toBe("title");
   });
 
   test("preview_ready 設縮圖並讓三道格式閘通過", () => {
@@ -49,7 +50,7 @@ describe("cockpitReducer", () => {
   });
 
   test("qa_round 標記 error 單元並讓設計閘 active", () => {
-    const s = send(initialState(), { type: "outline", data: outline }, { type: "qa_round", data: { round: 1, findings: [{ unit_no: 2, issue: "溢出", severity: "error", fix_hint: "減字" }] } });
+    const s = send(initialState(), { type: "outline", data: outline }, { type: "qa_round", data: { round: 1, findings: [{ slide_no: 2, issue: "溢出", severity: "error", fix_hint: "減字" }] } });
     expect(s.phase).toBe("qa");
     expect(s.units[1].status).toBe("flagged");
     expect(s.gates.design).toBe("active");

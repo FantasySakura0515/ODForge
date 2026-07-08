@@ -7,8 +7,8 @@ test("mockTreeEvents 以 outline 開頭、complete 結尾、含 12 單元", () =
   expect(evs[0].type).toBe("outline");
   expect(evs[evs.length - 1].type).toBe("complete");
   const outline = evs[0] as Extract<SseEvent, { type: "outline" }>;
-  expect(outline.data.units).toHaveLength(12);
-  expect(evs.filter((e) => e.type === "unit_done")).toHaveLength(12);
+  expect(outline.data.pages).toHaveLength(12);
+  expect(evs.filter((e) => e.type === "slide_done")).toHaveLength(12);
 });
 
 test("playMock 依序送出全部事件", () => {

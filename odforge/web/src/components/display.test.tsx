@@ -8,7 +8,7 @@ import type { Outline } from "../state/types";
 const outline: Outline = {
   design: { palette: { bg: "#fbfaf7", surface: "#eef2fb", text: "#1b2430", muted: "#7b8494", accent: "#2a5caa" }, fonts: { display: "x", body: "y" } },
   mode: "presenter",
-  units: [ { n: 1, role: "title", title: "樹與二元樹", gist: "開場" } ],
+  pages: [ { role: "title", title: "樹與二元樹", gist: "開場" } ],
 };
 
 test("OutlineRail 顯示單元標題與色盤", () => {

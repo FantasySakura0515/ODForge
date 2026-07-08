@@ -2,13 +2,13 @@ import { expect, test } from "vitest";
 import { parseSseEvent } from "./sse";
 
 test("解析 outline 事件", () => {
-  const ev = parseSseEvent("outline", JSON.stringify({ design: { palette: {}, fonts: {} }, mode: "presenter", units: [] }));
+  const ev = parseSseEvent("outline", JSON.stringify({ design: { palette: {}, fonts: {} }, mode: "presenter", pages: [] }));
   expect(ev?.type).toBe("outline");
 });
 
-test("解析 unit_done 事件帶 n", () => {
-  const ev = parseSseEvent("unit_done", JSON.stringify({ n: 3, unit: { role: "content", title: "x" } }));
-  expect(ev).toEqual({ type: "unit_done", data: { n: 3, unit: { role: "content", title: "x" } } });
+test("解析 slide_done 事件帶 n", () => {
+  const ev = parseSseEvent("slide_done", JSON.stringify({ n: 3, slide: { layout: "title-content", title: "x" } }));
+  expect(ev).toEqual({ type: "slide_done", data: { n: 3, slide: { layout: "title-content", title: "x" } } });
 });
 
 test("未知事件名回 null", () => {
