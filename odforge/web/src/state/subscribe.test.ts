@@ -25,3 +25,20 @@ test("subscribeJob 把 SSE 事件解析後回呼", () => {
   close();
   expect(src.closed).toBe(true);
 });
+
+test("subscribeJob 收到 complete 後自動關閉串流(不需手動 close)", () => {
+  let src!: FakeEventSource;
+  const Ctor = vi.fn((url: string) => (src = new FakeEventSource(url))) as unknown as typeof EventSource;
+  subscribeJob("j1", () => {}, Ctor);
+  expect(src.closed).toBe(false);
+  src.emit("complete", { download_url: "/d" });
+  expect(src.closed).toBe(true);
+});
+
+test("subscribeJob 收到 error 後自動關閉串流", () => {
+  let src!: FakeEventSource;
+  const Ctor = vi.fn((url: string) => (src = new FakeEventSource(url))) as unknown as typeof EventSource;
+  subscribeJob("j1", () => {}, Ctor);
+  src.emit("error", { message: "x", stage: "slides" });
+  expect(src.closed).toBe(true);
+});

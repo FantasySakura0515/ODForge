@@ -23,7 +23,11 @@ export function subscribeJob(
   for (const name of EVENT_NAMES) {
     es.addEventListener(name, (ev) => {
       const parsed = parseSseEvent(name, (ev as MessageEvent).data);
-      if (parsed) onEvent(parsed);
+      if (!parsed) return;
+      onEvent(parsed);
+      // The backend ends the stream after a terminal event; close our side too so
+      // the browser's EventSource doesn't auto-reconnect and replay the whole history.
+      if (parsed.type === "complete" || parsed.type === "error") es.close();
     });
   }
   return () => es.close();
