@@ -9,6 +9,11 @@ build/
 *.egg-info/
 .DS_Store
 
+# Secrets — NEVER commit (repo is public). DEEPSEEK_API_KEY etc. live here for local dev.
+.env
+.env.*
+!.env.example
+
 .superpowers/
 報名文件/
 佐證資料/

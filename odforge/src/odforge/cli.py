@@ -372,6 +372,18 @@ def serve(
     需安裝 web 相依：``pip install "odforge[web]"``。fastapi / uvicorn /
     sse-starlette 只在此指令內延遲載入，核心套件不因它們而變重。
     """
+    # Load a local .env (odforge/.env) so DEEPSEEK_API_KEY etc. can live in a file
+    # instead of the shell env. Best-effort: python-dotenv ships with the web extra,
+    # and this runs only for `serve`, never at import time (so tests stay unaffected).
+    # The project-relative path makes it independent of the current working dir.
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+        load_dotenv()  # also honour a .env in the current working dir, if present
+    except ImportError:
+        pass
+
     try:
         import uvicorn
 
