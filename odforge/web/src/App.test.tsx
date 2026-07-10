@@ -13,8 +13,8 @@ test("送出 prompt 後,mock 流最終跑到完成:四道閘全綠 + 可下載",
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "樹與二元樹" } });
   fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
 
-  // 大綱出現
-  await waitFor(() => expect(screen.getByText("樹與二元樹")).toBeInTheDocument());
+  // 大綱出現(標題會同時出現在大綱軌與預覽格,故用 getAllByText)
+  await waitFor(() => expect(screen.getAllByText("樹與二元樹").length).toBeGreaterThan(0));
   // 最終完成:下載連結出現
   await waitFor(() => expect(screen.getByRole("link", { name: /下載/ })).toBeInTheDocument(), { timeout: 4000 });
   // 四道閘皆 pass

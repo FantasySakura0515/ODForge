@@ -457,6 +457,7 @@
 }
 .narrator .ndot { flex: none; color: var(--accent); }
 .narrator .nn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.narrator.is-error, .narrator.is-error .ndot { color: var(--crit); }
 
 .dl {
   flex: none;

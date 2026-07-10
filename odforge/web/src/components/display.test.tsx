@@ -32,3 +32,12 @@ test("StatusNarrator 完成態文字", () => {
   render(<StatusNarrator phase="complete" units={[]} />);
   expect(screen.getByText(/四道閘全綠|完成/)).toBeInTheDocument();
 });
+
+test("StatusNarrator 錯誤態顯示訊息與階段", () => {
+  const { container } = render(
+    <StatusNarrator phase="error" units={[]} error={{ message: "環境變數 DEEPSEEK_API_KEY 未設定", stage: "outline" }} />,
+  );
+  expect(screen.getByText(/DEEPSEEK_API_KEY 未設定/)).toBeInTheDocument();
+  expect(screen.getByText(/outline/)).toBeInTheDocument();
+  expect(container.querySelector(".narrator.is-error")).not.toBeNull();
+});
