@@ -375,7 +375,7 @@ def serve(
     try:
         import uvicorn
 
-        from odforge.webapi import create_app
+        from odforge.webapi import create_app, frontend_dist
     except ImportError as exc:  # noqa: BLE001 - concise message, no traceback
         _err.print(
             "[red]FAIL[/red] 缺少 web 相依，請先安裝："
@@ -384,10 +384,17 @@ def serve(
         )
         raise typer.Exit(code=1)
 
-    _out.print(
-        f"[green]ODForge Web API[/green] 啟動於 http://{escape(host)}:{port}  "
-        "（Ctrl+C 結束）"
-    )
+    if frontend_dist() is not None:
+        _out.print(
+            f"[green]ODForge[/green] 完整控制台啟動於 http://{escape(host)}:{port}/  "
+            "（前端已掛載，Ctrl+C 結束）"
+        )
+    else:
+        _out.print(
+            f"[green]ODForge Web API[/green] 啟動於 http://{escape(host)}:{port}  "
+            "（API-only：前端尚未 build，先 `npm --prefix odforge/web run build`，"
+            "或另跑 `npm --prefix odforge/web run dev`；Ctrl+C 結束）"
+        )
     uvicorn.run(create_app(), host=host, port=port)
 
 

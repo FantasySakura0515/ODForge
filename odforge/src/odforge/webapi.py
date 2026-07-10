@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 from sse_starlette import EventSourceResponse
 
@@ -357,6 +358,17 @@ class RegenerateBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def frontend_dist() -> Optional[Path]:
+    """Path to the built web frontend (``odforge/web/dist``) if present, else None.
+
+    Lets ``odforge serve`` host the whole cockpit from one process. Absent when
+    the frontend hasn't been built (or when installed without the web tree) — the
+    API then runs standalone and a dev server proxies ``/api`` to it.
+    """
+    dist = Path(__file__).resolve().parents[2] / "web" / "dist"
+    return dist if dist.is_dir() else None
+
+
 def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
     """Build the ODForge Web API application.
 
@@ -515,5 +527,12 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
         if job.error is not None:
             data["error"] = job.error
         return data
+
+    # Host the built frontend at "/" so one `odforge serve` runs the whole cockpit.
+    # Mounted last, after the /api routes, so those still take precedence; skipped
+    # entirely when the frontend hasn't been built (API-only mode).
+    dist = frontend_dist()
+    if dist is not None:
+        app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
 
     return app

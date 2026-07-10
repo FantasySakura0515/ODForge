@@ -593,6 +593,33 @@ def test_cors_allows_only_allowlisted_origins(app):
         assert allowed.headers.get("access-control-allow-credentials") != "true"
 
 
+# ---------------------------------------------------------------------------
+# Frontend hosting — `odforge serve` serves the built cockpit from one process
+# ---------------------------------------------------------------------------
+
+
+def test_serve_mounts_built_frontend(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text(
+        "<!doctype html><title>文鍛 ODForge</title>", encoding="utf-8"
+    )
+    monkeypatch.setattr(webapi, "frontend_dist", lambda: dist)
+    with TestClient(webapi.create_app(jobs_dir=tmp_path / "jobs")) as client:
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "文鍛" in resp.text
+        # /api routes still win over the "/" static mount.
+        assert client.get("/api/jobs/nope").status_code == 404
+
+
+def test_api_only_when_frontend_not_built(tmp_path, monkeypatch):
+    monkeypatch.setattr(webapi, "frontend_dist", lambda: None)
+    with TestClient(webapi.create_app(jobs_dir=tmp_path / "jobs")) as client:
+        # No static mount at "/", so the root path is unmatched → 404.
+        assert client.get("/").status_code == 404
+
+
 def test_cors_env_override(monkeypatch, tmp_path):
     monkeypatch.setenv("ODFORGE_CORS_ORIGINS", "https://my.app, https://other.app")
     scoped = webapi.create_app(jobs_dir=tmp_path / "jobs")
