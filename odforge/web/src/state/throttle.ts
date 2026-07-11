@@ -1,7 +1,17 @@
 import type { SseEvent } from "./types";
 
-// Only the two high-frequency, per-slide visual events are throttled.
-const THROTTLED = new Set(["slide_done", "preview_ready"]);
+// The high-frequency, per-slide visual events. `unit_done` is the F4 rename alias
+// the backend emits *paired* with each `slide_done` (identical `{n, slide}` data);
+// it must be throttled too, else it bypasses the queue and lights every cell in one
+// flash while the queued `slide_done` events become reducer no-ops.
+const THROTTLED = new Set(["slide_done", "unit_done", "preview_ready"]);
+
+// `slide_done` and `unit_done` are the SAME visual event under two names (the
+// backend emits both, back-to-back, per page). We collapse the pair to a single
+// visual tick per page `n`: whichever of the two arrives first flows through the
+// throttle, the sibling is dropped — so the wall advances one cell per interval and
+// no second, redundant tick is spent on the duplicate.
+const UNIT_ALIASES = new Set(["slide_done", "unit_done"]);
 
 // State-critical / terminal events. These flip phase or rewrite unit status, so a
 // throttled slide_done/preview_ready arriving *after* them would corrupt state
@@ -40,6 +50,9 @@ export function createThrottledDispatch(
   const intervalMs = opts.intervalMs ?? 100;
   const queue: SseEvent[] = [];
   let timer: ReturnType<typeof setTimeout> | null = null;
+  // Page numbers already admitted via a slide_done/unit_done — used to drop the
+  // duplicate sibling of the pair so it never reaches the reducer or the queue.
+  const seenUnitN = new Set<number>();
 
   function tick() {
     const next = queue.shift();
@@ -62,6 +75,13 @@ export function createThrottledDispatch(
   return {
     push(e) {
       if (THROTTLED.has(e.type)) {
+        if (UNIT_ALIASES.has(e.type)) {
+          const n = (e.data as { n?: number }).n;
+          if (n != null) {
+            if (seenUnitN.has(n)) return; // duplicate sibling of the pair — drop it
+            seenUnitN.add(n);
+          }
+        }
         if (timer == null) {
           dispatch(e); // leading edge — first of a burst lights up immediately
           timer = setTimeout(tick, intervalMs);
@@ -75,6 +95,7 @@ export function createThrottledDispatch(
     },
     cancel() {
       queue.length = 0;
+      seenUnitN.clear();
       if (timer != null) {
         clearTimeout(timer);
         timer = null;

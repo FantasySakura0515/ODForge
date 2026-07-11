@@ -3,6 +3,7 @@ import { createThrottledDispatch } from "./throttle";
 import type { SseEvent } from "./types";
 
 const sd = (n: number): SseEvent => ({ type: "slide_done", data: { n, slide: { layout: "x", title: `t${n}` } } });
+const ud = (n: number): SseEvent => ({ type: "unit_done", data: { n, slide: { layout: "x", title: `t${n}` } } });
 const pr = (n: number): SseEvent => ({ type: "preview_ready", data: { n, url: `/p/${n}` } });
 const ns = (seen: SseEvent[]) => seen.map((e) => (e.data as { n?: number }).n);
 
@@ -68,6 +69,36 @@ test("gate_result 放行但不排空視覺佇列——逐格點亮不被 gate �
   expect(seen.map((e) => e.type)).toEqual(["slide_done", "gate_result", "slide_done"]);
   vi.advanceTimersByTime(100);
   expect(seen.map((e) => e.type)).toEqual(["slide_done", "gate_result", "slide_done", "slide_done"]);
+});
+
+test("slide_done + unit_done 同 n 成對到達:只產生一次視覺 tick(unit_done 為別名,去重)", () => {
+  const seen: SseEvent[] = [];
+  const t = createThrottledDispatch((e) => seen.push(e), { intervalMs: 100 });
+  // 後端每頁並發 slide_done + unit_done(同 data)。成對到達應只點亮一格。
+  t.push(sd(1));
+  t.push(ud(1)); // 別名重複 → 丟棄
+  expect(seen).toHaveLength(1); // 只有 leading edge 的 slide_done
+  expect(ns(seen)).toEqual([1]);
+  t.push(sd(2));
+  t.push(ud(2)); // 別名重複 → 丟棄
+  // n2 進佇列(cooldown 中);別名不佔第二個 tick。
+  expect(seen).toHaveLength(1);
+  vi.advanceTimersByTime(100);
+  expect(ns(seen)).toEqual([1, 2]);
+  // 再推進一大段:沒有多餘的別名 tick 冒出來。
+  vi.advanceTimersByTime(500);
+  expect(ns(seen)).toEqual([1, 2]);
+});
+
+test("成對到達的最後一頁:complete 終態 drain 排空佇列不受去重影響", () => {
+  const seen: SseEvent[] = [];
+  const t = createThrottledDispatch((e) => seen.push(e), { intervalMs: 100 });
+  for (let n = 1; n <= 3; n++) { t.push(sd(n)); t.push(ud(n)); }
+  expect(ns(seen)).toEqual([1]); // n1 leading,n2/n3 佇列;別名皆丟棄
+  t.push({ type: "complete", data: { download_url: "/d" } });
+  // drain 同步排空 n2/n3(各一次),再放行 complete。
+  expect(seen.map((e) => e.type)).toEqual(["slide_done", "slide_done", "slide_done", "complete"]);
+  expect(ns(seen.slice(0, 3))).toEqual([1, 2, 3]);
 });
 
 test("cancel 清掉待播佇列與計時器,之後不再 dispatch", () => {

@@ -54,6 +54,12 @@ test("StatusNarrator await 但已確認大綱時,報逐頁填充而非等待確�
   expect(screen.queryByText(/等待你確認/)).toBeNull();
 });
 
+test("StatusNarrator outline 但已確認大綱時(編輯後 synthetic outline),報逐頁填充而非「已產生大綱與配色」", () => {
+  render(<StatusNarrator phase="outline" units={[{ n: 1, role: "title", title: "a", status: "skeleton" }]} fillingPending />);
+  expect(screen.getByText(/逐頁填充/)).toBeInTheDocument();
+  expect(screen.queryByText(/已產生大綱與配色/)).toBeNull();
+});
+
 test("GateRail active 閘的 ⟳ 帶 spin 類(轉檔中會旋轉)", () => {
   const { container } = render(
     <GateRail gates={{ zip: "pass", xml: "pass", libreoffice: "active", design: "pending" }} qaRounds={[]} />,
@@ -65,7 +71,7 @@ test("GateRail active 閘的 ⟳ 帶 spin 類(轉檔中會旋轉)", () => {
 
 test("StatusNarrator 完成態文字", () => {
   render(<StatusNarrator phase="complete" units={[]} />);
-  expect(screen.getByText(/四道閘全綠|完成/)).toBeInTheDocument();
+  expect(screen.getByText("完成 · 原生 ODF")).toBeInTheDocument();
 });
 
 test("StatusNarrator 容器為 aria-live polite(讀屏器聽得到進度)", () => {

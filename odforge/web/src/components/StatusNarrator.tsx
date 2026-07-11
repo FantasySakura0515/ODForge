@@ -30,7 +30,9 @@ export function StatusNarrator({
     : submitting && phase === "empty" ? "已送出,正在生成大綱…"
     : phase === "empty" && expired ? "找不到這個任務,可能已過期"
     : phase === "empty" ? "準備就緒"
-    : phase === "outline" ? "已產生大綱與配色"
+    // 編輯確認後 synthetic outline dispatch 會把 phase 設回 "outline";此時
+    // fillingPending 已立起,narrator 應報「逐頁填充」而非久掛「已產生大綱與配色」。
+    : phase === "outline" ? (fillingPending ? "大綱已確認,正在逐頁填充…" : "已產生大綱與配色")
     : phase === "await" ? (fillingPending ? "大綱已確認,正在逐頁填充…" : "等待你確認大綱…")
     : phase === "qa" ? "設計閘檢視中…"
     : phase === "complete" ? "完成 · 原生 ODF"
