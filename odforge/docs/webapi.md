@@ -160,7 +160,10 @@ LibreOffice）回 `404`。
 
 ### GET `/api/jobs/{id}/download`
 回最終 `.odp`，`Content-Type: application/vnd.oasis.opendocument.presentation`，
-`Content-Disposition: attachment; filename="{id}.odp"`。檔案尚未算圖回 `404`。
+`Content-Disposition: attachment`。檔名依主題命名（**非** UUID）：優先取生成簡報的標題
+（`job.ir.title`），否則取 `prompt` 前 20 字；經檔名消毒（移除 `\ / : * ? " < > |` 與換行、
+去首尾空白）後加 `.odp`；若消毒後為空才回退為 `{id}.odp`。中文保留（非 ASCII 檔名以
+RFC 5987 `filename*` 送出）。檔案尚未算圖回 `404`。
 
 ### GET `/api/jobs/{id}`
 重整頁面／重連時取狀態快照：

@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -165,6 +166,34 @@ async def _emit(job: Job, event: str, data: Any) -> None:
 
 def _download_url(job: Job) -> str:
     return f"/api/jobs/{job.id}/download"
+
+
+# Characters illegal in a filename on common filesystems, plus newlines.
+_FILENAME_ILLEGAL = re.compile(r'[\\/:*?"<>|\r\n]')
+
+
+def _sanitize_filename(name: str) -> str:
+    """Strip filename-illegal characters and surrounding whitespace (CJK kept)."""
+    return _FILENAME_ILLEGAL.sub("", name).strip()
+
+
+def _download_filename(job: Job) -> str:
+    """A human, topic-based ``.odp`` filename (never the bare UUID unless empty).
+
+    Prefers the generated deck's title (``job.ir.title``); falls back to the
+    first 20 chars of the prompt; and if sanitising leaves nothing usable,
+    falls back to the job id. Chinese is preserved — FileResponse emits an
+    RFC 5987 ``filename*`` for non-ASCII names.
+    """
+    raw = ""
+    if job.ir is not None and job.ir.title and job.ir.title.strip():
+        raw = job.ir.title
+    elif job.prompt:
+        raw = job.prompt[:20]
+    cleaned = _sanitize_filename(raw)
+    if not cleaned:
+        cleaned = job.id
+    return f"{cleaned}.odp"
 
 
 def _preview_url(job: Job, n: int) -> str:
@@ -568,7 +597,7 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
         if not job.odp_path.exists():
             raise HTTPException(status_code=404, detail="deck not ready")
         return FileResponse(
-            job.odp_path, media_type=ODP_MIME, filename=f"{job.id}.odp"
+            job.odp_path, media_type=ODP_MIME, filename=_download_filename(job)
         )
 
     @app.get("/api/jobs/{job_id}")

@@ -647,6 +647,185 @@ def test_api_only_when_frontend_not_built(tmp_path, monkeypatch):
         assert client.get("/").status_code == 404
 
 
+# ---------------------------------------------------------------------------
+# gate_result — real four-gate signals (zip / xml / libreoffice / design)
+# ---------------------------------------------------------------------------
+
+
+def test_gate_result_design_pass_when_qa_ok(app, monkeypatch):
+    report = QAReport(rounds=1, findings_by_round=[[]], final_ok=True)
+    _install_fakes(monkeypatch, n=2, qa_report=report)
+    job = webapi.create_job(app, prompt="x", qa=True)
+    asyncio.run(webapi.run_job(job))
+
+    gates = [e["data"] for e in job.events if e["event"] == "gate_result"]
+    assert {"gate": "design", "status": "pass"} in gates
+    assert {"gate": "design", "status": "skipped"} not in gates
+
+
+def test_gate_result_design_fail_when_qa_not_ok(app, monkeypatch):
+    report = QAReport(
+        rounds=2,
+        findings_by_round=[
+            [Finding(slide_no=1, issue="溢出", severity="error", fix_hint="縮短")],
+            [Finding(slide_no=1, issue="仍溢出", severity="error", fix_hint="再縮")],
+        ],
+        final_ok=False,
+    )
+    _install_fakes(monkeypatch, n=2, qa_report=report)
+    job = webapi.create_job(app, prompt="x", qa=True)
+    asyncio.run(webapi.run_job(job))
+
+    gates = [e["data"] for e in job.events if e["event"] == "gate_result"]
+    assert {"gate": "design", "status": "fail"} in gates
+
+
+def test_gate_result_design_skipped_when_qa_raises(app, monkeypatch):
+    _install_fakes(monkeypatch, n=2)
+
+    def boom_qa(ir, out_path, **kwargs):
+        raise RuntimeError("qa exploded")
+
+    monkeypatch.setattr(webapi, "run_qa_loop", boom_qa)
+    job = webapi.create_job(app, prompt="x", qa=True)
+    asyncio.run(webapi.run_job(job))
+
+    # QA error is swallowed (existing behaviour) → design reported skipped, job ok
+    assert job.status == "complete"
+    gates = [e["data"] for e in job.events if e["event"] == "gate_result"]
+    assert {"gate": "design", "status": "skipped"} in gates
+
+
+def test_gate_result_validate_fail_raises_error_stage_validate(app, monkeypatch):
+    _install_fakes(monkeypatch, n=2)
+
+    def bad_validate(path, **kwargs):
+        from odforge.validate import ValidationReport
+
+        return ValidationReport(
+            ok=False,
+            gates={"structure": (False, "not a valid zip"), "xml": (True, "ok")},
+        )
+
+    monkeypatch.setattr(webapi, "validate_odf", bad_validate)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+
+    # zip fail emitted, then an error event with stage="validate"
+    gates = [e["data"] for e in job.events if e["event"] == "gate_result"]
+    assert {"gate": "zip", "status": "fail"} in gates
+    assert job.status == "error"
+    last = job.events[-1]
+    assert last["event"] == "error"
+    assert last["data"]["stage"] == "validate"
+    # a failing validate gate stops the pipeline before previews
+    names = [e["event"] for e in job.events]
+    assert "preview_ready" not in names
+
+
+# ---------------------------------------------------------------------------
+# doc_type validation (only odp supported for now → 422 with a human message)
+# ---------------------------------------------------------------------------
+
+
+def test_generate_rejects_non_odp_doc_type(app, monkeypatch):
+    _install_fakes(monkeypatch)
+    with TestClient(app) as client:
+        r = client.post("/api/generate", json={"prompt": "x", "doc_type": "ods"})
+        assert r.status_code == 422
+        detail = r.json()["detail"]
+        assert isinstance(detail, str)
+        assert "目前僅支援簡報(odp)" in detail
+        assert "即將支援" in detail
+
+
+def test_generate_defaults_doc_type_odp(app, monkeypatch):
+    _install_fakes(monkeypatch)
+    with TestClient(app) as client:
+        r = client.post("/api/generate", json={"prompt": "x"})
+        assert r.status_code == 200
+        r2 = client.post("/api/generate", json={"prompt": "x", "doc_type": "odp"})
+        assert r2.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# pages field — forwarded to generate_outline, bounds enforced by pydantic
+# ---------------------------------------------------------------------------
+
+
+def test_pages_forwarded_to_generate_outline(app, monkeypatch):
+    _install_fakes(monkeypatch, n=3)
+    seen = {}
+
+    def recording_outline(prompt, backend=None, pages=None):
+        seen["pages"] = pages
+        return _outline(3)
+
+    monkeypatch.setattr(webapi, "generate_outline", recording_outline)
+    with TestClient(app) as client:
+        r = client.post("/api/generate", json={"prompt": "x", "pages": 12})
+        jid = r.json()["job_id"]
+        for _ in range(200):
+            snap = client.get(f"/api/jobs/{jid}").json()
+            if snap["status"] in ("complete", "error"):
+                break
+            time.sleep(0.01)
+    assert seen["pages"] == 12
+
+
+def test_pages_out_of_range_422(app, monkeypatch):
+    _install_fakes(monkeypatch)
+    with TestClient(app) as client:
+        assert client.post("/api/generate", json={"prompt": "x", "pages": 99}).status_code == 422
+        assert client.post("/api/generate", json={"prompt": "x", "pages": 2}).status_code == 422
+        assert client.post("/api/generate", json={"prompt": "x", "pages": 3}).status_code == 200
+        assert client.post("/api/generate", json={"prompt": "x", "pages": 30}).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Download filename — topic-based, sanitised, Chinese preserved
+# ---------------------------------------------------------------------------
+
+
+def test_download_filename_uses_deck_title(app, monkeypatch):
+    _install_fakes(monkeypatch, n=2)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+    # fake deck title is "測試簡報"
+    with TestClient(app) as client:
+        r = client.get(f"/api/jobs/{job.id}/download")
+        assert r.status_code == 200
+        cd = r.headers.get("content-disposition", "")
+        assert "attachment" in cd
+        assert job.id not in cd  # not the UUID
+        assert ".odp" in cd
+        # Chinese topic present (RFC 5987 utf-8 percent-encoding or raw)
+        from urllib.parse import quote
+
+        assert ("測試簡報" in cd) or (quote("測試簡報") in cd)
+
+
+def test_download_filename_sanitises_illegal_chars(app, monkeypatch):
+    _install_fakes(monkeypatch, n=2)
+    job = webapi.create_job(app, prompt='這是/一個:壞*檔名?"<>|\n主題後段會被截斷')
+    # no ir title → falls back to prompt[:20], sanitised
+    asyncio.run(webapi.run_job(job))
+    fname = webapi._download_filename(job)
+    assert fname.endswith(".odp")
+    for bad in '\\/:*?"<>|\n\r':
+        assert bad not in fname
+
+
+def test_download_filename_falls_back_to_id_when_empty(app, monkeypatch):
+    _install_fakes(monkeypatch, n=2)
+    job = webapi.create_job(app, prompt='///:::***')  # all illegal → empty after sanitise
+    asyncio.run(webapi.run_job(job))
+    # fake deck title "測試簡報" wins, so force ir title empty to hit the fallback
+    job.ir = job.ir.model_copy(update={"title": "   "})
+    fname = webapi._download_filename(job)
+    assert fname == f"{job.id}.odp"
+
+
 def test_cors_env_override(monkeypatch, tmp_path):
     monkeypatch.setenv("ODFORGE_CORS_ORIGINS", "https://my.app, https://other.app")
     scoped = webapi.create_app(jobs_dir=tmp_path / "jobs")
