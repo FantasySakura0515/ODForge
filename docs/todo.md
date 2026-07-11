@@ -2,9 +2,12 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-## 現況(2026-07-07)
+## 現況(2026-07-11)
 
 - **v1 MVP 已完成**:CLI + MCP、三渲染器、三道驗證閘、113 tests 綠燈、demo 與佐證備妥(報名 7/8 截止)。v1 原計畫移至文末「附錄:v1 計畫存檔」。
+- **v2 後端 Phase 11–18 已完成**(勾選對照 git log;僅 Task 11.3 重產 demo 與各人工關卡截圖未補,見 19.0):兩段式生成、design tokens、五新版型、預算閘、QA 迴圈、樣式抽取、agent skill、Web API + SSE 全數落地。
+- **前端 F1 已交付併入 main**:cockpit shell + SSE + 下載,`odforge serve` 一鍵全棧(spec 與 F1 計畫在 `docs/superpowers/`)。
+- **2026-07-11 全面實測評審完成**(真 API 實測 + 獨立設計審查 + 自動掃描,Nielsen 19/40):介面三處說謊(假成功/假綠勾/假分頁)、後端已就緒的能力前端未接線 → 修正項目全數列入新增的 **Phase 18.5**,P0–P1 應在 Phase 19 之前完成。
 - **現行計畫 = v2**:目標決賽(8/24,入圍公布 8/10)。依據:`巨頭AI文件工具研究.md`(五大陣營研究)與 2026-07-06/07 的架構討論定案。
 
 ---
@@ -29,6 +32,7 @@
 | 決賽 demo 基本線 | 11–15 完成 | CLI 產出已是全新視覺 + 兩段式生成 |
 | 決賽 demo 完整線 | 16 完成 | 四道閘故事完整,QA 迴圈可展示 |
 | 決賽亮點 | 17–18 完成 | 樣式抽取 + agent skill + Web API(接前端) |
+| 決賽可信線 | 18.5 P0–P1 完成 | 介面不說謊 + 單張檢視 + 貼合需求的輸入層(2026-07-11 評審定案) |
 
 ## v2 Global Constraints(v1 constraints 全部沿用,以下為新增)
 
@@ -117,8 +121,8 @@ extract_design(template_path: Path) -> DesignSpec          # 從 styles.xml 抽�
 
 現況 bug:使用者明確指定 `--theme academic` 時不會覆寫 LLM 回傳的 theme(只在 `theme != academic` 時 copy)。
 
-- [ ] **Step 1: 失敗測試:monkeypatch `generate_ir` 回傳 `theme="dark"` 的 Presentation → `odforge new "x" -o t.odp --theme academic` → 渲染用的 theme 是 academic(讀 styles.xml 的 `draw:fill-color` == academic.bg 斷言)**
-- [ ] **Step 2: FAIL → Step 3: 修法:typer 參數改 `Optional[str] = None`,`None` = 尊重 LLM,有值 = 一律覆寫 → Step 4: PASS → Step 5: commit `fix: --theme always overrides llm choice`**
+- [x] **Step 1: 失敗測試:monkeypatch `generate_ir` 回傳 `theme="dark"` 的 Presentation → `odforge new "x" -o t.odp --theme academic` → 渲染用的 theme 是 academic(讀 styles.xml 的 `draw:fill-color` == academic.bg 斷言)**
+- [x] **Step 2: FAIL → Step 3: 修法:typer 參數改 `Optional[str] = None`,`None` = 尊重 LLM,有值 = 一律覆寫 → Step 4: PASS → Step 5: commit `fix: --theme always overrides llm choice`**
 
 ### Task 11.2: package.py 支援 binary parts 與 media-type
 
@@ -128,8 +132,8 @@ extract_design(template_path: Path) -> DesignSpec          # 從 styles.xml 抽�
 
 **Interfaces — Produces:** `write_odf_package(path, mimetype, parts: dict[str, str | bytes])`——str 視為 XML(`text/xml`),bytes 依副檔名推 media-type(`.png`→`image/png`、`.svg`→`image/svg+xml`、`.jpg`→`image/jpeg`),manifest 對應。
 
-- [ ] **Step 1: 失敗測試:parts 含 `"Pictures/a.svg": b"<svg .../>"` → zip 內存在該 entry;manifest 有 `manifest:full-path="Pictures/a.svg"` 且 `media-type="image/svg+xml"`;既有 XML parts 的 manifest 不變(回歸)**
-- [ ] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: binary parts + media-type manifest`**
+- [x] **Step 1: 失敗測試:parts 含 `"Pictures/a.svg": b"<svg .../>"` → zip 內存在該 entry;manifest 有 `manifest:full-path="Pictures/a.svg"` 且 `media-type="image/svg+xml"`;既有 XML parts 的 manifest 不變(回歸)**
+- [x] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: binary parts + media-type manifest`**
 
 ### Task 11.3: 重產 demo(人工關卡,零程式改動)
 
@@ -152,8 +156,8 @@ v1 的 `demo/tree.odp`/`tree.png` 是 CJK 字級 bug 修復**前**的舊產物(P
 - 對比度 validator:WCAG 相對亮度,`text/bg ≥ 4.5`、`accent/bg ≥ 3.0`;`muted/bg ≥ 3.0`。model_validator 級,錯誤訊息要寫清楚哪一對不夠(LLM 重試時看得懂)。
 - `mode` 二分法(抄 NotebookLM):`detailed`(自讀型,文字完整)vs `presenter`(講者型,大字少文)——這個 enum 直接控制 Phase 15 的內容密度指示與 scale 預設。
 
-- [ ] **Step 1: 失敗測試:①合法 DesignSpec 過;②`text="#CCCCCC", bg="#FFFFFF"` → ValidationError 且訊息含 "contrast";③fonts 不在白名單 → ValidationError;④`Presentation` 不給 design → None(向後相容,v1 fixture 全部照舊過)**
-- [ ] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: per-deck design tokens with contrast validation`**
+- [x] **Step 1: 失敗測試:①合法 DesignSpec 過;②`text="#CCCCCC", bg="#FFFFFF"` → ValidationError 且訊息含 "contrast";③fonts 不在白名單 → ValidationError;④`Presentation` 不給 design → None(向後相容,v1 fixture 全部照舊過)**
+- [x] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: per-deck design tokens with contrast validation`**
 
 ### Task 12.2: themes.py token 化 + resolve_design
 
@@ -180,8 +184,8 @@ resolve_design(p: Presentation) -> Theme   # p.design 有效 → 組 Theme;否�
 
 **preset 翻新(定案,美術方向:academic=學術藍+暖白、minimal=暖灰單色+一點橘、dark=深靛+亮青 accent;實作時先掛 frontend-design skill 調色,完成後把 hex 寫死進程式碼——品味進引擎,這一步是「開發期用 design skill」的落點):**
 
-- [ ] **Step 1: 失敗測試:①三 preset 全過 DesignSpec 級對比度檢查(用同一個驗證函式跑);②`resolve_design` 對 design=None 回 preset;③給合法 design → Theme 的色與字體來自 design;④SCALES 三檔位遞增**
-- [ ] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: tokenized themes + resolve_design`**
+- [x] **Step 1: 失敗測試:①三 preset 全過 DesignSpec 級對比度檢查(用同一個驗證函式跑);②`resolve_design` 對 design=None 回 preset;③給合法 design → Theme 的色與字體來自 design;④SCALES 三檔位遞增**
+- [x] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: tokenized themes + resolve_design`**
 
 ---
 
@@ -203,8 +207,8 @@ _GraphicStyles                                                      # (fill,opac
 build_styles_xml 增加:draw:gradient 定義(雙色線性,給深色主題背景用)
 ```
 
-- [ ] **Step 1: 失敗測試:①`_rect_xml` 輸出含 `draw:rect` 且 graphic style 的 `draw:fill-color` 正確;②opacity < 1 時 style 有 `draw:opacity`;③圓角有 `draw:corner-radius`;④gradient:styles.xml 含 `<draw:gradient>` 且 drawing-page style `draw:fill="gradient"`(僅 dark preset)**
-- [ ] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: shape primitives + gradients`**
+- [x] **Step 1: 失敗測試:①`_rect_xml` 輸出含 `draw:rect` 且 graphic style 的 `draw:fill-color` 正確;②opacity < 1 時 style 有 `draw:opacity`;③圓角有 `draw:corner-radius`;④gradient:styles.xml 含 `<draw:gradient>` 且 drawing-page style `draw:fill="gradient"`(僅 dark preset)**
+- [x] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: shape primitives + gradients`**
 
 ### Task 13.2: 真 text:list + 段落排印
 
@@ -212,8 +216,8 @@ build_styles_xml 增加:draw:gradient 定義(雙色線性,給深色主題背景�
 
 現況:bullets 是逐行裸 `text:p`,無符號、無縮排、無行距。
 
-- [ ] **Step 1: 失敗測試:①bullets 渲染為 `<text:list text:style-name="L1">` 包 `<text:list-item>`;②automatic-styles 有 `<text:list-style>` + `text:bullet-char` 且 bullet 色 = accent;③巢狀 BulletItem → 兩層 `text:list` 縮排;④段落樣式含 `fo:line-height="145%"` 與 `fo:margin-bottom`;⑤kicker 段落含 `fo:letter-spacing`**
-- [ ] **Step 2: FAIL → Step 3: 實作(`_ParagraphStyles` 現有去重 key 為 `(size_pt, bold, center, color)`,擴充加 line_height / margin / letter_spacing 維度)→ Step 4: PASS → Step 5: commit `feat: semantic lists + paragraph typography`**
+- [x] **Step 1: 失敗測試:①bullets 渲染為 `<text:list text:style-name="L1">` 包 `<text:list-item>`;②automatic-styles 有 `<text:list-style>` + `text:bullet-char` 且 bullet 色 = accent;③巢狀 BulletItem → 兩層 `text:list` 縮排;④段落樣式含 `fo:line-height="145%"` 與 `fo:margin-bottom`;⑤kicker 段落含 `fo:letter-spacing`**
+- [x] **Step 2: FAIL → Step 3: 實作(`_ParagraphStyles` 現有去重 key 為 `(size_pt, bold, center, color)`,擴充加 line_height / margin / letter_spacing 維度)→ Step 4: PASS → Step 5: commit `feat: semantic lists + paragraph typography`**
 
 ### Task 13.3: master page 元素 + section/closing 反白頁 + accent 出場
 
@@ -226,8 +230,8 @@ build_styles_xml 增加:draw:gradient 定義(雙色線性,給深色主題背景�
 - 內頁標題 accent 元素:**標題左側縱向短棒**(x=1.5, 標題同高, w=0.18cm, accent)——不用標題下橫線(AI 簡報特徵,見 Global Constraints)。
 - big-fact:數字改 display_pt、accent 色;下方說明 muted。
 
-- [ ] **Step 1: 失敗測試:①styles.xml 有兩個 `style:master-page`(Standard/Plain)且 Standard 內含 page-number frame;②section 頁的 drawing-page style `draw:fill-color` == accent 且標題字色 == bg(反白);③內容頁 content.xml 含縱向短棒 rect(w≈0.18cm);④big-fact 的 fact 段落字級 == display_pt 且色 == accent**
-- [ ] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS + 人工關卡:三 preset 各生成一份 8 頁 fixture 簡報開檔截圖 → Step 5: commit `feat: master pages + inverted section/closing + accent system`**
+- [x] **Step 1: 失敗測試:①styles.xml 有兩個 `style:master-page`(Standard/Plain)且 Standard 內含 page-number frame;②section 頁的 drawing-page style `draw:fill-color` == accent 且標題字色 == bg(反白);③內容頁 content.xml 含縱向短棒 rect(w≈0.18cm);④big-fact 的 fact 段落字級 == display_pt 且色 == accent**
+- [x] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS + 人工關卡:三 preset 各生成一份 8 頁 fixture 簡報開檔截圖 → Step 5: commit `feat: master pages + inverted section/closing + accent system`**
 
 ### Task 13.4: SVG 嵌入 + 卡片化 two-col/comparison
 
@@ -236,8 +240,8 @@ build_styles_xml 增加:draw:gradient 定義(雙色線性,給深色主題背景�
 - SVG 裝飾件由引擎程式生成(不是 LLM):幾何點陣/波形/圓弧,title 頁右下低調擺放,色取 accent。`_svg_decoration(theme) -> bytes`。
 - two-col 與新 comparison 版型:兩欄各墊圓角 surface 色卡片(`corner_radius 0.3cm`),欄標題 accent 色。
 
-- [ ] **Step 1: 失敗測試:①title 頁 zip 內有 `Pictures/*.svg` + manifest media-type 正確 + content.xml 有 `draw:image` 引用;②two-col 頁有兩個圓角 rect(fill == surface)且 z-order 在文字 frame 之前**
-- [ ] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: svg decorations + card columns`**
+- [x] **Step 1: 失敗測試:①title 頁 zip 內有 `Pictures/*.svg` + manifest media-type 正確 + content.xml 有 `draw:image` 引用;②two-col 頁有兩個圓角 rect(fill == surface)且 z-order 在文字 frame 之前**
+- [x] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: svg decorations + card columns`**
 
 ### Task 13.5: shape 長條圖(chart 版型的渲染端)
 
@@ -245,8 +249,8 @@ build_styles_xml 增加:draw:gradient 定義(雙色線性,給深色主題背景�
 
 **設計(定案):** 不做原生 ODF chart 子文件(工程量大),用 `draw:rect` 按 `ChartSpec.values` 比例畫水平長條 + 數值標籤;`highlight` 指定的 bar 用 accent,其餘 muted 淡色;圖表區 x 1.5–17cm,右側 7.5cm 放 insight bullets。上限 8 條(超過 validator 擋,「不支援就閉嘴」)。
 
-- [ ] **Step 1: 失敗測試:①chart slide 渲染出 len(values) 個 bar rect 且寬度與 values 成正比(±公差);②highlight bar fill == accent;③values > 8 → ir.py ValidationError**
-- [ ] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: shape-drawn bar charts`**
+- [x] **Step 1: 失敗測試:①chart slide 渲染出 len(values) 個 bar rect 且寬度與 values 成正比(±公差);②highlight bar fill == accent;③values > 8 → ir.py ValidationError**
+- [x] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: shape-drawn bar charts`**
 
 ---
 
@@ -266,8 +270,8 @@ build_styles_xml 增加:draw:gradient 定義(雙色線性,給深色主題背景�
 | chart | title 同上;chart-area @ 1.5,3.5,15.5,11;insights @ 17.6,3.5,8.9,11 /caption_pt |
 | closing | message @ 2,6,24,3 /h1_pt bold center(accent 底反白,Plain master) |
 
-- [ ] **Step 1: 失敗測試:①新 layout Literal 全部可 parse;②LAYOUTS 含五個新 key 且 frame 不出界(沿用 v1 的邊界測試,參數化跑全部 layout);③quote/chart 欄位缺漏時 validator 給明確錯誤(layout="chart" 但 chart=None → error)**
-- [ ] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: five new page-role layouts`**
+- [x] **Step 1: 失敗測試:①新 layout Literal 全部可 parse;②LAYOUTS 含五個新 key 且 frame 不出界(沿用 v1 的邊界測試,參數化跑全部 layout);③quote/chart 欄位缺漏時 validator 給明確錯誤(layout="chart" 但 chart=None → error)**
+- [x] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: five new page-role layouts`**
 
 ### Task 14.2: 版面預算驗證器(textmetrics.py)
 
@@ -285,8 +289,8 @@ def estimate_height_cm(text, size_pt, width_cm, line_height=1.45) -> float:
 def check_budget(slide, theme) -> list[str]   # 逐 frame 累加(段落高+段距),超出 frame.h → 訊息
 ```
 
-- [ ] **Step 1: 失敗測試:①短文字 1 行高度 ≈ size_pt*PT_TO_CM*1.45(±10%);②塞 40 條 bullets 的 slide → check_budget 非空且訊息含 slide 標題與 frame role;③正常 5 條 bullets → 空;④全 ASCII 與全 CJK 的行數估算差異方向正確(CJK 行數較多)**
-- [ ] **Step 2: FAIL → Step 3: 實作;`generate_slides`(Phase 15)把超載訊息餵回 LLM 重試該頁,CLI `new` 在渲染前跑一次並警告 → Step 4: PASS → Step 5: commit `feat: layout budget validator`**
+- [x] **Step 1: 失敗測試:①短文字 1 行高度 ≈ size_pt*PT_TO_CM*1.45(±10%);②塞 40 條 bullets 的 slide → check_budget 非空且訊息含 slide 標題與 frame role;③正常 5 條 bullets → 空;④全 ASCII 與全 CJK 的行數估算差異方向正確(CJK 行數較多)**
+- [x] **Step 2: FAIL → Step 3: 實作;`generate_slides`(Phase 15)把超載訊息餵回 LLM 重試該頁,CLI `new` 在渲染前跑一次並警告 → Step 4: PASS → Step 5: commit `feat: layout budget validator`**
 
 ---
 
@@ -307,8 +311,8 @@ generate_outline(prompt, backend=None) -> Outline
 
 **Prompt 設計要點(第一段,一次呼叫):** 要求 LLM (a) 從主題推導美術方向並輸出 DesignSpec(給 2–3 個候選讓它自選一個,說明理由寫進 log 即可);(b) 產 page-role 大綱——「一頁一個想法」、開場 title、agenda、section 分節、穿插 big-fact/quote/chart 調節奏、同版型不得連續 ≥3 頁、結尾 closing。DesignSpec 驗證失敗(對比度)→ 把錯誤訊息回餵重試 1 次,再失敗 → design=None(preset 兜底,不炸)。
 
-- [ ] **Step 1: 失敗測試(mock):①假 tool_call 回合法 Outline JSON → Outline 實例;②design 對比度不足 → 斷言重試 1 次(mock call count == 2),第二次也壞 → Outline.design is None 且不拋;③schema 斷言:tools 參數 == Outline.model_json_schema()**
-- [ ] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: outline-first generation with design spec`**
+- [x] **Step 1: 失敗測試(mock):①假 tool_call 回合法 Outline JSON → Outline 實例;②design 對比度不足 → 斷言重試 1 次(mock call count == 2),第二次也壞 → Outline.design is None 且不拋;③schema 斷言:tools 參數 == Outline.model_json_schema()**
+- [x] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: outline-first generation with design spec`**
 
 ### Task 15.2: generate_slides(填充 + budget 回饋)
 
@@ -318,15 +322,15 @@ generate_outline(prompt, backend=None) -> Outline
 
 **System prompt 蒸餾設計鐵則(第二段):** mode=presenter → 每條 bullet ≤ 16 字、每頁 ≤ 4 條;detailed → ≤ 30 字、≤ 6 條(v1 規則保留);60-30-10 色彩紀律由引擎保證不用寫;禁止把版型寫進內容文字;chart 頁要給真數據(來源 = 使用者 prompt 內容,沒有數據就不要排 chart 頁——這條寫進第一段大綱 prompt)。
 
-- [ ] **Step 1: 失敗測試(mock):①合法回傳 → Presentation,design 從 Outline 帶入;②故意回一頁超載 → 斷言第二次呼叫的 user message 含 "超載" 與頁碼;③兩次都超載 → 回傳的該頁 bullets 被截且 notes 含省略說明**
-- [ ] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: slide filling with budget feedback`**
+- [x] **Step 1: 失敗測試(mock):①合法回傳 → Presentation,design 從 Outline 帶入;②故意回一頁超載 → 斷言第二次呼叫的 user message 含 "超載" 與頁碼;③兩次都超載 → 回傳的該頁 bullets 被截且 notes 含省略說明**
+- [x] **Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: slide filling with budget feedback`**
 
 ### Task 15.3: CLI 大綱確認站
 
 **Files:** Modify `src/odforge/cli.py`, Test `tests/test_cli.py`
 
 - `odforge new PROMPT -o FILE [--interactive]`:interactive 時印大綱表格(rich:頁碼/版型/標題/gist + 色盤色塊),`typer.confirm` 後才進第二段;非 interactive 直通。`--mode detailed|presenter` 可覆寫。v1 一段式保留為 `--one-shot`(Ollama 弱模型路徑)。
-- [ ] **Step 1: 失敗測試(CliRunner + monkeypatch 兩段函式):interactive 輸入 y → 檔案存在;輸入 n → exit 0 但無檔案且印 "已取消" → Step 2: FAIL → Step 3: 實作 → Step 4: PASS;煙霧測試(真 API):`odforge new "介紹台灣珍珠奶茶產業,12張,presenter" -o boba.odp --interactive` 開檔驗收新視覺 → Step 5: commit `feat: outline checkpoint in cli`**
+- [x] **Step 1: 失敗測試(CliRunner + monkeypatch 兩段函式):interactive 輸入 y → 檔案存在;輸入 n → exit 0 但無檔案且印 "已取消" → Step 2: FAIL → Step 3: 實作 → Step 4: PASS;煙霧測試(真 API):`odforge new "介紹台灣珍珠奶茶產業,12張,presenter" -o boba.odp --interactive` 開檔驗收新視覺 → Step 5: commit `feat: outline checkpoint in cli`**
 
 > **★ Phase 15 完 = 決賽 demo 基本線。** 此時停下來:三 preset + LLM 自選 design 各生成一份真簡報,全部截圖,對照 v1 demo 圖做 before/after——這組圖就是決賽簡報的核心素材。
 
@@ -340,7 +344,7 @@ generate_outline(prompt, backend=None) -> Outline
 
 **Interfaces — Produces:** `render_pages(odf_path, out_dir, dpi=150) -> list[Path]`——`run_soffice_convert` 轉 PDF(重用 v1 validate.py 的隔離 profile 邏輯)→ PyMuPDF 逐頁點陣化 PNG。無 soffice → 拋 `PreviewUnavailable`(呼叫端決定降級)。
 
-- [ ] **Step 1: 失敗測試:`@skipif(find_soffice() is None)`——fixture 簡報 → PNG 數 == slide 數、尺寸比例 ≈ 16:9;無 soffice(monkeypatch find_soffice=None)→ PreviewUnavailable → Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: page preview rendering`**
+- [x] **Step 1: 失敗測試:`@skipif(find_soffice() is None)`——fixture 簡報 → PNG 數 == slide 數、尺寸比例 ≈ 16:9;無 soffice(monkeypatch find_soffice=None)→ PreviewUnavailable → Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: page preview rendering`**
 
 ### Task 16.2: critic.py(vision 批判)
 
@@ -354,7 +358,7 @@ generate_outline(prompt, backend=None) -> Outline
 - 一次請求塞全部頁圖(≤20 頁可行),省 round-trip。
 - `ODFORGE_VISION_BACKEND=off` → `critique` 回空清單(QA 迴圈退化為只有確定性檢查,不炸)。
 
-- [ ] **Step 1: 失敗測試(mock):①假 vision 回應(兩個 finding JSON)→ list[Finding] 解析正確;②off 後端 → 空清單;③斷言請求含 len(pngs) 張圖與檢查清單關鍵詞 → Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: vision critic`**
+- [x] **Step 1: 失敗測試(mock):①假 vision 回應(兩個 finding JSON)→ list[Finding] 解析正確;②off 後端 → 空清單;③斷言請求含 len(pngs) 張圖與檢查清單關鍵詞 → Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: vision critic`**
 
 ### Task 16.3: run_qa_loop + CLI --qa
 
@@ -362,7 +366,7 @@ generate_outline(prompt, backend=None) -> Outline
 
 **迴圈(定案,抄 Claude pptx skill 協議):** render → critique → severity=="error" 的頁丟回 `generate_slides` 局部重生(只送那幾頁的 PageRole + fix_hint)→ 重渲染受影響頁 → 再驗一次 → 無新 error 或滿 2 輪即停。輸出 `QAReport(rounds, findings_by_round, final_ok)`,CLI 用 rich 印修訂前後對照表;`--qa` 需要 soffice + vision 後端,缺任一就印明確訊息跑 fallback(只有 budget 閘)。
 
-- [ ] **Step 1: 失敗測試(全 mock):①第一輪 2 errors → 斷言重生呼叫只含那 2 頁;②第二輪 0 findings → 迴圈停在 round 2;③永遠有 error → 停在 max_rounds 且 final_ok=False(不無限迴圈)→ Step 2: FAIL → Step 3: 實作 → Step 4: PASS;煙霧測試(真 API + 真 soffice)跑一次 `--qa` 留下 QAReport 截圖(佐證:第四道閘實錄)→ Step 5: commit `feat: render-critique-repair qa loop`**
+- [x] **Step 1: 失敗測試(全 mock):①第一輪 2 errors → 斷言重生呼叫只含那 2 頁;②第二輪 0 findings → 迴圈停在 round 2;③永遠有 error → 停在 max_rounds 且 final_ok=False(不無限迴圈)→ Step 2: FAIL → Step 3: 實作 → Step 4: PASS;煙霧測試(真 API + 真 soffice)跑一次 `--qa` 留下 QAReport 截圖(佐證:第四道閘實錄)→ Step 5: commit `feat: render-critique-repair qa loop`**
 
 > **★ Phase 16 完 = 決賽 demo 完整線。**「內容 AI 生成、格式三道閘保證、設計第四道閘把關」的故事完整。
 
@@ -378,7 +382,7 @@ generate_outline(prompt, backend=None) -> Outline
 
 **MVP 範圍(定案,不做 master page 完整複用):** 解析 `.otp`/`.odp`/`.ott` 的 styles.xml──抽 ①drawing-page/頁面背景色 ②最常用的標題/內文字色 ③字體宣告(font-face-decls 第一順位)④出現頻率最高的非黑白色當 accent 候選 → 組 `DesignSpec`(過同一套對比度驗證,不夠格的欄位用 preset 補)。CLI:`odforge new "..." -o x.odp --from-template 公版.otp`(等效於鎖定 design,LLM 只出內容)。
 
-- [ ] **Step 1: 失敗測試:①對 v2 自產的 dark 簡報跑 extract → DesignSpec.palette.bg == dark.bg(round-trip);②對故意缺字體宣告的檔 → fonts 回退 preset 且不拋;③CLI --from-template → generate_outline 被呼叫時 design 已鎖定(monkeypatch 斷言)→ Step 2: FAIL → Step 3: 實作 → Step 4: PASS;人工關卡:拿一份 MODA/學校公版 odt/otp 實測 → Step 5: commit `feat: style extraction from existing odf templates`**
+- [x] **Step 1: 失敗測試:①對 v2 自產的 dark 簡報跑 extract → DesignSpec.palette.bg == dark.bg(round-trip);②對故意缺字體宣告的檔 → fonts 回退 preset 且不拋;③CLI --from-template → generate_outline 被呼叫時 design 已鎖定(monkeypatch 斷言)→ Step 2: FAIL → Step 3: 實作 → Step 4: PASS;人工關卡:拿一份 MODA/學校公版 odt/otp 實測 → Step 5: commit `feat: style extraction from existing odf templates`**
 
 ### Task 17.2: odforge-design skill + MCP preview 工具
 
@@ -388,7 +392,7 @@ generate_outline(prompt, backend=None) -> Outline
 
 **MCP 新工具:** `preview_odf(path: str, out_dir: str) -> str`(回傳 PNG 路徑清單 JSON;外部 agent 拿去自跑視覺迴圈——**把 harness 能力輸出給整個 agent 生態**)。
 
-- [ ] **Step 1: 失敗測試:①`preview_odf` 對 fixture 檔回傳的字串可 json.loads 且路徑存在(skipif 無 soffice);②theme md 檔的 hex 與 THEMES 常數一致(解析 md 表格比對——防規格書漂移);→ Step 2: FAIL → Step 3: 實作 → Step 4: PASS;人工關卡:Claude Code 掛上 MCP + SKILL.md 實測產一份簡報 → Step 5: commit `feat: odforge-design skill + mcp preview tool`**
+- [x] **Step 1: 失敗測試:①`preview_odf` 對 fixture 檔回傳的字串可 json.loads 且路徑存在(skipif 無 soffice);②theme md 檔的 hex 與 THEMES 常數一致(解析 md 表格比對——防規格書漂移);→ Step 2: FAIL → Step 3: 實作 → Step 4: PASS;人工關卡:Claude Code 掛上 MCP + SKILL.md 實測產一份簡報 → Step 5: commit `feat: odforge-design skill + mcp preview tool`**
 
 ---
 
@@ -426,13 +430,62 @@ generate_outline(prompt, backend=None) -> Outline
 
 **實作要點:** job 存記憶體 dict + 檔案落在 `%TEMP%/odforge-jobs/{id}/`(路徑白名單,絕不接受呼叫端路徑);生成跑 `asyncio` background task;SSE 用 `sse-starlette`;CORS 全開(本機工具);`odforge serve --port 8000`。
 
-- [ ] **Step 1: 失敗測試(monkeypatch 兩段生成函式,不打真 API、不需 soffice):①POST /generate → 200 + job_id;②SSE 收到 outline → slide_done×N → complete 順序;③interactive job 卡在 awaiting_approval,POST outline approve 後繼續;④download 檔案存在且 mimetype 對;⑤regenerate 只重跑該頁(mock 斷言)→ Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: web api with sse progress`**
-- [ ] **Step 2(交接):寫 `odforge/docs/webapi.md`——上表 + 每個事件的完整 JSON 範例(前端設計的依據),commit `docs: web api contract`**
+- [x] **Step 1: 失敗測試(monkeypatch 兩段生成函式,不打真 API、不需 soffice):①POST /generate → 200 + job_id;②SSE 收到 outline → slide_done×N → complete 順序;③interactive job 卡在 awaiting_approval,POST outline approve 後繼續;④download 檔案存在且 mimetype 對;⑤regenerate 只重跑該頁(mock 斷言)→ Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: web api with sse progress`**
+- [x] **Step 2(交接):寫 `odforge/docs/webapi.md`——上表 + 每個事件的完整 JSON 範例(前端設計的依據),commit `docs: web api contract`**
+
+---
+
+## Phase 18.5:前端 Cockpit 修正(2026-07-11 實測評審定案)
+
+> **依據:** 2026-07-11 全面實測評審——真 API 走完「生成 → SSE → 預覽 → 下載 → 單張重生」、獨立設計審查(Nielsen 19/40)、impeccable 自動掃描(markup 0 發現)。
+> **實測數據:** outline 11s → **43s 死寂** → 17 張 `slide_done` 同一瞬間爆發 → preview 一秒連發——「逐格點亮」目前只在 mock 存在;單張重生 API 實測 20s 且自然語言指令生效;`doc_type:"ods"` 實測拿回 .odp。
+> **核心結論:** token 系統/狀態機/動效紀律在水準之上,但介面三處說謊(P0),且後端已就緒的能力(確認站/單張重生/快照/mode/theme/qa)前端全未接線。
+> **順序:** P0 → P1-4/P1-5(使用者兩大抱怨)→ P1-6/P1-7 → P2 → P3;P0–P1 必須在 Phase 19 之前完成。檔案行號以 2026-07-11 `main`(`0f154d6`)為準。
+
+### P0:誠實度——介面在說謊,決賽現場會爆炸
+
+- [ ] **P0-1 移除無聲 mock fallback**(`web/src/App.tsx:39-43`):`postGenerate` 一失敗就靜默 `playMock`——不管使用者輸入什麼,畫面完整演出「樹與二元樹」假簡報、宣告四道閘全綠、下載鈕連到 404。改為 dispatch `error` 事件(「無法連上後端,請確認 odforge serve 是否在執行」+ 重試鈕);mock 僅允許 `?mock` 顯式進入,且進入時頂欄掛常駐「展示模式」chip(順便補 spec §5 缺的後端狀態 chip)
+- [ ] **P0-2 四道閘接真訊號**(`web/src/state/cockpit.ts:36,44-49`):現況第一個 `preview_ready` 三閘齊 pass、`complete` 無條件全綠——包含從未執行的設計閘(UI 從不送 `qa:true`)。前端短期:qa 未啟用時第四道顯示「— 未啟用」而非 ✓、LibreOffice 閘只在真的收過 preview_ready 才 pass。正解(後端小增補):render 後跑既有驗證器,emit `gate_result{gate,status}` SSE 事件,每顆勾對回一次真實檢查,順帶實現 spec 的「依序點亮」。同步修死碼:後端 error stage 詞彙(outline/slides/render/preview/qa)與前端 GATE_IDS(zip/xml/libreoffice/design)完全不重疊,`cockpit.ts:50-53` 的閘門標紅永不命中
+- [ ] **P0-3 型別分頁停止說謊**(`web/src/components/PromptBar.tsx:4-6` → `src/odforge/webapi.py:338-344`):後端 `GenerateBody` 無 `doc_type` 欄位、被 Pydantic 靜默丟棄,選「試算表」實測拿到 .odp。藏掉 odt/ods 分頁(feature flag,spec §10 本有要求),或後端收下 `doc_type`、非 odp 回 422 + 前端標「即將支援」
+
+### P1:核心互動——使用者的兩大抱怨
+
+- [ ] **P1-4 單張檢視 UnitDetail(抱怨①「只能看縮圖牆,無法點進去一張一張看」)**:`web/src/components/UnitCell.tsx` 無 onClick、連 cursor:pointer 都沒有,spec §8 的 `<UnitDetail>` 未實作。做 lightbox:點格放大 + ←/→ 逐張翻頁 + Esc 關閉 + 頁碼指示;放大視圖內放**單張重生輸入框**接 `POST /slides/{n}/regenerate`(後端就緒 `src/odforge/webapi.py:473-491`,實測 20s、指令生效)。動工前先用 /shape 定 UX
+- [ ] **P1-5 讓 AI 貼合需求的輸入層(抱怨②「只能輸入一句話」)**:
+  - [ ] a. 進階抽屜:mode(detailed/presenter)、theme 預設、QA 開關、backend 選擇——`web/src/state/api.ts:3` 早已宣告這些欄位,`App.tsx:36` 寫死只送 prompt,純接線工作
+  - [ ] b. 大綱確認站:送 `interactive:true` + ConfirmBar(就地改標題/刪頁/確認)接 `POST /outline`(後端就緒 `src/odforge/webapi.py:450-471`)。注意現況:若 `awaiting_approval` 事件到來,畫面顯示「等待你確認大綱…」後**永久卡死、無任何按鈕**
+  - [ ] c. prompt 引導:placeholder 別再教人「用一句話」;給 2–3 個好範例 + 受眾/頁數/語氣欄位(頁數需後端 `GenerateBody`/`generate_outline` 加欄位)
+  - [ ] d. Ctrl+Enter 送出(`web/src/components/PromptBar.tsx:20` 現在 Enter 只會換行)
+- [ ] **P1-6 完成即死路、錯誤即失憶**(`web/src/App.tsx:48,55`、`PromptBar.tsx:9`):complete 後 `busy` 恆真 → PromptBar 永不回來,做第二份的官方姿勢是 F5;頂欄寫死「生成中的文件」(完成後也不變、也不是使用者的 prompt);錯誤後 remount 清空辛苦打的句子。修:prompt 提升到 App state、頂欄細條顯示真實 prompt、加「再鍛一份」重置動作、錯誤時保留原文(約 20 行)
+- [ ] **P1-7 生成期回饋機械全數失靈**(43 秒死寂那段):
+  - [ ] a. narrator 用 `find()` 永遠報第一個 filling(`web/src/components/StatusNarrator.tsx:14`)→ 改報最新完成的 n
+  - [ ] b. 計數只算 preview/done(`web/src/components/PreviewStage.tsx:5`)→ LLM 階段全程「0/N 頁」;改算已有 ir 的 unit
+  - [ ] c. `slide_done`/`preview_ready` 批次到達 → 前端以 80–120ms 級距排隊播放點亮(視覺節流,不改資料;filling 態加退場條件,免得整排同時發光)
+  - [ ] d. 等待 outline 的 40 秒谷:階段時間軸 + 經過秒數 + 安撫文案 + **取消鈕**——把最深的焦慮谷變成「AI 管內容、引擎管格式」的教學時刻
+
+### P2:可信與可用
+
+- [ ] **P2-8 重整/斷線復原**:jobId 進 URL,用 `GET /jobs/{id}` 快照重建(後端就緒 `src/odforge/webapi.py:514-529`;現況生成中 F5 = job 從 UI 消失,後端其實還在跑);主題偏好順手寫 localStorage(`web/src/theme/useTheme.ts`)
+- [ ] **P2-9 QAPanel(findings 有存沒顯示)**:reducer 存了 findings(`cockpit.ts:42`),UI 只印「第 N 輪」(`GateRail.tsx:24`)——被標紅的格子零解釋。做 spec §8 的 FindingRow(頁碼 · issue · severity · fix_hint)
+- [ ] **P2-10 錯誤與術語人話化**:原始英文 exception → 白話訊息 + 重試鈕;閘門副標(「mimetype 為首 · manifest」「headless 真轉 PDF」)加白話 tooltip
+- [ ] **P2-11 下載檔名**:UUID → 依主題命名(`src/odforge/webapi.py:511` 的 `filename=`)
+- [ ] **P2-12 空台矛盾**:下載鈕「生成中…」改「尚未生成」或隱藏(`web/src/components/DownloadDock.tsx:10`,與 narrator「準備就緒」打架);outline 未到前左欄 248px 空白直條(grid 欄寬寫死)
+- [ ] **P2-13 深色投影白邊**:body 無 margin reset(`app.css` 只 reset 了 `.page`)→ 全螢幕投影時 8px 瀏覽器預設白邊框住整個深色控制室,上台必炸;順便加 `<meta name="color-scheme">`
+
+### P3:打磨
+
+- [ ] **P3-14 無障礙**(/audit):narrator 無 `aria-live`(讀屏器聽不到任何進度);placeholder 掛 `aria-hidden` 卻是唯一承載標題的元素(`UnitCell.tsx:12`);主輸入框焦點環被拔(`app.css:168` `outline:none` 無替代);主題鈕 ☀/☾ 無 aria-label;深色 `--muted` 對比 ~4.0:1 未達 AA 卻大量用於 10.5px 微字
+- [ ] **P3-15 字體現實檢查**(/typeset):`Georgia,"Noto Serif TC"` 在台灣 Windows 多半 fallback 到新細明體——「文鍛」字標在真實機器是 90 年代公文感;自架字型檔或調整 fallback 順序(`web/src/theme/tokens.css:5`)
+- [ ] **P3-16 視覺細節**(/polish):flagged 態 3px 全高左紅條(`app.css:371-380`,::before 側條紋模式)換個結構;⟳「轉檔中」符號其實不會轉;`.railfoot`/`.tag` 孤兒 CSS;無 favicon
+- [ ] **P3-17 契約詞彙 slide→unit**:F1 計畫鐵則自我違反(實作仍是 `slide_done`、`/slides/{n}`)——F4 做 odt/ods 前補齊,後端保留別名向前相容(spec §10)
+
+> **保留區(評審認證的資產,修正時別動):** tokens.css 與雙向 `data-theme` 架構、data-status 驅動的 CSS 狀態機 + `prefers-reduced-motion` 完整降級、`?mock`/`?mockStep` demo 工程(只需顯式化)、引擎產出的 deck 品質本身(實測視覺在水準上)。
 
 ---
 
 ## Phase 19:決賽交付(不是程式)
 
+- [ ] 19.0 補齊 v2 人工關卡截圖佐證:`odforge/docs/screenshots/v2/` 目前不存在——三 preset 對照(13.3)、兩段式+確認站煙霧測試(15.3)、`--qa` QAReport 實錄(16.3)、公版樣式抽取實測(17.1)各留一組;同時是決賽簡報素材
 - [ ] 19.1 Dogfooding v2:用 v2 重生成使用手冊 .odt、**決賽簡報 .odp(7 分鐘,用 ODForge 自己生,QA 迴圈實錄截圖放進去)**、測試報表 .ods
 - [ ] 19.2 Before/After 對照組:v1 demo vs v2 同 prompt 產出,並排截圖(決賽簡報核心素材)
 - [ ] 19.3 錄影:CLI 兩段式生成(大綱確認站)→ --qa 迴圈 → LibreOffice 開檔 → 前端 demo(前端完成後)→ MCP + skill 讓 Claude Code 產簡報
