@@ -5,13 +5,20 @@ export function StatusNarrator({
   units,
   error,
   submitting,
+  fillingPending,
 }: {
   phase: Phase;
   units: Unit[];
   error?: CockpitState["error"];
   submitting?: boolean;
+  /** 大綱已確認、等待第一個 slide_done 的空窗:報「逐頁填充」而非「等待確認」。 */
+  fillingPending?: boolean;
 }) {
-  const forging = units.find((u) => u.status === "filling" || u.status === "regen");
+  // 報「最新」正在填充的一頁(最大 n),而非第一個——批次到達時才不會永遠卡在第 1 頁。
+  const forging = units.reduce<Unit | undefined>(
+    (best, u) => ((u.status === "filling" || u.status === "regen") && (!best || u.n > best.n) ? u : best),
+    undefined,
+  );
   const isError = phase === "error";
   const text =
     isError && error ? `錯誤(${error.stage}):${error.message}`
@@ -19,7 +26,7 @@ export function StatusNarrator({
     : submitting && phase === "empty" ? "已送出,正在生成大綱…"
     : phase === "empty" ? "準備就緒"
     : phase === "outline" ? "已產生大綱與配色"
-    : phase === "await" ? "等待你確認大綱…"
+    : phase === "await" ? (fillingPending ? "大綱已確認,正在逐頁填充…" : "等待你確認大綱…")
     : phase === "qa" ? "設計閘檢視中…"
     : phase === "complete" ? "完成 · 原生 ODF"
     : forging ? `第 ${forging.n} 頁鍛造中…` : "生成中…";

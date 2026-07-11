@@ -9,6 +9,7 @@ import { postGenerate, postOutlineAction, type GenerateBody, type OutlineActionB
 import { cockpitReducer, initialState } from "./state/cockpit";
 import { playMock } from "./state/mockStream";
 import { subscribeJob } from "./state/sse";
+import { createThrottledDispatch } from "./state/throttle";
 import { useTheme } from "./theme/useTheme";
 import "./theme/tokens.css";
 import "./styles/app.css";
@@ -17,6 +18,11 @@ export default function App() {
   const [state, dispatch] = useReducer(cockpitReducer, undefined, () => initialState());
   const [jobId, setJobId] = useState<string | undefined>();
   const [submitting, setSubmitting] = useState(false);
+  // Prompt text lives here (single source of truth) so it survives an error or a
+  // completed run — PromptBar is controlled from this state.
+  const [prompt, setPrompt] = useState("");
+  // 大綱已確認、等待第一個 slide_done 的空窗:讓 narrator 報「逐頁填充」而非「等待確認」。
+  const [fillingPending, setFillingPending] = useState(false);
   const { theme, setTheme } = useTheme();
   const cancelRef = useRef<() => void>();
   const params = new URLSearchParams(window.location.search);
@@ -26,6 +32,10 @@ export default function App() {
   useEffect(() => () => cancelRef.current?.(), []);
   // Clear the "submitting" indicator once the first SSE event moves us off "empty".
   useEffect(() => { if (state.phase !== "empty") setSubmitting(false); }, [state.phase]);
+  // 一旦真的進入填充(generating)或被重置(empty),關掉「已確認等填充」空窗旗標。
+  useEffect(() => {
+    if (state.phase === "generating" || state.phase === "empty") setFillingPending(false);
+  }, [state.phase]);
 
   async function onGenerate(body: GenerateBody) {
     cancelRef.current?.();
@@ -34,7 +44,10 @@ export default function App() {
     try {
       const { job_id } = await postGenerate(body);
       setJobId(job_id);
-      cancelRef.current = subscribeJob(job_id, dispatch);
+      // 只有 SSE 事件流走視覺節流器;本地 dispatch(大綱重同步、重生)直接進 reducer。
+      const throttle = createThrottledDispatch(dispatch);
+      const closeSse = subscribeJob(job_id, throttle.push);
+      cancelRef.current = () => { closeSse(); throttle.cancel(); };
     } catch {
       // 後端不可用時,誠實回報連線失敗(不再靜默退回 mock 演假簡報)。
       // phase 進 error 後 PromptBar 會回來,使用者可重試。
@@ -42,11 +55,25 @@ export default function App() {
     }
   }
 
+  // 「再鍛一份」/ 等待卡取消:關閉舊 SSE、丟掉待播佇列、清 jobId、重置 cockpit 回 empty。
+  // prompt 文字刻意保留在輸入框(受控 state 不動),使用者可微調再送。
+  function resetCockpit() {
+    cancelRef.current?.();
+    cancelRef.current = undefined;
+    setJobId(undefined);
+    setSubmitting(false);
+    setFillingPending(false);
+    dispatch({ type: "reset" });
+  }
+
   // Resolve the outline-approval gate. On success the SSE stream resumes on its
   // own; failures surface in the ConfirmBar (thrown → caught there).
   async function onConfirmOutline(action: OutlineActionBody) {
     if (!jobId || jobId === "mock") return;
     await postOutlineAction(jobId, action);
+    // 確認成功 → 後端開始逐頁填充,但第一個 slide_done 到來前 phase 仍是 await。
+    // 標記空窗,讓 narrator 不再顯示「等待你確認大綱…」。
+    setFillingPending(true);
     // 編輯成功後,後端不會重發 outline,直接發 N-1 個 slide_done。若不在本地
     // 重新同步,被刪的第 N 格會永遠停在 skeleton,最後 complete 又無條件塗成
     // done → 縮圖牆出現一張「已完成」但不存在於下載檔的幽靈頁。於是就地補一個
@@ -72,17 +99,27 @@ export default function App() {
           <header className="top">
             <div className="brand"><span className="mark">文鍛</span><span className="en">ODForge</span></div>
             {chip && <span className="statuschip" data-kind={chip.kind}>{chip.label}</span>}
-            {!busy ? <PromptBar onGenerate={onGenerate} /> : <div className="promptline">生成中的文件</div>}
+            {!busy ? (
+              <PromptBar onGenerate={onGenerate} value={prompt} onValueChange={setPrompt} />
+            ) : state.phase === "complete" ? (
+              <div className="promptline done">
+                <span className="pl-text" title={prompt}>{prompt || "文件"}</span>
+                <button type="button" className="reforge" onClick={resetCockpit}>再鍛一份</button>
+              </div>
+            ) : (
+              // 生成中:頂欄細條顯示真實 prompt(過長由 CSS 截斷,title 給全文)。
+              <div className="promptline" title={prompt || undefined}>{prompt || "生成中的文件"}</div>
+            )}
             <div className="themetoggle">
               <button aria-pressed={theme === "light"} onClick={() => setTheme("light")}>☀</button>
               <button aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>☾</button>
             </div>
           </header>
           <OutlineRail outline={state.outline} phase={state.phase} onConfirm={onConfirmOutline} />
-          <PreviewStage units={state.units} docType={state.docType} jobId={jobId} dispatch={dispatch} />
+          <PreviewStage units={state.units} docType={state.docType} jobId={jobId} dispatch={dispatch} submitting={submitting} onCancel={resetCockpit} />
           <GateRail gates={state.gates} qaRounds={state.qaRounds} />
           <footer className="foot">
-            <StatusNarrator phase={state.phase} units={state.units} error={state.error} submitting={submitting} />
+            <StatusNarrator phase={state.phase} units={state.units} error={state.error} submitting={submitting} fillingPending={fillingPending} />
             <DownloadDock jobId={jobId} downloadUrl={state.downloadUrl} docType={state.docType} />
           </footer>
         </div>

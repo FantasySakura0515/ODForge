@@ -14,6 +14,32 @@ test("標頭顯示完成數/總數", () => {
   expect(container.querySelector(".prog")?.textContent?.replace(/\s+/g, " ")).toContain("1 / 2");
 });
 
+test("計數把「已有 ir(填充中/尚未 preview)」的 unit 算進進度,不再 LLM 階段全程 0", () => {
+  const filling: Unit[] = [
+    { n: 1, role: "title", title: "封面", status: "filling", ir: { layout: "title", title: "封面" } },
+    { n: 2, role: "content", title: "內文", status: "skeleton" },
+  ];
+  const { container } = render(<PreviewStage units={filling} docType="odp" jobId={undefined} dispatch={() => {}} />);
+  expect(container.querySelector(".prog")?.textContent?.replace(/\s+/g, " ")).toContain("1 / 2");
+});
+
+test("submitting 且尚無 units:顯示等待卡(階段時間軸 + 取消鈕),不顯示縮圖牆", () => {
+  const { container } = render(
+    <PreviewStage units={[]} docType="odp" jobId={undefined} dispatch={() => {}} submitting onCancel={() => {}} />,
+  );
+  expect(screen.getByText(/構思大綱/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /取消/ })).toBeInTheDocument();
+  expect(container.querySelector(".grid")).toBeNull();
+});
+
+test("已有 units(大綱已到)時等待卡收起,回到縮圖牆", () => {
+  const { container } = render(
+    <PreviewStage units={units} docType="odp" jobId={undefined} dispatch={() => {}} submitting onCancel={() => {}} />,
+  );
+  expect(screen.queryByText(/構思大綱/)).toBeNull();
+  expect(container.querySelector(".grid")).not.toBeNull();
+});
+
 test("每個單元一格且帶 data-status", () => {
   const { container } = render(<PreviewStage units={units} docType="odp" jobId={undefined} dispatch={() => {}} />);
   const cells = container.querySelectorAll(".cell");

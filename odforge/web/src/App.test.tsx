@@ -79,6 +79,104 @@ test("正常(非 mock、未失敗)頂欄不顯示狀態 chip", () => {
   expect(screen.queryByText("後端未連線")).toBeNull();
 });
 
+test("生成中頂欄顯示真實 prompt(帶 title 全文),非佔位字", async () => {
+  window.history.replaceState({}, "", "/");
+  vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+  vi.mocked(postGenerate).mockResolvedValue({ job_id: "j1" });
+
+  render(<App />);
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "資結第三章教學" } });
+  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+
+  await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+  FakeEventSource.instances[0].emit("outline", {
+    design: null, mode: "presenter", pages: [{ role: "title", title: "封面", gist: "g" }],
+  });
+
+  // PromptBar 收起(生成中),頂欄 promptline 顯示原 prompt 且 title 給全文。
+  await waitFor(() => expect(screen.queryByRole("button", { name: /鍛造/ })).toBeNull());
+  const line = document.querySelector(".promptline");
+  expect(line?.textContent).toContain("資結第三章教學");
+  expect(line?.getAttribute("title")).toBe("資結第三章教學");
+});
+
+test("完成後「再鍛一份」重置回 empty:PromptBar 回來、輸入框保留原文、縮圖牆清空", async () => {
+  window.history.replaceState({}, "", "/");
+  vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+  vi.mocked(postGenerate).mockResolvedValue({ job_id: "j1" });
+
+  render(<App />);
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "我的講稿" } });
+  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+
+  await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+  const es = FakeEventSource.instances[0];
+  es.emit("outline", { design: null, mode: "presenter", pages: [{ role: "title", title: "封面", gist: "g" }] });
+  es.emit("slide_done", { n: 1, slide: { layout: "title", title: "封面", bullets: [] } });
+  es.emit("complete", { download_url: "/d" });
+
+  const reforge = await screen.findByRole("button", { name: /再鍛一份/ });
+  fireEvent.click(reforge);
+
+  const ta = (await screen.findByRole("textbox", { name: /主題/ })) as HTMLTextAreaElement;
+  expect(ta.value).toBe("我的講稿");
+  // 回 empty:縮圖牆清空,下載鈕消失。
+  expect(document.querySelectorAll(".cell")).toHaveLength(0);
+  expect(screen.queryByRole("link", { name: /下載/ })).toBeNull();
+});
+
+test("錯誤後輸入框保留原 prompt(受控)", async () => {
+  window.history.replaceState({}, "", "/");
+  vi.mocked(postGenerate).mockRejectedValue(new Error("network down"));
+
+  render(<App />);
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "請保留這句" } });
+  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+
+  await waitFor(() => expect(screen.getByText(/無法連上後端/)).toBeInTheDocument());
+  const ta = screen.getByRole("textbox", { name: /主題/ }) as HTMLTextAreaElement;
+  expect(ta.value).toBe("請保留這句");
+});
+
+test("等待卡:submitting 顯示、outline 到收起", async () => {
+  window.history.replaceState({}, "", "/");
+  vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+  vi.mocked(postGenerate).mockResolvedValue({ job_id: "j1" });
+
+  render(<App />);
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "等待測試" } });
+  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+
+  // 等待卡出現(submitting、尚無 outline)。
+  await waitFor(() => expect(screen.getByText(/逐頁填充內容/)).toBeInTheDocument());
+  await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+
+  // outline 到 → 等待卡收起,縮圖牆出現。
+  FakeEventSource.instances[0].emit("outline", {
+    design: null, mode: "presenter", pages: [{ role: "title", title: "封面", gist: "g" }],
+  });
+  await waitFor(() => expect(document.querySelectorAll(".cell").length).toBeGreaterThan(0));
+  expect(screen.queryByText(/逐頁填充內容/)).toBeNull();
+});
+
+test("等待卡取消鈕:關閉 SSE、重置回 empty、prompt 保留", async () => {
+  window.history.replaceState({}, "", "/");
+  vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+  vi.mocked(postGenerate).mockResolvedValue({ job_id: "j1" });
+
+  render(<App />);
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "取消我" } });
+  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+
+  await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+  const cancel = await screen.findByRole("button", { name: /取消/ });
+  fireEvent.click(cancel);
+
+  const ta = (await screen.findByRole("textbox", { name: /主題/ })) as HTMLTextAreaElement;
+  expect(ta.value).toBe("取消我");
+  expect(FakeEventSource.instances[0].closed).toBe(true);
+});
+
 test("大綱刪 1 頁 → 確認成功 → units 隨編輯後大綱重同步,complete 後無幽靈 done 格", async () => {
   window.history.replaceState({}, "", "/");
   vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
