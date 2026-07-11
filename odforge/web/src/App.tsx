@@ -68,7 +68,6 @@ export default function App() {
     cancelRef.current = () => { close(); throttle.cancel(); };
     return () => { close(); throttle.cancel(); };
     // 僅在掛載時執行一次(讀初始 URL);後續生成走 onGenerate。
-    // eslint-disable-line react-hooks/exhaustive-deps
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // Clear the "submitting" indicator once the first SSE event moves us off "empty".
   useEffect(() => { if (state.phase !== "empty") setSubmitting(false); }, [state.phase]);
@@ -80,6 +79,7 @@ export default function App() {
   async function onGenerate(body: GenerateBody) {
     cancelRef.current?.();
     setExpired(false);
+    setSelectedN(null); // 新一輪生成:關掉任何殘留開著的 lightbox
     lastBodyRef.current = body;
     setSubmitting(true);
     if (mockMode) { setJobId("mock"); cancelRef.current = playMock(dispatch, { step: mockStep }); return; }
@@ -108,6 +108,7 @@ export default function App() {
     setSubmitting(false);
     setFillingPending(false);
     setExpired(false);
+    setSelectedN(null);
     // 放棄此 job → 清掉 URL 的 ?job=,重整不再嘗試復原舊任務。
     history.replaceState(null, "", window.location.pathname);
     dispatch({ type: "reset" });
