@@ -5,11 +5,10 @@ import { PreviewStage } from "./components/PreviewStage";
 import { GateRail } from "./components/GateRail";
 import { StatusNarrator } from "./components/StatusNarrator";
 import { DownloadDock } from "./components/DownloadDock";
-import { postGenerate } from "./state/api";
+import { postGenerate, postOutlineAction, type GenerateBody, type OutlineActionBody } from "./state/api";
 import { cockpitReducer, initialState } from "./state/cockpit";
 import { playMock } from "./state/mockStream";
 import { subscribeJob } from "./state/sse";
-import type { DocType } from "./state/types";
 import { useTheme } from "./theme/useTheme";
 import "./theme/tokens.css";
 import "./styles/app.css";
@@ -28,12 +27,12 @@ export default function App() {
   // Clear the "submitting" indicator once the first SSE event moves us off "empty".
   useEffect(() => { if (state.phase !== "empty") setSubmitting(false); }, [state.phase]);
 
-  async function onGenerate(prompt: string, docType: DocType) {
+  async function onGenerate(body: GenerateBody) {
     cancelRef.current?.();
     setSubmitting(true);
     if (mockMode) { setJobId("mock"); cancelRef.current = playMock(dispatch, { step: mockStep }); return; }
     try {
-      const { job_id } = await postGenerate({ prompt, doc_type: docType });
+      const { job_id } = await postGenerate(body);
       setJobId(job_id);
       cancelRef.current = subscribeJob(job_id, dispatch);
     } catch {
@@ -41,6 +40,13 @@ export default function App() {
       // phase 進 error 後 PromptBar 會回來,使用者可重試。
       dispatch({ type: "error", data: { message: "無法連上後端,請確認 odforge serve 是否在執行", stage: "connect" } });
     }
+  }
+
+  // Resolve the outline-approval gate. On success the SSE stream resumes on its
+  // own; failures surface in the ConfirmBar (thrown → caught there).
+  async function onConfirmOutline(action: OutlineActionBody) {
+    if (!jobId || jobId === "mock") return;
+    await postOutlineAction(jobId, action);
   }
 
   // Show the prompt bar when idle OR after an error (so the user can retry);
@@ -66,7 +72,7 @@ export default function App() {
               <button aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>☾</button>
             </div>
           </header>
-          <OutlineRail outline={state.outline} />
+          <OutlineRail outline={state.outline} phase={state.phase} onConfirm={onConfirmOutline} />
           <PreviewStage units={state.units} docType={state.docType} jobId={jobId} dispatch={dispatch} />
           <GateRail gates={state.gates} qaRounds={state.qaRounds} />
           <footer className="foot">
