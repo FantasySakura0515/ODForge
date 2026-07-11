@@ -5,7 +5,7 @@ import { UnitDetail } from "./UnitDetail";
 import { WaitingCard } from "./WaitingCard";
 
 export function PreviewStage({
-  units, docType, jobId, dispatch, submitting, onCancel,
+  units, docType, jobId, dispatch, submitting, onCancel, selectedN: selectedNProp, onSelect,
 }: {
   units: Unit[];
   docType: DocType;
@@ -13,8 +13,13 @@ export function PreviewStage({
   dispatch: (action: CockpitAction) => void;
   submitting?: boolean;
   onCancel?: () => void;
+  /** 受控選取(由 App 提升,讓 FindingRow 也能開 lightbox);未提供時退回內部 state。 */
+  selectedN?: number | null;
+  onSelect?: (n: number | null) => void;
 }) {
-  const [selectedN, setSelectedN] = useState<number | null>(null);
+  const [selfN, setSelfN] = useState<number | null>(null);
+  const selectedN = selectedNProp !== undefined ? selectedNProp : selfN;
+  const setSelectedN = onSelect ?? setSelfN;
   // 進度算「已有內容(ir)或已 preview/done」的頁——LLM 填充階段就開始計數,
   // 不再等到 preview 才從 0 跳動。
   const filled = units.filter((u) => u.ir != null || u.status === "preview" || u.status === "done").length;

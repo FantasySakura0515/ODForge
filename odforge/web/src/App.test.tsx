@@ -60,8 +60,8 @@ test("非 mock 模式且後端連不上:顯示「無法連上後端」、不出�
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "樹與二元樹" } });
   fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
 
-  // 連線錯誤訊息出現
-  await waitFor(() => expect(screen.getByText(/無法連上後端/)).toBeInTheDocument());
+  // 連線錯誤訊息出現(人話前綴在 narrator + ErrorPanel 標題皆會出現)
+  await waitFor(() => expect(screen.getAllByText(/無法連上後端/).length).toBeGreaterThan(0));
   // 絕不退回 mock 演假簡報:mock 專屬標題不得出現
   expect(screen.queryByText("本章路線圖")).toBeNull();
   expect(screen.queryByRole("link", { name: /下載/ })).toBeNull();
@@ -135,7 +135,7 @@ test("錯誤後輸入框保留原 prompt(受控)", async () => {
   fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "請保留這句" } });
   fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
 
-  await waitFor(() => expect(screen.getByText(/無法連上後端/)).toBeInTheDocument());
+  await waitFor(() => expect(screen.getAllByText(/無法連上後端/).length).toBeGreaterThan(0));
   const ta = screen.getByRole("textbox", { name: /主題/ }) as HTMLTextAreaElement;
   expect(ta.value).toBe("請保留這句");
 });
@@ -241,6 +241,49 @@ test("?job= 但 job 不存在(傳輸錯誤/404):顯示過期文案並清掉 URL 
   // URL 的 ?job= 已清掉,回到輸入畫面。
   expect(new URLSearchParams(window.location.search).get("job")).toBeNull();
   expect(screen.getByRole("button", { name: /鍛造/ })).toBeInTheDocument();
+});
+
+test("錯誤區「重試」以同樣參數重新送出上一次 generate", async () => {
+  window.history.replaceState({}, "", "/");
+  vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+  vi.mocked(postGenerate).mockRejectedValue(new Error("network down"));
+
+  render(<App />);
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "重試主題" } });
+  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+
+  // 錯誤區出現白話標題與重試鈕。
+  await waitFor(() => expect(screen.getByRole("button", { name: "重試" })).toBeInTheDocument());
+  expect(postGenerate).toHaveBeenCalledTimes(1);
+  const firstBody = vi.mocked(postGenerate).mock.calls[0][0];
+
+  fireEvent.click(screen.getByRole("button", { name: "重試" }));
+  // 以同樣 body 再送一次。
+  await waitFor(() => expect(postGenerate).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(postGenerate).mock.calls[1][0]).toEqual(firstBody);
+});
+
+test("點設計 QA 的 FindingRow → 開該頁 lightbox", async () => {
+  window.history.replaceState({}, "", "/");
+  vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+  vi.mocked(postGenerate).mockResolvedValue({ job_id: "jqa" });
+
+  render(<App />);
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "QA 測試" } });
+  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+
+  await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+  const es = FakeEventSource.instances[0];
+  es.emit("outline", { design: null, mode: "presenter", pages: [{ role: "title", title: "封面", gist: "g" }] });
+  es.emit("slide_done", { n: 1, slide: { layout: "title", title: "封面", bullets: [] } });
+  es.emit("preview_ready", { n: 1, url: "/api/jobs/jqa/preview/1.png" });
+  es.emit("qa_round", { round: 1, findings: [{ slide_no: 1, issue: "溢出", severity: "error", fix_hint: "減行" }] });
+
+  // FindingRow 出現且可點 → 開 lightbox dialog(以 issue 文字定位,避開縮圖格同名)。
+  const row = await screen.findByRole("button", { name: /溢出/ });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  fireEvent.click(row);
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
 });
 
 test("大綱刪 1 頁 → 確認成功 → units 隨編輯後大綱重同步,complete 後無幽靈 done 格", async () => {

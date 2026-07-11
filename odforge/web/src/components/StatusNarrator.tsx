@@ -1,3 +1,4 @@
+import { humanizeStage } from "../state/errors";
 import type { CockpitState, Phase, Unit } from "../state/types";
 
 export function StatusNarrator({
@@ -24,8 +25,8 @@ export function StatusNarrator({
   );
   const isError = phase === "error";
   const text =
-    isError && error ? `錯誤(${error.stage}):${error.message}`
-    : isError ? "發生錯誤"
+    // 人話前綴(stage → 白話);原始技術訊息留給 ErrorPanel 的「技術細節」與此處 title。
+    isError ? humanizeStage(error?.stage)
     : submitting && phase === "empty" ? "已送出,正在生成大綱…"
     : phase === "empty" && expired ? "找不到這個任務,可能已過期"
     : phase === "empty" ? "準備就緒"

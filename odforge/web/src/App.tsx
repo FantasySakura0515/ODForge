@@ -5,6 +5,7 @@ import { PreviewStage } from "./components/PreviewStage";
 import { GateRail } from "./components/GateRail";
 import { StatusNarrator } from "./components/StatusNarrator";
 import { DownloadDock } from "./components/DownloadDock";
+import { ErrorPanel } from "./components/ErrorPanel";
 import { postGenerate, postOutlineAction, type GenerateBody, type OutlineActionBody } from "./state/api";
 import { cockpitReducer, initialState } from "./state/cockpit";
 import { playMock } from "./state/mockStream";
@@ -25,8 +26,12 @@ export default function App() {
   const [fillingPending, setFillingPending] = useState(false);
   // ?job= 復原失敗(job 不存在/已過期)時,於輸入畫面報一行人話。
   const [expired, setExpired] = useState(false);
+  // 目前開啟 lightbox 的頁碼(提升到 App,讓 FindingRow 點擊也能開該頁)。
+  const [selectedN, setSelectedN] = useState<number | null>(null);
   const { theme, setTheme } = useTheme();
   const cancelRef = useRef<() => void>();
+  // 上一次送出的 generate body,供錯誤區「重試」以同樣參數重送。
+  const lastBodyRef = useRef<GenerateBody>();
   const params = new URLSearchParams(window.location.search);
   const mockMode = params.has("mock");
   const mockStep = Number(params.get("mockStep") ?? "250");
@@ -75,6 +80,7 @@ export default function App() {
   async function onGenerate(body: GenerateBody) {
     cancelRef.current?.();
     setExpired(false);
+    lastBodyRef.current = body;
     setSubmitting(true);
     if (mockMode) { setJobId("mock"); cancelRef.current = playMock(dispatch, { step: mockStep }); return; }
     try {
@@ -105,6 +111,14 @@ export default function App() {
     // 放棄此 job → 清掉 URL 的 ?job=,重整不再嘗試復原舊任務。
     history.replaceState(null, "", window.location.pathname);
     dispatch({ type: "reset" });
+  }
+
+  // 錯誤區「重試」:清掉失敗殘留的 units/gates,再以同樣參數重送上一次 generate。
+  function retryGenerate() {
+    const body = lastBodyRef.current;
+    if (!body) return;
+    dispatch({ type: "reset" });
+    onGenerate(body);
   }
 
   // Resolve the outline-approval gate. On success the SSE stream resumes on its
@@ -157,8 +171,21 @@ export default function App() {
             </div>
           </header>
           <OutlineRail outline={state.outline} phase={state.phase} onConfirm={onConfirmOutline} />
-          <PreviewStage units={state.units} docType={state.docType} jobId={jobId} dispatch={dispatch} submitting={submitting} onCancel={resetCockpit} />
-          <GateRail gates={state.gates} qaRounds={state.qaRounds} />
+          {state.phase === "error" ? (
+            <ErrorPanel error={state.error} onRetry={lastBodyRef.current ? retryGenerate : undefined} />
+          ) : (
+            <PreviewStage
+              units={state.units}
+              docType={state.docType}
+              jobId={jobId}
+              dispatch={dispatch}
+              submitting={submitting}
+              onCancel={resetCockpit}
+              selectedN={selectedN}
+              onSelect={setSelectedN}
+            />
+          )}
+          <GateRail gates={state.gates} qaRounds={state.qaRounds} onOpenFinding={(n) => setSelectedN(n)} />
           <footer className="foot">
             <StatusNarrator phase={state.phase} units={state.units} error={state.error} submitting={submitting} fillingPending={fillingPending} expired={expired} />
             <DownloadDock jobId={jobId} downloadUrl={state.downloadUrl} docType={state.docType} />
