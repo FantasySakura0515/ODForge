@@ -1233,3 +1233,67 @@ def test_custom_designspec_renders_with_palette_colors(tmp_path):
     assert "#0B1020" in content         # ... and the per-page fill in content.xml
     assert "#5AD0E0" in content         # custom accent (bullet char / accent bar)
     assert "#F0F3FF" in content         # custom text colour
+
+
+# ---------------------------------------------------------------------------
+# big-fact fit-to-width + caption never overlaps (fix: long fact overlapping
+# the muted caption). Deterministic engine guarantees, not prompt advice.
+# ---------------------------------------------------------------------------
+
+from odforge.textmetrics import estimate_height_cm, fact_font_size_pt  # noqa: E402
+
+
+def _fact_size_pt(croot, fact_text):
+    """Rendered font-size (pt, int) of the big-fact fact paragraph."""
+    page = croot.find(".//draw:page", NS)
+    fact_p = _text_p_with(page, fact_text)
+    tp = _style_by_name(croot, fact_p.get(_q("text", "style-name"))).find(
+        "style:text-properties", NS)
+    return int(tp.get(_q("fo", "font-size")).removesuffix("pt"))
+
+
+def _frame_y_cm_of_text(page, text):
+    """svg:y (cm, float) of the draw:frame enclosing the text:p holding ``text``."""
+    p = _text_p_with(page, text)
+    frame = p.getparent().getparent()  # text:p -> draw:text-box -> draw:frame
+    return float(frame.get(_q("svg", "y")).removesuffix("cm"))
+
+
+# ① short fact renders at display_pt (regression — no needless shrinking).
+def test_big_fact_short_fact_keeps_display_pt():
+    theme = THEMES["academic"]
+    p = Presentation(title="t", slides=[
+        Slide(layout="big-fact", fact="99%", bullets=["涵蓋率"])])
+    croot = _content_root(p, theme)
+    assert _fact_size_pt(croot, "99%") == theme.display_pt
+
+
+# ② a long mixed CJK/ASCII fact is shrunk below display_pt but not past h1_pt.
+def test_big_fact_long_fact_shrinks_between_h1_and_display():
+    theme = THEMES["academic"]
+    long_fact = "人工智慧模型推論速度提升約3倍並降低成本"  # 20+ chars, mixed
+    p = Presentation(title="t", slides=[
+        Slide(layout="big-fact", fact=long_fact, bullets=["說明"])])
+    croot = _content_root(p, theme)
+    size = _fact_size_pt(croot, long_fact)
+    assert theme.h1_pt <= size < theme.display_pt, size
+
+
+# ③ an extreme fact still wraps at the h1_pt floor → caption drops below the
+#    fact's estimated bottom (the two frames never intersect).
+def test_big_fact_extreme_fact_pushes_caption_clear():
+    theme = THEMES["academic"]
+    extreme = "字" * 60  # forces multiple lines even at the h1_pt floor
+    caption = "這是下方的輔助說明文字"
+    p = Presentation(title="t", slides=[
+        Slide(layout="big-fact", fact=extreme, bullets=[caption])])
+    croot = _content_root(p, theme)
+    page = croot.find(".//draw:page", NS)
+    fact_frame = LAYOUTS["big-fact"][0]
+    fitted = fact_font_size_pt(extreme, fact_frame.w, theme.display_pt, theme.h1_pt)
+    fact_bottom = fact_frame.y + estimate_height_cm(extreme, fitted, fact_frame.w)
+    caption_y = _frame_y_cm_of_text(page, caption)
+    # Non-overlap invariant: caption top sits at or below the fact's real bottom.
+    assert caption_y >= fact_bottom, (caption_y, fact_bottom)
+    # And it genuinely moved off its static y (10cm) because the fact overran.
+    assert caption_y > LAYOUTS["big-fact"][1].y

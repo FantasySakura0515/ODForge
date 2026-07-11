@@ -141,3 +141,25 @@ def test_nested_children_add_height():
     flat_h = _frame_content_height(flat, THEME, bullets_frame, "title-content")
     nested_h = _frame_content_height(nested, THEME, bullets_frame, "title-content")
     assert nested_h > flat_h
+
+
+# ── big-fact budget blind spot ─────────────────────────────────────────────
+def test_big_fact_short_fact_fits_no_warning():
+    # A normal big-fact (short fact + short caption) must not warn: the engine
+    # auto-shrinks/repositions, so budget stays quiet.
+    slide = Slide(layout="big-fact", fact="99%", bullets=["涵蓋率支撐說明"])
+    assert check_budget(slide, THEME) == []
+
+
+def test_big_fact_extreme_fact_reports_with_title():
+    # Even at the h1_pt shrink floor an extreme fact plus its caption cannot fit
+    # above the footer line → check_budget must fire, naming the slide.
+    slide = Slide(
+        layout="big-fact",
+        title="關鍵數據頁",
+        fact="字" * 200,  # unrescuable: overflows even shrunk to h1_pt
+        bullets=["補充說明"],
+    )
+    msgs = check_budget(slide, THEME)
+    assert msgs, "an unfittable big-fact must overflow the budget"
+    assert any("關鍵數據頁" in m and "fact" in m for m in msgs), msgs

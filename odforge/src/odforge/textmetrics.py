@@ -54,6 +54,12 @@ _LEVEL2_NARROW_CM = 1.0
 # Small on purpose: the gate should fire on real overruns, not hairline ones.
 _FRAME_PADDING_CM = 0.2
 
+# Lowest y (cm) a big-fact caption may extend to before it collides with the
+# master-page footer furniture (render.odp._FOOTER_LINE_Y == 14.9). Duplicated
+# here rather than imported: render.odp imports textmetrics, never the reverse,
+# so this module must stay free of a render dependency.
+_BIGFACT_USABLE_BOTTOM_CM = 14.9
+
 # PLAIN_LAYOUTS (bare title frames) and LIST_ROLES (semantic bullet lists) are
 # imported from odforge.themes — the single source shared with render.odp so the
 # budget gate can never drift from what the renderer actually draws.
@@ -107,6 +113,32 @@ def estimate_height_cm(
         lines = max(1, math.ceil(run_cm / width))
         total += lines * line_cm
     return total
+
+
+def fact_font_size_pt(
+    text: str, width_cm: float, display_pt: int, h1_pt: int
+) -> int:
+    """Largest big-fact font size (pt) that keeps ``text`` on a single line.
+
+    Steps down 1pt at a time from ``display_pt`` and returns the first size at
+    which ``text`` fits one line in a ``width_cm``-wide box under the same
+    em-width model :func:`estimate_height_cm` uses (CJK ≈ 1.0em, else ≈ 0.55em).
+    ``h1_pt`` is a hard floor: if even at ``h1_pt`` the text still wraps, ``h1_pt``
+    is returned (the renderer then drops the caption to keep the two from
+    overlapping, and — in the unrescuable extreme — :func:`check_budget` reports).
+
+    Shared by the renderer (the size it draws) and the budget gate (the size it
+    charges) so the two can never disagree. Deterministic; a pure function of the
+    text, width and the two size bounds.
+    """
+    width = width_cm if width_cm > 0 else 0.01
+    em = _em_width(text)
+    if em <= 0:
+        return display_pt
+    for size in range(display_pt, h1_pt, -1):
+        if em * size * PT_TO_CM <= width:
+            return size
+    return h1_pt
 
 
 # ── frame content resolution (mirrors render.odp) ──────────────────────────
@@ -243,6 +275,42 @@ def _frame_content_height(
     return _plain_height(lines, size_pt, frame.w)
 
 
+def _check_big_fact(slide: Slide, theme: Theme, label: str) -> list[str]:
+    """Budget check for the big-fact layout — closes the fact-frame blind spot.
+
+    The renderer auto-rescues an over-long fact: it shrinks the fact toward the
+    ``h1_pt`` floor to keep it on one line and drops the caption below the fact's
+    real height so the two never overlap (see ``render.odp._page_xml``). A fact
+    that merely wraps is therefore handled in-engine and must NOT be reported.
+
+    Feedback is warranted only in the unrescuable extreme: when the fact, even
+    charged at its ``h1_pt`` floor, plus the caption reserved beneath it, cannot
+    fit above the footer line (:data:`_BIGFACT_USABLE_BOTTOM_CM`). Only then does
+    the message reach the Task 15.2 retry loop — self-rescue first, feedback last.
+    """
+    fact_frame, caption_frame = LAYOUTS["big-fact"]  # (fact, bullets)
+    if not slide.fact:
+        return []
+    # Charge the fact at the shrink floor — the smallest the renderer will draw it.
+    floor_h = estimate_height_cm(slide.fact, theme.h1_pt, fact_frame.w)
+    gap = caption_frame.y - (fact_frame.y + fact_frame.h)
+    caption_lines = _role_lines(slide, caption_frame.role)
+    caption_h = (
+        _plain_height(caption_lines, caption_frame.size_pt, caption_frame.w)
+        if caption_lines
+        else 0.0
+    )
+    reserved = (gap + caption_h) if caption_lines else 0.0
+    available = _BIGFACT_USABLE_BOTTOM_CM - fact_frame.y - reserved
+    if floor_h > available:
+        return [
+            f"投影片「{label}」的 fact「{slide.fact}」即使縮到最小字級"
+            f"（{theme.h1_pt}pt）仍需約 {floor_h:.1f}cm > 可用 {available:.1f}cm"
+            f"（與下方說明文字疊放後會超出版面）— 請縮短 fact 文字。"
+        ]
+    return []
+
+
 def check_budget(slide: Slide, theme: Theme) -> list[str]:
     """Return an overflow message for every frame whose text overruns its box.
 
@@ -252,8 +320,16 @@ def check_budget(slide: Slide, theme: Theme) -> list[str]:
     fits. Messages name the slide, the frame role, and the estimated vs available
     height in cm — actionable feedback the retry loop (Task 15.2) feeds back to
     the LLM.
+
+    The big-fact layout is special-cased (:func:`_check_big_fact`): because the
+    renderer auto-shrinks the fact and pushes the caption clear of it, a plain
+    per-frame walk would both mis-charge the fact (it is no longer drawn at
+    ``display_pt``) and miss the true failure mode (fact + caption running off the
+    page). That combined, floor-aware check replaces the walk for big-fact.
     """
     label = slide.title or slide.fact or slide.quote or "(未命名投影片)"
+    if slide.layout == "big-fact":
+        return _check_big_fact(slide, theme, label)
     messages: list[str] = []
     for frame in LAYOUTS.get(slide.layout, ()):
         content_h = _frame_content_height(slide, theme, frame, slide.layout)

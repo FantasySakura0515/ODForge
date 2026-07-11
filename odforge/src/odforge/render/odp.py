@@ -13,12 +13,14 @@ skipped; speaker notes are emitted only when non-empty.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 from xml.sax.saxutils import escape
 
 from odforge.ir import BulletItem, ChartSpec, Presentation, Slide
 from odforge.package import ODP_MIMETYPE, write_odf_package
+from odforge.textmetrics import estimate_height_cm, fact_font_size_pt
 from odforge.themes import (
     LAYOUTS,
     LIST_ROLES,
@@ -1017,6 +1019,23 @@ def _page_xml(
     if layout == "quote":
         parts.append(_quote_mark_xml(theme, styles))
 
+    # big-fact fit-to-width (deterministic engine guarantee, not prompt advice):
+    # shrink the fact toward one line (floor = theme.h1_pt) and, if it still
+    # overruns its frame, push the caption down by the fact's real estimated
+    # height so the two boxes can never intersect. Both quantities come from the
+    # shared textmetrics model so the size drawn == the size the budget gate
+    # charges. Computed once here; consumed in the fact / caption branches below.
+    bigfact_fact_pt: int | None = None
+    bigfact_caption_y: float | None = None
+    if layout == "big-fact" and slide.fact:
+        fact_frame, caption_frame = LAYOUTS["big-fact"]  # (fact, bullets)
+        bigfact_fact_pt = fact_font_size_pt(
+            slide.fact, fact_frame.w, theme.display_pt, theme.h1_pt
+        )
+        fact_h = estimate_height_cm(slide.fact, bigfact_fact_pt, fact_frame.w)
+        gap = caption_frame.y - (fact_frame.y + fact_frame.h)
+        bigfact_caption_y = fact_frame.y + max(fact_frame.h, fact_h) + gap
+
     for frame in LAYOUTS[layout]:
         role = frame.role
 
@@ -1150,7 +1169,11 @@ def _page_xml(
         # big-fact caption bullets).
         size_pt = frame.size_pt
         if role == "fact":
-            size_pt = theme.display_pt
+            # fit-to-width: draw the fact at the largest size that keeps it on
+            # one line (floor = h1_pt), computed above.
+            size_pt = (
+                bigfact_fact_pt if bigfact_fact_pt is not None else theme.display_pt
+            )
             color = theme.accent
         elif role == "quote":
             size_pt = theme.h1_pt
@@ -1160,6 +1183,9 @@ def _page_xml(
             color = theme.muted
         elif role == "bullets" and layout == "big-fact":
             color = theme.muted
+            # caption never overlaps: drop it below the fact's real height.
+            if bigfact_caption_y is not None:
+                frame = replace(frame, y=bigfact_caption_y)
         else:
             color = theme.text_color
 
