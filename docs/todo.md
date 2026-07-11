@@ -444,40 +444,40 @@ generate_outline(prompt, backend=None) -> Outline
 
 ### P0:誠實度——介面在說謊,決賽現場會爆炸
 
-- [ ] **P0-1 移除無聲 mock fallback**(`web/src/App.tsx:39-43`):`postGenerate` 一失敗就靜默 `playMock`——不管使用者輸入什麼,畫面完整演出「樹與二元樹」假簡報、宣告四道閘全綠、下載鈕連到 404。改為 dispatch `error` 事件(「無法連上後端,請確認 odforge serve 是否在執行」+ 重試鈕);mock 僅允許 `?mock` 顯式進入,且進入時頂欄掛常駐「展示模式」chip(順便補 spec §5 缺的後端狀態 chip)
-- [ ] **P0-2 四道閘接真訊號**(`web/src/state/cockpit.ts:36,44-49`):現況第一個 `preview_ready` 三閘齊 pass、`complete` 無條件全綠——包含從未執行的設計閘(UI 從不送 `qa:true`)。前端短期:qa 未啟用時第四道顯示「— 未啟用」而非 ✓、LibreOffice 閘只在真的收過 preview_ready 才 pass。正解(後端小增補):render 後跑既有驗證器,emit `gate_result{gate,status}` SSE 事件,每顆勾對回一次真實檢查,順帶實現 spec 的「依序點亮」。同步修死碼:後端 error stage 詞彙(outline/slides/render/preview/qa)與前端 GATE_IDS(zip/xml/libreoffice/design)完全不重疊,`cockpit.ts:50-53` 的閘門標紅永不命中
-- [ ] **P0-3 型別分頁停止說謊**(`web/src/components/PromptBar.tsx:4-6` → `src/odforge/webapi.py:338-344`):後端 `GenerateBody` 無 `doc_type` 欄位、被 Pydantic 靜默丟棄,選「試算表」實測拿到 .odp。藏掉 odt/ods 分頁(feature flag,spec §10 本有要求),或後端收下 `doc_type`、非 odp 回 422 + 前端標「即將支援」
+- [x] **P0-1 移除無聲 mock fallback**(`web/src/App.tsx:39-43`):`postGenerate` 一失敗就靜默 `playMock`——不管使用者輸入什麼,畫面完整演出「樹與二元樹」假簡報、宣告四道閘全綠、下載鈕連到 404。改為 dispatch `error` 事件(「無法連上後端,請確認 odforge serve 是否在執行」+ 重試鈕);mock 僅允許 `?mock` 顯式進入,且進入時頂欄掛常駐「展示模式」chip(順便補 spec §5 缺的後端狀態 chip)
+- [x] **P0-2 四道閘接真訊號**(`web/src/state/cockpit.ts:36,44-49`):現況第一個 `preview_ready` 三閘齊 pass、`complete` 無條件全綠——包含從未執行的設計閘(UI 從不送 `qa:true`)。前端短期:qa 未啟用時第四道顯示「— 未啟用」而非 ✓、LibreOffice 閘只在真的收過 preview_ready 才 pass。正解(後端小增補):render 後跑既有驗證器,emit `gate_result{gate,status}` SSE 事件,每顆勾對回一次真實檢查,順帶實現 spec 的「依序點亮」。同步修死碼:後端 error stage 詞彙(outline/slides/render/preview/qa)與前端 GATE_IDS(zip/xml/libreoffice/design)完全不重疊,`cockpit.ts:50-53` 的閘門標紅永不命中
+- [x] **P0-3 型別分頁停止說謊**(`web/src/components/PromptBar.tsx:4-6` → `src/odforge/webapi.py:338-344`):後端 `GenerateBody` 無 `doc_type` 欄位、被 Pydantic 靜默丟棄,選「試算表」實測拿到 .odp。藏掉 odt/ods 分頁(feature flag,spec §10 本有要求),或後端收下 `doc_type`、非 odp 回 422 + 前端標「即將支援」
 
 ### P1:核心互動——使用者的兩大抱怨
 
-- [ ] **P1-4 單張檢視 UnitDetail(抱怨①「只能看縮圖牆,無法點進去一張一張看」)**:`web/src/components/UnitCell.tsx` 無 onClick、連 cursor:pointer 都沒有,spec §8 的 `<UnitDetail>` 未實作。做 lightbox:點格放大 + ←/→ 逐張翻頁 + Esc 關閉 + 頁碼指示;放大視圖內放**單張重生輸入框**接 `POST /slides/{n}/regenerate`(後端就緒 `src/odforge/webapi.py:473-491`,實測 20s、指令生效)。動工前先用 /shape 定 UX
-- [ ] **P1-5 讓 AI 貼合需求的輸入層(抱怨②「只能輸入一句話」)**:
-  - [ ] a. 進階抽屜:mode(detailed/presenter)、theme 預設、QA 開關、backend 選擇——`web/src/state/api.ts:3` 早已宣告這些欄位,`App.tsx:36` 寫死只送 prompt,純接線工作
-  - [ ] b. 大綱確認站:送 `interactive:true` + ConfirmBar(就地改標題/刪頁/確認)接 `POST /outline`(後端就緒 `src/odforge/webapi.py:450-471`)。注意現況:若 `awaiting_approval` 事件到來,畫面顯示「等待你確認大綱…」後**永久卡死、無任何按鈕**
-  - [ ] c. prompt 引導:placeholder 別再教人「用一句話」;給 2–3 個好範例 + 受眾/頁數/語氣欄位(頁數需後端 `GenerateBody`/`generate_outline` 加欄位)
-  - [ ] d. Ctrl+Enter 送出(`web/src/components/PromptBar.tsx:20` 現在 Enter 只會換行)
-- [ ] **P1-6 完成即死路、錯誤即失憶**(`web/src/App.tsx:48,55`、`PromptBar.tsx:9`):complete 後 `busy` 恆真 → PromptBar 永不回來,做第二份的官方姿勢是 F5;頂欄寫死「生成中的文件」(完成後也不變、也不是使用者的 prompt);錯誤後 remount 清空辛苦打的句子。修:prompt 提升到 App state、頂欄細條顯示真實 prompt、加「再鍛一份」重置動作、錯誤時保留原文(約 20 行)
-- [ ] **P1-7 生成期回饋機械全數失靈**(43 秒死寂那段):
-  - [ ] a. narrator 用 `find()` 永遠報第一個 filling(`web/src/components/StatusNarrator.tsx:14`)→ 改報最新完成的 n
-  - [ ] b. 計數只算 preview/done(`web/src/components/PreviewStage.tsx:5`)→ LLM 階段全程「0/N 頁」;改算已有 ir 的 unit
-  - [ ] c. `slide_done`/`preview_ready` 批次到達 → 前端以 80–120ms 級距排隊播放點亮(視覺節流,不改資料;filling 態加退場條件,免得整排同時發光)
-  - [ ] d. 等待 outline 的 40 秒谷:階段時間軸 + 經過秒數 + 安撫文案 + **取消鈕**——把最深的焦慮谷變成「AI 管內容、引擎管格式」的教學時刻
+- [x] **P1-4 單張檢視 UnitDetail(抱怨①「只能看縮圖牆,無法點進去一張一張看」)**:`web/src/components/UnitCell.tsx` 無 onClick、連 cursor:pointer 都沒有,spec §8 的 `<UnitDetail>` 未實作。做 lightbox:點格放大 + ←/→ 逐張翻頁 + Esc 關閉 + 頁碼指示;放大視圖內放**單張重生輸入框**接 `POST /slides/{n}/regenerate`(後端就緒 `src/odforge/webapi.py:473-491`,實測 20s、指令生效)。動工前先用 /shape 定 UX
+- [x] **P1-5 讓 AI 貼合需求的輸入層(抱怨②「只能輸入一句話」)**:
+  - [x] a. 進階抽屜:mode(detailed/presenter)、theme 預設、QA 開關、backend 選擇——`web/src/state/api.ts:3` 早已宣告這些欄位,`App.tsx:36` 寫死只送 prompt,純接線工作
+  - [x] b. 大綱確認站:送 `interactive:true` + ConfirmBar(就地改標題/刪頁/確認)接 `POST /outline`(後端就緒 `src/odforge/webapi.py:450-471`)。注意現況:若 `awaiting_approval` 事件到來,畫面顯示「等待你確認大綱…」後**永久卡死、無任何按鈕**
+  - [x] c. prompt 引導:placeholder 別再教人「用一句話」;給 2–3 個好範例 + 受眾/頁數/語氣欄位(頁數需後端 `GenerateBody`/`generate_outline` 加欄位)
+  - [x] d. Ctrl+Enter 送出(`web/src/components/PromptBar.tsx:20` 現在 Enter 只會換行)
+- [x] **P1-6 完成即死路、錯誤即失憶**(`web/src/App.tsx:48,55`、`PromptBar.tsx:9`):complete 後 `busy` 恆真 → PromptBar 永不回來,做第二份的官方姿勢是 F5;頂欄寫死「生成中的文件」(完成後也不變、也不是使用者的 prompt);錯誤後 remount 清空辛苦打的句子。修:prompt 提升到 App state、頂欄細條顯示真實 prompt、加「再鍛一份」重置動作、錯誤時保留原文(約 20 行)
+- [x] **P1-7 生成期回饋機械全數失靈**(43 秒死寂那段):
+  - [x] a. narrator 用 `find()` 永遠報第一個 filling(`web/src/components/StatusNarrator.tsx:14`)→ 改報最新完成的 n
+  - [x] b. 計數只算 preview/done(`web/src/components/PreviewStage.tsx:5`)→ LLM 階段全程「0/N 頁」;改算已有 ir 的 unit
+  - [x] c. `slide_done`/`preview_ready` 批次到達 → 前端以 80–120ms 級距排隊播放點亮(視覺節流,不改資料;filling 態加退場條件,免得整排同時發光)
+  - [x] d. 等待 outline 的 40 秒谷:階段時間軸 + 經過秒數 + 安撫文案 + **取消鈕**——把最深的焦慮谷變成「AI 管內容、引擎管格式」的教學時刻
 
 ### P2:可信與可用
 
-- [ ] **P2-8 重整/斷線復原**:jobId 進 URL,用 `GET /jobs/{id}` 快照重建(後端就緒 `src/odforge/webapi.py:514-529`;現況生成中 F5 = job 從 UI 消失,後端其實還在跑);主題偏好順手寫 localStorage(`web/src/theme/useTheme.ts`)
-- [ ] **P2-9 QAPanel(findings 有存沒顯示)**:reducer 存了 findings(`cockpit.ts:42`),UI 只印「第 N 輪」(`GateRail.tsx:24`)——被標紅的格子零解釋。做 spec §8 的 FindingRow(頁碼 · issue · severity · fix_hint)
-- [ ] **P2-10 錯誤與術語人話化**:原始英文 exception → 白話訊息 + 重試鈕;閘門副標(「mimetype 為首 · manifest」「headless 真轉 PDF」)加白話 tooltip
-- [ ] **P2-11 下載檔名**:UUID → 依主題命名(`src/odforge/webapi.py:511` 的 `filename=`)
-- [ ] **P2-12 空台矛盾**:下載鈕「生成中…」改「尚未生成」或隱藏(`web/src/components/DownloadDock.tsx:10`,與 narrator「準備就緒」打架);outline 未到前左欄 248px 空白直條(grid 欄寬寫死)
-- [ ] **P2-13 深色投影白邊**:body 無 margin reset(`app.css` 只 reset 了 `.page`)→ 全螢幕投影時 8px 瀏覽器預設白邊框住整個深色控制室,上台必炸;順便加 `<meta name="color-scheme">`
+- [x] **P2-8 重整/斷線復原**:jobId 進 URL,用 `GET /jobs/{id}` 快照重建(後端就緒 `src/odforge/webapi.py:514-529`;現況生成中 F5 = job 從 UI 消失,後端其實還在跑);主題偏好順手寫 localStorage(`web/src/theme/useTheme.ts`)
+- [x] **P2-9 QAPanel(findings 有存沒顯示)**:reducer 存了 findings(`cockpit.ts:42`),UI 只印「第 N 輪」(`GateRail.tsx:24`)——被標紅的格子零解釋。做 spec §8 的 FindingRow(頁碼 · issue · severity · fix_hint)
+- [x] **P2-10 錯誤與術語人話化**:原始英文 exception → 白話訊息 + 重試鈕;閘門副標(「mimetype 為首 · manifest」「headless 真轉 PDF」)加白話 tooltip
+- [x] **P2-11 下載檔名**:UUID → 依主題命名(`src/odforge/webapi.py:511` 的 `filename=`)
+- [x] **P2-12 空台矛盾**:下載鈕「生成中…」改「尚未生成」或隱藏(`web/src/components/DownloadDock.tsx:10`,與 narrator「準備就緒」打架);outline 未到前左欄 248px 空白直條(grid 欄寬寫死)
+- [x] **P2-13 深色投影白邊**:body 無 margin reset(`app.css` 只 reset 了 `.page`)→ 全螢幕投影時 8px 瀏覽器預設白邊框住整個深色控制室,上台必炸;順便加 `<meta name="color-scheme">`
 
 ### P3:打磨
 
-- [ ] **P3-14 無障礙**(/audit):narrator 無 `aria-live`(讀屏器聽不到任何進度);placeholder 掛 `aria-hidden` 卻是唯一承載標題的元素(`UnitCell.tsx:12`);主輸入框焦點環被拔(`app.css:168` `outline:none` 無替代);主題鈕 ☀/☾ 無 aria-label;深色 `--muted` 對比 ~4.0:1 未達 AA 卻大量用於 10.5px 微字
-- [ ] **P3-15 字體現實檢查**(/typeset):`Georgia,"Noto Serif TC"` 在台灣 Windows 多半 fallback 到新細明體——「文鍛」字標在真實機器是 90 年代公文感;自架字型檔或調整 fallback 順序(`web/src/theme/tokens.css:5`)
-- [ ] **P3-16 視覺細節**(/polish):flagged 態 3px 全高左紅條(`app.css:371-380`,::before 側條紋模式)換個結構;⟳「轉檔中」符號其實不會轉;`.railfoot`/`.tag` 孤兒 CSS;無 favicon
-- [ ] **P3-17 契約詞彙 slide→unit**:F1 計畫鐵則自我違反(實作仍是 `slide_done`、`/slides/{n}`)——F4 做 odt/ods 前補齊,後端保留別名向前相容(spec §10)
+- [x] **P3-14 無障礙**(/audit):narrator 無 `aria-live`(讀屏器聽不到任何進度);placeholder 掛 `aria-hidden` 卻是唯一承載標題的元素(`UnitCell.tsx:12`);主輸入框焦點環被拔(`app.css:168` `outline:none` 無替代);主題鈕 ☀/☾ 無 aria-label;深色 `--muted` 對比 ~4.0:1 未達 AA 卻大量用於 10.5px 微字
+- [x] **P3-15 字體現實檢查**(/typeset):`Georgia,"Noto Serif TC"` 在台灣 Windows 多半 fallback 到新細明體——「文鍛」字標在真實機器是 90 年代公文感;自架字型檔或調整 fallback 順序(`web/src/theme/tokens.css:5`)
+- [x] **P3-16 視覺細節**(/polish):flagged 態 3px 全高左紅條(`app.css:371-380`,::before 側條紋模式)換個結構;⟳「轉檔中」符號其實不會轉;`.railfoot`/`.tag` 孤兒 CSS;無 favicon
+- [x] **P3-17 契約詞彙 slide→unit**:F1 計畫鐵則自我違反(實作仍是 `slide_done`、`/slides/{n}`)——F4 做 odt/ods 前補齊,後端保留別名向前相容(spec §10)
 
 > **保留區(評審認證的資產,修正時別動):** tokens.css 與雙向 `data-theme` 架構、data-status 驅動的 CSS 狀態機 + `prefers-reduced-motion` 完整降級、`?mock`/`?mockStep` demo 工程(只需顯式化)、引擎產出的 deck 品質本身(實測視覺在水準上)。
 
