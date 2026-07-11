@@ -1,4 +1,4 @@
-import type { CockpitState, DocType, GateId, SseEvent, Unit } from "./types";
+import type { CockpitState, DocType, SseEvent, Unit } from "./types";
 
 export function initialState(docType: DocType = "odp"): CockpitState {
   return {
@@ -7,8 +7,6 @@ export function initialState(docType: DocType = "odp"): CockpitState {
     qaRounds: [],
   };
 }
-
-const GATE_IDS: GateId[] = ["zip", "xml", "libreoffice", "design"];
 
 function withUnit(units: Unit[], n: number, patch: Partial<Unit>): Unit[] {
   return units.map((u) => (u.n === n ? { ...u, ...patch } : u));
@@ -33,25 +31,24 @@ export function cockpitReducer(state: CockpitState, event: SseEvent): CockpitSta
       return {
         ...state, phase: "generating",
         units: withUnit(state.units, n, { previewUrl: url, status: "preview" }),
-        gates: { ...state.gates, zip: "pass", xml: "pass", libreoffice: "pass" },
       };
     }
+    case "gate_result":
+      return { ...state, gates: { ...state.gates, [event.data.gate]: event.data.status } };
     case "qa_round": {
       let units = state.units;
       for (const f of event.data.findings) if (f.severity === "error") units = withUnit(units, f.slide_no, { status: "flagged" });
       return { ...state, phase: "qa", units, qaRounds: [...state.qaRounds, event.data], gates: { ...state.gates, design: "active" } };
     }
     case "complete":
+      // gates 保持 gate_result 累積的真值,不再無條件塗綠。
       return {
         ...state, phase: "complete", downloadUrl: event.data.download_url,
         units: state.units.map((u) => ({ ...u, status: "done" })),
-        gates: { zip: "pass", xml: "pass", libreoffice: "pass", design: "pass" },
       };
-    case "error": {
-      const gates = { ...state.gates };
-      if ((GATE_IDS as string[]).includes(event.data.stage)) gates[event.data.stage as GateId] = "fail";
-      return { ...state, phase: "error", error: event.data, gates };
-    }
+    case "error":
+      // gate 失敗由 gate_result{fail} 表達;error 只轉 phase 與存訊息,不猜測性動 gates。
+      return { ...state, phase: "error", error: event.data };
     default:
       return state;
   }

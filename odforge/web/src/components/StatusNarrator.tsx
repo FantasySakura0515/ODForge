@@ -21,7 +21,7 @@ export function StatusNarrator({
     : phase === "outline" ? "已產生大綱與配色"
     : phase === "await" ? "等待你確認大綱…"
     : phase === "qa" ? "設計閘檢視中…"
-    : phase === "complete" ? "完成 · 四道閘全綠 · 原生 ODF"
+    : phase === "complete" ? "完成 · 原生 ODF"
     : forging ? `第 ${forging.n} 頁鍛造中…` : "生成中…";
   return (
     <div className={"narrator" + (isError ? " is-error" : "")} title={isError && error ? error.message : undefined}>
