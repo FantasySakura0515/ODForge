@@ -18,6 +18,20 @@ describe("cockpitReducer", () => {
     expect(s.gates).toEqual({ zip: "pending", xml: "pending", libreoffice: "pending", design: "pending" });
   });
 
+  test("reset 回到空白控制台但沿用 docType", () => {
+    const generating = send(
+      initialState("odp"),
+      { type: "outline", data: outline },
+      { type: "slide_done", data: { n: 1, slide: { layout: "title", title: "封面!" } } },
+      { type: "complete", data: { download_url: "/d" } },
+    );
+    const s = cockpitReducer(generating, { type: "reset" });
+    expect(s.phase).toBe("empty");
+    expect(s.units).toEqual([]);
+    expect(s.downloadUrl).toBeUndefined();
+    expect(s.docType).toBe("odp");
+  });
+
   test("outline 建立骨架單元", () => {
     const s = send(initialState(), { type: "outline", data: outline });
     expect(s.phase).toBe("outline");

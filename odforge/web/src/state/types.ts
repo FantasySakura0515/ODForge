@@ -25,6 +25,7 @@ export type SseEvent =
 // synchronous /regenerate endpoint, so its lifecycle is driven locally from the
 // UnitDetail lightbox rather than the SSE stream.
 export type LocalAction =
+  | { type: "reset" }
   | { type: "regen_start"; data: { n: number } }
   | { type: "regen_done"; data: { n: number; slide: unknown; preview_url: string | null } }
   | { type: "regen_error"; data: { n: number } };

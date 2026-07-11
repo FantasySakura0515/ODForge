@@ -20,6 +20,9 @@ function cacheBust(url: string, tick: number): string {
 
 export function cockpitReducer(state: CockpitState, event: CockpitAction): CockpitState {
   switch (event.type) {
+    case "reset":
+      // 「再鍛一份」/ 取消:回到空白控制台,但沿用當前 docType。
+      return initialState(state.docType);
     case "outline": {
       const units: Unit[] = event.data.pages.map((p, i) => ({ n: i + 1, role: p.role, title: p.title, status: "skeleton" as const }));
       return { ...state, phase: "outline", outline: event.data, units };

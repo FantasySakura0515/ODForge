@@ -28,8 +28,22 @@ const EXAMPLES: string[] = [
   "面向招生說明會家長的科系介紹,8 頁,語氣正式又溫暖",
 ];
 
-export function PromptBar({ onGenerate }: { onGenerate: (body: GenerateBody) => void }) {
-  const [prompt, setPrompt] = useState("");
+export function PromptBar({
+  onGenerate,
+  value,
+  onValueChange,
+}: {
+  onGenerate: (body: GenerateBody) => void;
+  // Controlled prompt text: when provided, App owns it (single source of truth)
+  // so the句子 survives an error or a completed run. Falls back to internal state
+  // when omitted (standalone rendering in unit tests).
+  value?: string;
+  onValueChange?: (v: string) => void;
+}) {
+  const [internalPrompt, setInternalPrompt] = useState("");
+  const controlled = value !== undefined;
+  const prompt = controlled ? value : internalPrompt;
+  const setPrompt = (v: string) => (controlled ? onValueChange?.(v) : setInternalPrompt(v));
   const [docType, setDocType] = useState<DocType>("odp");
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"presenter" | "detailed">("presenter");
