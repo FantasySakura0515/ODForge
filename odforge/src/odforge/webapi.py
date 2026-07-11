@@ -32,15 +32,16 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from sse_starlette import EventSourceResponse
 
 from odforge import __version__
 from odforge.critic import QAReport, run_qa_loop
 from odforge.ir import Outline, PageRole, Presentation
 from odforge.llm import generate_outline, generate_slides
-from odforge.preview import render_pages
+from odforge.preview import PreviewUnavailable, render_pages
 from odforge.render import render
+from odforge.validate import validate_odf
 
 # The odp mimetype, verbatim per the project's ODF mimetype constants.
 ODP_MIME = "application/vnd.oasis.opendocument.presentation"
@@ -173,18 +174,29 @@ def _preview_url(job: Job, n: int) -> str:
 
 
 async def _emit_previews(job: Job) -> None:
-    """Rasterise the deck to PNGs and emit a ``preview_ready`` per page.
+    """Rasterise the deck to PNGs, emit the ``libreoffice`` gate + a ``preview_ready``.
 
-    Best-effort: if LibreOffice/soffice is unavailable (or the conversion
-    fails for any reason) the previews are simply skipped — the pipeline
-    degrades, it never crashes on a missing preview.
+    Best-effort: the previews degrade, they never crash the pipeline. The
+    ``libreoffice`` gate reports the real outcome:
+
+    * ``render_pages`` succeeds → ``gate_result{libreoffice, pass}`` then one
+      ``preview_ready`` per page.
+    * :class:`PreviewUnavailable` (no soffice) → ``gate_result{libreoffice,
+      skipped}`` (an absent tool is skipped, not a failure).
+    * any other exception → ``gate_result{libreoffice, fail}`` but the job
+      continues — previews are best-effort.
     """
     if job.ir is None:
         return
     try:
         paths = await asyncio.to_thread(render_pages, job.odp_path, job.preview_dir)
-    except Exception:  # noqa: BLE001 - preview is best-effort (PreviewUnavailable et al.)
+    except PreviewUnavailable:
+        await _emit(job, "gate_result", {"gate": "libreoffice", "status": "skipped"})
         return
+    except Exception:  # noqa: BLE001 - preview is best-effort; report + continue
+        await _emit(job, "gate_result", {"gate": "libreoffice", "status": "fail"})
+        return
+    await _emit(job, "gate_result", {"gate": "libreoffice", "status": "pass"})
     for n, _path in enumerate(paths, start=1):
         await _emit(job, "preview_ready", {"n": n, "url": _preview_url(job, n)})
 
@@ -262,6 +274,24 @@ async def run_job(job: Job) -> None:
         job.status = "rendering"
         await asyncio.to_thread(render, ir, job.odp_path)
 
+        # Deterministic validation gates (zip/mimetype + XML well-formed) on the
+        # freshly rendered deck, using validate.py's existing functions. Each
+        # emits a gate_result; a failure of either stops the pipeline (the
+        # existing except emits an ``error`` event carrying stage="validate").
+        stage = "validate"
+        report = await asyncio.to_thread(validate_odf, job.odp_path)
+        zip_ok, zip_msg = report.gates["structure"]
+        xml_ok, xml_msg = report.gates["xml"]
+        await _emit(
+            job, "gate_result", {"gate": "zip", "status": "pass" if zip_ok else "fail"}
+        )
+        await _emit(
+            job, "gate_result", {"gate": "xml", "status": "pass" if xml_ok else "fail"}
+        )
+        if not (zip_ok and xml_ok):
+            problems = [m for ok, m in ((zip_ok, zip_msg), (xml_ok, xml_msg)) if not ok]
+            raise RuntimeError("ODF 驗證未通過:" + ";".join(problems))
+
         stage = "preview"
         await _emit_previews(job)
 
@@ -274,6 +304,19 @@ async def run_job(job: Job) -> None:
             # changed nothing, so don't re-emit redundant previews.
             if job.qa_report is not None and job.qa_report.rounds > 1:
                 await _emit_previews(job)
+
+        # Design gate: reflects the QA outcome. QA off → skipped; QA on →
+        # pass/fail from ``final_ok``; a swallowed QA exception (report is None)
+        # → skipped (QA must never fail the run — existing behaviour).
+        if not job.qa:
+            design_status = "skipped"
+        elif job.qa_report is None:
+            design_status = "skipped"
+        elif job.qa_report.final_ok:
+            design_status = "pass"
+        else:
+            design_status = "fail"
+        await _emit(job, "gate_result", {"gate": "design", "status": design_status})
 
         job.status = "complete"
         data: Dict[str, Any] = {"download_url": _download_url(job)}

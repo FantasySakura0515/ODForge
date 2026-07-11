@@ -102,11 +102,19 @@ def _install_fakes(monkeypatch, n=3, *, record_slides=None, qa_report=None):
         webapi.render(ir, out_path)  # QA re-renders each round
         return qa_report or QAReport(rounds=1, findings_by_round=[[]], final_ok=True)
 
+    def fake_validate(path, **kwargs):
+        from odforge.validate import ValidationReport
+
+        return ValidationReport(
+            ok=True, gates={"structure": (True, "ok"), "xml": (True, "ok")}
+        )
+
     monkeypatch.setattr(webapi, "generate_outline", fake_outline)
     monkeypatch.setattr(webapi, "generate_slides", fake_slides)
     monkeypatch.setattr(webapi, "render", fake_render)
     monkeypatch.setattr(webapi, "render_pages", fake_render_pages)
     monkeypatch.setattr(webapi, "run_qa_loop", fake_qa)
+    monkeypatch.setattr(webapi, "validate_odf", fake_validate)
 
 
 @pytest.fixture
@@ -188,9 +196,13 @@ def test_event_sequence_direct(app, monkeypatch):
         "slide_done",
         "slide_done",
         "slide_done",
+        "gate_result",  # zip
+        "gate_result",  # xml
+        "gate_result",  # libreoffice
         "preview_ready",
         "preview_ready",
         "preview_ready",
+        "gate_result",  # design (skipped — qa off)
         "complete",
     ]
     # payload shapes
@@ -198,7 +210,14 @@ def test_event_sequence_direct(app, monkeypatch):
     assert "pages" in outline_ev and outline_ev["mode"] == "presenter"
     sd = job.events[1]["data"]
     assert sd["n"] == 1 and sd["slide"]["title"] == "頁 1"
-    pr = job.events[4]["data"]
+    # gate_result shapes (deterministic zip/xml pass, libreoffice pass)
+    gates = [e for e in job.events if e["event"] == "gate_result"]
+    assert [g["data"]["gate"] for g in gates] == ["zip", "xml", "libreoffice", "design"]
+    assert gates[0]["data"] == {"gate": "zip", "status": "pass"}
+    assert gates[1]["data"] == {"gate": "xml", "status": "pass"}
+    assert gates[2]["data"] == {"gate": "libreoffice", "status": "pass"}
+    assert gates[3]["data"] == {"gate": "design", "status": "skipped"}
+    pr = job.events[7]["data"]
     assert pr["n"] == 1 and pr["url"].endswith("/preview/1.png")
     done = job.events[-1]["data"]
     assert done["download_url"].endswith("/download")
@@ -219,8 +238,12 @@ def test_sse_replay_over_http(app, monkeypatch):
         "outline",
         "slide_done",
         "slide_done",
+        "gate_result",  # zip
+        "gate_result",  # xml
+        "gate_result",  # libreoffice
         "preview_ready",
         "preview_ready",
+        "gate_result",  # design skipped
         "complete",
     ]
     # data is valid JSON on every frame
@@ -257,6 +280,10 @@ def test_preview_degrades_when_unavailable(app, monkeypatch):
     assert "preview_ready" not in names  # degraded, not crashed
     assert names[-1] == "complete"
     assert job.status == "complete"
+    # PreviewUnavailable → libreoffice gate reports skipped (not fail)
+    gates = [e["data"] for e in job.events if e["event"] == "gate_result"]
+    assert {"gate": "libreoffice", "status": "skipped"} in gates
+    assert {"gate": "design", "status": "skipped"} in gates
 
 
 # ---------------------------------------------------------------------------

@@ -196,10 +196,13 @@ data: {"n":1,"slide":{…}}
 ```
 
 非 interactive、開 preview + qa 的典型順序：
-`outline` → `slide_done`×N → `preview_ready`×N → `qa_round`×R → `complete`。
+`outline` → `slide_done`×N → `gate_result{zip}` → `gate_result{xml}` →
+`gate_result{libreoffice}` → `preview_ready`×N → `qa_round`×R →
+`gate_result{design}` → `complete`。
 （interactive 時 `outline` 後先出 `awaiting_approval`，核可後才續。無 soffice 時
-略過所有 `preview_ready`，其餘照舊。QA 若實際修頁（多於一輪），修好的頁會再補一次
-`preview_ready`，故同一頁的 `preview_ready` 可能出現一次以上——以最後一次為準。）
+`libreoffice` 閘回 `skipped` 且略過所有 `preview_ready`，其餘照舊。QA 若實際修頁
+（多於一輪），修好的頁會再補一次 `preview_ready`，故同一頁的 `preview_ready` 可能出現
+一次以上——以最後一次為準。）
 
 以下為每個事件 `data` 的完整 JSON 範例。
 
@@ -262,6 +265,31 @@ data: {"n":1,"slide":{…}}
 }
 ```
 
+### `gate_result` — 四道品質閘的真實訊號
+
+前端的四道閘勾勾以此事件點亮（**非**用 `preview_ready` 假裝）。
+`data` 為 `{"gate": <str>, "status": <str>}`：
+
+- `gate` ∈ `zip | xml | libreoffice | design`
+- `status` ∈ `pass | fail | skipped`
+
+```json
+{ "gate": "zip", "status": "pass" }
+```
+
+發射時機（依序）：
+
+1. render 完成後，對產出的 `.odp` 跑確定性驗證（`validate.py`）：
+   - `zip`：zip 結構／mimetype-first-stored／副檔名相符／manifest 對齊。
+   - `xml`：每個 `.xml` 成員皆 well-formed。
+   兩閘各發一個 `gate_result`。任一 `fail` 會**中止**流程並發 `error`（`stage="validate"`）。
+2. preview 階段(`libreoffice`)：`render_pages` 成功 → `pass`；無 soffice（`PreviewUnavailable`）
+   → `skipped`；其他轉檔錯誤 → `fail`（preview 為 best-effort，`fail` 不中止 job）。
+3. `design` 閘：未開 `qa` → `skipped`；開 `qa` 時 QA 跑完後依 `qa_report.final_ok` 給
+   `pass`／`fail`；QA 例外被吞（不產報告）→ `skipped`。在 `complete` 前發出。
+
+`gate_result` 也進事件 log，故快照重連會完整回放。
+
 ### `complete` — 全部完成
 ```json
 {
@@ -283,7 +311,7 @@ data: {"n":1,"slide":{…}}
 ```json
 { "message": "內容產生失敗：…", "stage": "slides" }
 ```
-`stage` ∈ `outline | slides | render | preview | qa`。錯誤事件後串流結束，
+`stage` ∈ `outline | slides | render | validate | preview | qa`。錯誤事件後串流結束，
 快照的 `status` 為 `error`、並帶同樣的 `error` 物件。
 
 ---
