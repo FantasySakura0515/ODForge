@@ -38,11 +38,24 @@ export function UnitDetail({ units, n, jobId, onClose, onNavigate, dispatch }: P
 
   function go(delta: number) {
     const next = n + delta;
-    if (next >= 1 && next <= total) onNavigate(next);
+    if (next >= 1 && next <= total) {
+      onNavigate(next);
+      // 邊界鈕會被 disable,焦點可能掉到 body;導覽後把焦點拉回 dialog 容器,
+      // 讓後續方向鍵/Esc 仍由 dialog 的 onKeyDown 接住。
+      dialogRef.current?.focus();
+    }
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Escape") { e.stopPropagation(); onClose(); return; }
+    // 使用者在重生指令輸入框(input/textarea/contenteditable)內按方向鍵是移游標,
+    // 不應被劫持成翻頁。Esc 仍照常關閉(在上面已處理)。
+    const target = e.target as HTMLElement;
+    const typing =
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target.isContentEditable;
+    if (typing && (e.key === "ArrowLeft" || e.key === "ArrowRight")) return;
     if (e.key === "ArrowLeft") { go(-1); return; }
     if (e.key === "ArrowRight") { go(1); return; }
     if (e.key === "Tab") {

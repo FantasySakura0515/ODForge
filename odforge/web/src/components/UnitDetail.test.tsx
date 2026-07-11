@@ -44,6 +44,29 @@ test("Esc 關閉、方向鍵換頁、遮罩點擊關閉", () => {
   expect(onClose).toHaveBeenCalled();
 });
 
+// Important: 在重生指令輸入框內用方向鍵移游標不應翻頁
+test("在輸入框內按方向鍵不換頁,但 Esc 仍可關閉", () => {
+  const onClose = vi.fn();
+  const onNavigate = vi.fn();
+  render(<UnitDetail units={units} n={2} jobId="j1" onClose={onClose} onNavigate={onNavigate} dispatch={noop} />);
+
+  const input = screen.getByRole("textbox");
+  fireEvent.keyDown(input, { key: "ArrowRight" });
+  fireEvent.keyDown(input, { key: "ArrowLeft" });
+  expect(onNavigate).not.toHaveBeenCalled();
+  // Esc 從輸入框內照常關閉
+  fireEvent.keyDown(input, { key: "Escape" });
+  expect(onClose).toHaveBeenCalled();
+});
+
+// Minor: 導覽到邊界(鈕被 disable)後,焦點應回到 dialog 容器而非掉到 body
+test("導覽後焦點回到 dialog 容器(不掉到 body)", () => {
+  render(<UnitDetail units={units} n={2} jobId="j1" onClose={noop} onNavigate={noop} dispatch={noop} />);
+  const dialog = screen.getByRole("dialog");
+  fireEvent.click(screen.getByRole("button", { name: /上一張/ }));
+  expect(document.activeElement).toBe(dialog);
+});
+
 test("標頭顯示 第 n / N 頁 · role · title", () => {
   render(<UnitDetail units={units} n={2} jobId="j1" onClose={noop} onNavigate={noop} dispatch={noop} />);
   const head = screen.getByTestId("ud-caption").textContent?.replace(/\s+/g, " ");
