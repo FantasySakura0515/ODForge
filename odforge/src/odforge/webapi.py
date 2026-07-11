@@ -553,6 +553,14 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
                 job.outline = Outline.model_validate(body.outline)
             except ValidationError as exc:
                 raise HTTPException(status_code=422, detail=f"invalid outline: {exc}")
+            # Record the edited outline in the event log so a ?job= resume replays
+            # the *edited* outline, not the original. Without this, a reconnecting
+            # subscriber rebuilds from the stale first outline; after `complete`
+            # every cell is painted done, resurrecting the removed pages as phantom
+            # "done" thumbnails absent from the downloaded deck. Live subscribers
+            # receive a second `outline` event, equivalent (and idempotent) to the
+            # front-end's synthetic re-sync dispatch.
+            await _emit(job, "outline", job.outline.model_dump(mode="json"))
         elif body.action != "approve":
             raise HTTPException(
                 status_code=422, detail="action must be 'approve' or 'edit'"

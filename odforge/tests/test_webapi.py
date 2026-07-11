@@ -369,6 +369,50 @@ def test_outline_edit_replaces_outline(app, monkeypatch):
     assert job.ir.slides[0].title == "改過的標題"
 
 
+def test_outline_edit_emits_outline_event_for_resume(app, monkeypatch):
+    """An outline *edit* must append a second `outline` event to the log.
+
+    Otherwise a `?job=` resume replays the original outline and, after `complete`,
+    resurrects removed pages as phantom done thumbnails (the bug this guards).
+    """
+    _install_fakes(monkeypatch, n=3)
+    with TestClient(app) as client:
+        r = client.post("/api/generate", json={"prompt": "x", "interactive": True})
+        jid = r.json()["job_id"]
+
+        for _ in range(300):
+            snap = client.get(f"/api/jobs/{jid}").json()
+            if snap["status"] == "awaiting_approval":
+                break
+            time.sleep(0.01)
+        assert snap["status"] == "awaiting_approval"
+
+        edited = {
+            "design": None,
+            "mode": "detailed",
+            "pages": [{"role": "title", "title": "改過的標題", "gist": "新重點"}],
+        }
+        r2 = client.post(
+            f"/api/jobs/{jid}/outline", json={"action": "edit", "outline": edited}
+        )
+        assert r2.status_code == 200
+
+        for _ in range(300):
+            snap = client.get(f"/api/jobs/{jid}").json()
+            if snap["status"] == "complete":
+                break
+            time.sleep(0.01)
+        assert snap["status"] == "complete"
+
+    job = app.state.jobs[jid]
+    outline_events = [e for e in job.events if e["event"] == "outline"]
+    # initial outline (stage 1) + the edited outline emitted by the endpoint.
+    assert len(outline_events) == 2
+    assert outline_events[1]["data"]["mode"] == "detailed"
+    assert len(outline_events[1]["data"]["pages"]) == 1
+    assert outline_events[1]["data"]["pages"][0]["title"] == "改過的標題"
+
+
 def test_outline_endpoint_wrong_state_409(app, monkeypatch):
     _install_fakes(monkeypatch)
     job = webapi.create_job(app, prompt="x")  # status "pending", not awaiting
