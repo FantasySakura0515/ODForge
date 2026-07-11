@@ -72,6 +72,18 @@ test("刪到剩 1 頁時刪除鈕 disabled", () => {
   expect(screen.getByRole("button", { name: /刪除/ })).toBeDisabled();
 });
 
+test("成功送出後(仍在 await)rail 顯示送出的 draft 而非舊標題", async () => {
+  const onConfirm = vi.fn().mockResolvedValue(undefined);
+  render(<OutlineRail outline={makeOutline()} phase="await" onConfirm={onConfirm} />);
+  fireEvent.change(screen.getAllByRole("textbox")[0], { target: { value: "新封面" } });
+  fireEvent.click(screen.getByRole("button", { name: /就這樣鍛/ }));
+  await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+  // 收起編輯後為唯讀,但顯示的是改過的標題(修好前這裡會退回 props 的舊「封面」,
+  // 找不到「新封面」;role 標籤「封面」是另一回事,不在此斷言)。
+  await waitFor(() => expect(screen.queryByRole("button", { name: /就這樣鍛/ })).toBeNull());
+  expect(screen.getByText("新封面")).toBeInTheDocument();
+});
+
 test("送出失敗 → ConfirmBar 顯示錯誤,可重試", async () => {
   const onConfirm = vi.fn().mockRejectedValue(new Error("outline 失敗:409"));
   render(<OutlineRail outline={makeOutline()} phase="await" onConfirm={onConfirm} />);

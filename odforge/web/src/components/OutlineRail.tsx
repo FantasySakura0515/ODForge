@@ -31,7 +31,10 @@ export function OutlineRail({
   if (!outline) return null;
   const p = outline.design?.palette;
   const editing = phase === "await" && !!onConfirm && !submitted;
-  const rows = editing ? draft : outline.pages;
+  // While in the approval gate, show the working draft — even after a successful
+  // submit (submitted=true) — so the rail reflects the titles the user just sent,
+  // not the stale pre-edit outline still held in props until the backend resumes.
+  const rows = phase === "await" && !!onConfirm && draft.length ? draft : outline.pages;
 
   const changed =
     editing &&

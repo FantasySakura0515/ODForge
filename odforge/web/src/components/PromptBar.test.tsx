@@ -57,6 +57,18 @@ test("進階抽屜的選項如實進 body(mode/theme/pages/qa/interactive)", () 
   });
 });
 
+test("頁數超界時顯示即時提示,且送出不帶 pages 欄位", () => {
+  const onGenerate = vi.fn();
+  render(<PromptBar onGenerate={onGenerate} />);
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
+  fireEvent.click(screen.getByRole("button", { name: /進階選項/ }));
+  fireEvent.change(screen.getByLabelText(/頁數/), { target: { value: "100" } });
+  // 即時提示出現
+  expect(screen.getByRole("alert").textContent).toMatch(/3.*30/);
+  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+  expect("pages" in onGenerate.mock.calls[0][0]).toBe(false);
+});
+
 test("受眾與語氣填入抽屜後附加進 prompt", () => {
   const onGenerate = vi.fn();
   render(<PromptBar onGenerate={onGenerate} />);

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { buildGenerateBody, type GenerateBody, type GenerateOptions } from "../state/api";
+import { buildGenerateBody, isValidPages, PAGES_MAX, PAGES_MIN, type GenerateBody, type GenerateOptions } from "../state/api";
 import type { DocType } from "../state/types";
 
 // odt/ods 後端尚未支援(選「試算表」實測拿回 .odp),故停用並標示「即將支援」;
@@ -41,13 +41,16 @@ export function PromptBar({ onGenerate }: { onGenerate: (body: GenerateBody) => 
   const [interactive, setInteractive] = useState(true);
 
   const canSubmit = !!prompt.trim();
+  // 頁數即時守門:填了但非數字/超界 → 提示,且送出時不帶 pages(交給 AI)。
+  const pagesNum = pages.trim() ? Number(pages) : undefined;
+  const pagesInvalid = pages.trim() !== "" && !isValidPages(pagesNum);
 
   function submit() {
     if (!canSubmit) return;
     const opts: GenerateOptions = {
       mode,
       theme: theme || undefined,
-      pages: pages.trim() ? Number(pages) : undefined,
+      pages: pagesNum,
       audience: audience.trim() || undefined,
       tone: tone.trim() || undefined,
       qa,
@@ -59,7 +62,7 @@ export function PromptBar({ onGenerate }: { onGenerate: (body: GenerateBody) => 
   const summary: string[] = [];
   if (mode === "detailed") summary.push("自讀型");
   if (theme) summary.push(theme);
-  if (pages.trim()) summary.push(`${pages.trim()} 頁`);
+  if (isValidPages(pagesNum)) summary.push(`${pagesNum} 頁`);
   if (audience.trim()) summary.push(`受眾:${audience.trim()}`);
   if (tone.trim()) summary.push(`語氣:${tone.trim()}`);
   if (qa) summary.push("QA");
@@ -157,8 +160,11 @@ export function PromptBar({ onGenerate }: { onGenerate: (body: GenerateBody) => 
           <div className="advrow">
             <label className="advfield sm">
               <span className="advlabel">頁數</span>
-              <input type="number" min={3} max={30} inputMode="numeric" placeholder="留空=AI 決定"
-                value={pages} onChange={(e) => setPages(e.target.value)} />
+              <input type="number" min={PAGES_MIN} max={PAGES_MAX} inputMode="numeric" placeholder="留空=AI 決定"
+                aria-invalid={pagesInvalid || undefined} value={pages} onChange={(e) => setPages(e.target.value)} />
+              {pagesInvalid && (
+                <small className="advhint pageserr" role="alert">頁數需在 {PAGES_MIN}–{PAGES_MAX} 之間,否則交給 AI 決定</small>
+              )}
             </label>
             <label className="advfield sm">
               <span className="advlabel">受眾</span>

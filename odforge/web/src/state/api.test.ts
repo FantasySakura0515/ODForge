@@ -80,6 +80,21 @@ test("buildGenerateBody 頁數留空不送 pages,填了才送", () => {
   expect(buildGenerateBody("樹", "odp", { ...DEFAULT_OPTS, pages: 12 }).pages).toBe(12);
 });
 
+test("buildGenerateBody 頁數為 NaN 不送 pages(修掉 NaN→null 序列化 bug)", () => {
+  const body = buildGenerateBody("樹", "odp", { ...DEFAULT_OPTS, pages: Number("abc") });
+  expect("pages" in body).toBe(false);
+  // 序列化後不得出現 "pages":null
+  expect(JSON.stringify(body)).not.toContain("pages");
+});
+
+test("buildGenerateBody 頁數超界(<3 或 >30)不送 pages", () => {
+  expect("pages" in buildGenerateBody("樹", "odp", { ...DEFAULT_OPTS, pages: 2 })).toBe(false);
+  expect("pages" in buildGenerateBody("樹", "odp", { ...DEFAULT_OPTS, pages: 100 })).toBe(false);
+  // 邊界值 3 與 30 有效
+  expect(buildGenerateBody("樹", "odp", { ...DEFAULT_OPTS, pages: 3 }).pages).toBe(3);
+  expect(buildGenerateBody("樹", "odp", { ...DEFAULT_OPTS, pages: 30 }).pages).toBe(30);
+});
+
 test("buildGenerateBody 受眾與語氣附加進 prompt 尾端", () => {
   const body = buildGenerateBody("樹", "odp", { ...DEFAULT_OPTS, audience: "大一新生", tone: "親切" });
   expect(body.prompt).toContain("樹");

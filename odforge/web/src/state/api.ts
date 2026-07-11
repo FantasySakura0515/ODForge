@@ -25,10 +25,20 @@ export interface GenerateOptions {
   interactive: boolean;
 }
 
+/** 後端接受的頁數範圍(webapi 驗證 3–30);超界或非數字一律不送。 */
+export const PAGES_MIN = 3;
+export const PAGES_MAX = 30;
+
+/** 頁數是否為可送出的有效整數(有限、落在 3–30)。NaN/超界回 false。 */
+export function isValidPages(pages: number | undefined): boolean {
+  return pages != null && Number.isFinite(pages) && pages >= PAGES_MIN && pages <= PAGES_MAX;
+}
+
 /**
  * Fold the advanced-drawer selections into the request body the backend expects.
  * - 自動主題(theme undefined)→ omit the theme field entirely.
- * - 頁數留空(pages undefined)→ omit the pages field.
+ * - 頁數留空/非數字(NaN)/超界(<3 或 >30)→ omit the pages field
+ *   (避免 JSON.stringify(NaN) 把 pages 序列化成 null 送給後端)。
  * - 受眾/語氣沒有對應後端欄位 → 以「受眾:X;語氣:Y」附加進 prompt 尾端。
  */
 export function buildGenerateBody(prompt: string, docType: DocType, opts: GenerateOptions): GenerateBody {
@@ -47,7 +57,7 @@ export function buildGenerateBody(prompt: string, docType: DocType, opts: Genera
     qa: opts.qa,
   };
   if (opts.theme) body.theme = opts.theme;
-  if (opts.pages != null) body.pages = opts.pages;
+  if (isValidPages(opts.pages)) body.pages = opts.pages;
   return body;
 }
 
