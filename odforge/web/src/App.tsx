@@ -37,21 +37,29 @@ export default function App() {
       setJobId(job_id);
       cancelRef.current = subscribeJob(job_id, dispatch);
     } catch {
-      // 後端不可用 → 退回 mock,讓 UI 仍可展示
-      setJobId("mock");
-      cancelRef.current = playMock(dispatch, { step: mockStep });
+      // 後端不可用時,誠實回報連線失敗(不再靜默退回 mock 演假簡報)。
+      // phase 進 error 後 PromptBar 會回來,使用者可重試。
+      dispatch({ type: "error", data: { message: "無法連上後端,請確認 odforge serve 是否在執行", stage: "connect" } });
     }
   }
 
   // Show the prompt bar when idle OR after an error (so the user can retry);
   // hide it while a request is in flight or generation is streaming.
   const busy = submitting || (state.phase !== "empty" && state.phase !== "error");
+  // 頂欄常駐狀態 chip:展示模式(?mock)優先;否則連線失敗顯示「後端未連線」;正常不顯示。
+  const disconnected = state.phase === "error" && state.error?.stage === "connect";
+  const chip = mockMode
+    ? { kind: "mock" as const, label: "展示模式" }
+    : disconnected
+    ? { kind: "offline" as const, label: "後端未連線" }
+    : null;
   return (
     <div className="page">
       <div className="stage">
         <div className="cockpit">
           <header className="top">
             <div className="brand"><span className="mark">文鍛</span><span className="en">ODForge</span></div>
+            {chip && <span className="statuschip" data-kind={chip.kind}>{chip.label}</span>}
             {!busy ? <PromptBar onGenerate={onGenerate} /> : <div className="promptline">生成中的文件</div>}
             <div className="themetoggle">
               <button aria-pressed={theme === "light"} onClick={() => setTheme("light")}>☀</button>
