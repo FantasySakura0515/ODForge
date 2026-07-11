@@ -5,6 +5,7 @@ import { PreviewStage } from "./components/PreviewStage";
 import { GateRail } from "./components/GateRail";
 import { StatusNarrator } from "./components/StatusNarrator";
 import { DownloadDock } from "./components/DownloadDock";
+import { ErrorPanel } from "./components/ErrorPanel";
 import { postGenerate, postOutlineAction, type GenerateBody, type OutlineActionBody } from "./state/api";
 import { cockpitReducer, initialState } from "./state/cockpit";
 import { playMock } from "./state/mockStream";
@@ -23,13 +24,51 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   // 大綱已確認、等待第一個 slide_done 的空窗:讓 narrator 報「逐頁填充」而非「等待確認」。
   const [fillingPending, setFillingPending] = useState(false);
+  // ?job= 復原失敗(job 不存在/已過期)時,於輸入畫面報一行人話。
+  const [expired, setExpired] = useState(false);
+  // 目前開啟 lightbox 的頁碼(提升到 App,讓 FindingRow 點擊也能開該頁)。
+  const [selectedN, setSelectedN] = useState<number | null>(null);
   const { theme, setTheme } = useTheme();
   const cancelRef = useRef<() => void>();
+  // 上一次送出的 generate body,供錯誤區「重試」以同樣參數重送。
+  const lastBodyRef = useRef<GenerateBody>();
   const params = new URLSearchParams(window.location.search);
   const mockMode = params.has("mock");
   const mockStep = Number(params.get("mockStep") ?? "250");
 
   useEffect(() => () => cancelRef.current?.(), []);
+
+  // 重整/斷線復原:URL 帶 ?job= 時直接重新訂閱事件流,後端會從頭重播全部事件
+  // (outline → slide_done×N → …),reducer 天然重建狀態——含 awaiting_approval
+  // 回到確認站、complete 回到可下載。傳輸層失敗(如 server 重啟 job 404)且尚未
+  // 收到任何事件 → 視為過期:清 URL、回輸入畫面並提示。重播事件同樣走視覺節流器。
+  useEffect(() => {
+    const jobParam = params.get("job");
+    if (!jobParam || mockMode) return;
+    setJobId(jobParam);
+    setSubmitting(true); // 首個事件到達前顯示等待卡
+    const throttle = createThrottledDispatch(dispatch);
+    let received = false;
+    const close = subscribeJob(
+      jobParam,
+      (e) => { received = true; throttle.push(e); },
+      EventSource,
+      () => {
+        // 已在重播事件了才錯 → 屬於正常結束後的斷線,忽略;完全沒收到事件才算過期。
+        if (received) return;
+        close();
+        throttle.cancel();
+        cancelRef.current = undefined;
+        history.replaceState(null, "", window.location.pathname);
+        setJobId(undefined);
+        setSubmitting(false);
+        setExpired(true);
+      },
+    );
+    cancelRef.current = () => { close(); throttle.cancel(); };
+    return () => { close(); throttle.cancel(); };
+    // 僅在掛載時執行一次(讀初始 URL);後續生成走 onGenerate。
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // Clear the "submitting" indicator once the first SSE event moves us off "empty".
   useEffect(() => { if (state.phase !== "empty") setSubmitting(false); }, [state.phase]);
   // 一旦真的進入填充(generating)或被重置(empty),關掉「已確認等填充」空窗旗標。
@@ -39,11 +78,16 @@ export default function App() {
 
   async function onGenerate(body: GenerateBody) {
     cancelRef.current?.();
+    setExpired(false);
+    setSelectedN(null); // 新一輪生成:關掉任何殘留開著的 lightbox
+    lastBodyRef.current = body;
     setSubmitting(true);
     if (mockMode) { setJobId("mock"); cancelRef.current = playMock(dispatch, { step: mockStep }); return; }
     try {
       const { job_id } = await postGenerate(body);
       setJobId(job_id);
+      // 把 jobId 寫進 URL,重整/斷線後可用 ?job= 重新訂閱重播復原(mock 模式不寫)。
+      history.replaceState(null, "", `?job=${encodeURIComponent(job_id)}`);
       // 只有 SSE 事件流走視覺節流器;本地 dispatch(大綱重同步、重生)直接進 reducer。
       const throttle = createThrottledDispatch(dispatch);
       const closeSse = subscribeJob(job_id, throttle.push);
@@ -63,7 +107,19 @@ export default function App() {
     setJobId(undefined);
     setSubmitting(false);
     setFillingPending(false);
+    setExpired(false);
+    setSelectedN(null);
+    // 放棄此 job → 清掉 URL 的 ?job=,重整不再嘗試復原舊任務。
+    history.replaceState(null, "", window.location.pathname);
     dispatch({ type: "reset" });
+  }
+
+  // 錯誤區「重試」:清掉失敗殘留的 units/gates,再以同樣參數重送上一次 generate。
+  function retryGenerate() {
+    const body = lastBodyRef.current;
+    if (!body) return;
+    dispatch({ type: "reset" });
+    onGenerate(body);
   }
 
   // Resolve the outline-approval gate. On success the SSE stream resumes on its
@@ -95,7 +151,8 @@ export default function App() {
   return (
     <div className="page">
       <div className="stage">
-        <div className="cockpit">
+        {/* data-outline 讓 CSS 在大綱未到前收掉左欄,不留 248px 空白直條(空台矛盾)。 */}
+        <div className="cockpit" data-outline={state.outline ? "present" : "absent"}>
           <header className="top">
             <div className="brand"><span className="mark">文鍛</span><span className="en">ODForge</span></div>
             {chip && <span className="statuschip" data-kind={chip.kind}>{chip.label}</span>}
@@ -116,11 +173,24 @@ export default function App() {
             </div>
           </header>
           <OutlineRail outline={state.outline} phase={state.phase} onConfirm={onConfirmOutline} />
-          <PreviewStage units={state.units} docType={state.docType} jobId={jobId} dispatch={dispatch} submitting={submitting} onCancel={resetCockpit} />
-          <GateRail gates={state.gates} qaRounds={state.qaRounds} />
+          {state.phase === "error" ? (
+            <ErrorPanel error={state.error} onRetry={lastBodyRef.current ? retryGenerate : undefined} />
+          ) : (
+            <PreviewStage
+              units={state.units}
+              docType={state.docType}
+              jobId={jobId}
+              dispatch={dispatch}
+              submitting={submitting}
+              onCancel={resetCockpit}
+              selectedN={selectedN}
+              onSelect={setSelectedN}
+            />
+          )}
+          <GateRail gates={state.gates} qaRounds={state.qaRounds} onOpenFinding={(n) => setSelectedN(n)} />
           <footer className="foot">
-            <StatusNarrator phase={state.phase} units={state.units} error={state.error} submitting={submitting} fillingPending={fillingPending} />
-            <DownloadDock jobId={jobId} downloadUrl={state.downloadUrl} docType={state.docType} />
+            <StatusNarrator phase={state.phase} units={state.units} error={state.error} submitting={submitting} fillingPending={fillingPending} expired={expired} />
+            <DownloadDock jobId={jobId} downloadUrl={state.downloadUrl} docType={state.docType} phase={state.phase} />
           </footer>
         </div>
       </div>

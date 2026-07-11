@@ -2,14 +2,21 @@ import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { DownloadDock } from "./DownloadDock";
 
-test("未完成時顯示生成中且不可下載", () => {
-  render(<DownloadDock jobId={undefined} downloadUrl={undefined} docType="odp" />);
-  expect(screen.getByText(/生成中/)).toBeInTheDocument();
+test("未就緒(生成中)顯示「尚未生成」且不可下載", () => {
+  render(<DownloadDock jobId={undefined} downloadUrl={undefined} docType="odp" phase="generating" />);
+  const btn = screen.getByRole("button");
+  expect(btn).toHaveTextContent(/尚未生成/);
+  expect(btn).toBeDisabled();
   expect(screen.queryByRole("link")).toBeNull();
 });
 
+test("空台(phase empty)整顆隱藏,不留「生成中…」矛盾殘影", () => {
+  const { container } = render(<DownloadDock jobId={undefined} downloadUrl={undefined} docType="odp" phase="empty" />);
+  expect(container.firstChild).toBeNull();
+});
+
 test("完成時為連結、副檔名依型別", () => {
-  render(<DownloadDock jobId="j1" downloadUrl="/api/jobs/j1/download" docType="ods" />);
+  render(<DownloadDock jobId="j1" downloadUrl="/api/jobs/j1/download" docType="ods" phase="complete" />);
   const link = screen.getByRole("link");
   expect(link).toHaveAttribute("href", "/api/jobs/j1/download");
   expect(link).toHaveTextContent(/\.ods/);

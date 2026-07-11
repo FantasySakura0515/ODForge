@@ -4,11 +4,13 @@ import type { SseEvent } from "./types";
 
 class FakeEventSource {
   listeners: Record<string, (e: { data: string }) => void> = {};
+  onerror: ((e: unknown) => void) | null = null;
   closed = false;
   constructor(public url: string) {}
   addEventListener(type: string, cb: (e: { data: string }) => void) { this.listeners[type] = cb; }
   close() { this.closed = true; }
   emit(type: string, data: unknown) { this.listeners[type]?.({ data: JSON.stringify(data) }); }
+  fail() { this.onerror?.({}); }
 }
 
 test("subscribeJob 把 SSE 事件解析後回呼", () => {
@@ -41,4 +43,13 @@ test("subscribeJob 收到 error 後自動關閉串流", () => {
   subscribeJob("j1", () => {}, Ctor);
   src.emit("error", { message: "x", stage: "slides" });
   expect(src.closed).toBe(true);
+});
+
+test("subscribeJob 傳輸層錯誤(如 404)回呼 onError", () => {
+  let src!: FakeEventSource;
+  const Ctor = vi.fn((url: string) => (src = new FakeEventSource(url))) as unknown as typeof EventSource;
+  const onError = vi.fn();
+  subscribeJob("j1", () => {}, Ctor, onError);
+  src.fail();
+  expect(onError).toHaveBeenCalledTimes(1);
 });

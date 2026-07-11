@@ -74,11 +74,14 @@ test("StatusNarrator 容器為 aria-live polite(讀屏器聽得到進度)", () =
   expect(el?.getAttribute("aria-live")).toBe("polite");
 });
 
-test("StatusNarrator 錯誤態顯示訊息與階段", () => {
+test("StatusNarrator 錯誤態顯示白話前綴,原始技術訊息收進 title 不當標題轟人", () => {
   const { container } = render(
     <StatusNarrator phase="error" units={[]} error={{ message: "環境變數 DEEPSEEK_API_KEY 未設定", stage: "outline" }} />,
   );
-  expect(screen.getByText(/DEEPSEEK_API_KEY 未設定/)).toBeInTheDocument();
-  expect(screen.getByText(/outline/)).toBeInTheDocument();
+  // 人話前綴(stage outline → 白話),不再把 stage 代碼與 traceback 直接印出來。
+  expect(screen.getByText("AI 構思大綱時出錯")).toBeInTheDocument();
+  expect(screen.queryByText(/DEEPSEEK_API_KEY 未設定/)).toBeNull();
+  // 原始技術訊息仍可及:掛在 title 供滑鼠停留檢視。
+  expect(container.querySelector(".narrator")?.getAttribute("title")).toBe("環境變數 DEEPSEEK_API_KEY 未設定");
   expect(container.querySelector(".narrator.is-error")).not.toBeNull();
 });
