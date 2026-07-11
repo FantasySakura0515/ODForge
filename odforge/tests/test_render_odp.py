@@ -56,6 +56,7 @@ from odforge.render.odp import (
     _rect_xml,
     _line_xml,
     _GraphicStyles,
+    _section_fill,
 )
 from odforge.render import render
 from odforge.ir import Presentation, Slide
@@ -738,7 +739,9 @@ def test_section_page_inverted_accent_fill_and_bg_title():
     dp = _style_by_name(croot, page.get(_q("draw", "style-name")))
     props = dp.find("style:drawing-page-properties", NS)
     assert props.get(_q("draw", "fill")) == "solid"
-    assert props.get(_q("draw", "fill-color")) == theme.accent
+    # Full-bleed section fill is the accent deepened toward the ink (60-30-10):
+    # a raw mid-saturation accent flooded edge-to-edge reads cheap.
+    assert props.get(_q("draw", "fill-color")) == _section_fill(theme)
     title_p = _text_p_with(page, "研究方法")
     tstyle = _style_by_name(croot, title_p.get(_q("text", "style-name")))
     assert tstyle.find("style:text-properties", NS).get(_q("fo", "color")) == theme.bg
@@ -785,7 +788,7 @@ def test_section_deck_defines_accent_drawing_page_style():
         s.find("style:drawing-page-properties", NS).get(_q("draw", "fill-color"))
         for s in dp_styles
     }
-    assert theme.accent in fills
+    assert _section_fill(theme) in fills
 
 
 # ③ content pages carry the vertical accent bar rect (w ≈ 0.18cm)
@@ -1128,7 +1131,7 @@ def test_closing_inverted_no_watermark_with_subtitle():
     dp = _style_by_name(croot, closing.get(_q("draw", "style-name")))
     props = dp.find("style:drawing-page-properties", NS)
     assert props.get(_q("draw", "fill")) == "solid"
-    assert props.get(_q("draw", "fill-color")) == theme.accent
+    assert props.get(_q("draw", "fill-color")) == _section_fill(theme)
     mp = _text_p_with(closing, "謝謝聆聽")
     mtp = _style_by_name(croot, mp.get(_q("text", "style-name"))).find(
         "style:text-properties", NS)
@@ -1160,7 +1163,7 @@ def test_closing_without_section_still_paints_accent_bg():
     page = croot.find(".//draw:page", NS)
     dp = _style_by_name(croot, page.get(_q("draw", "style-name")))
     assert dp.find("style:drawing-page-properties", NS).get(
-        _q("draw", "fill-color")) == theme.accent
+        _q("draw", "fill-color")) == _section_fill(theme)
 
 
 def test_closing_has_no_section_watermark_shape():

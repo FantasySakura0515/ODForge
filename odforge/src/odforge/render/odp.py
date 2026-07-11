@@ -229,6 +229,33 @@ def _blend(from_hex: str, to_hex: str, amount: float) -> str:
     return f"#{r:02X}{g:02X}{b:02X}"
 
 
+def _is_light(hex_color: str) -> bool:
+    """True when a colour's perceived luma sits in the upper half (a light ground)."""
+    r, g, b = (int(hex_color[i : i + 2], 16) for i in (1, 3, 5))
+    return (0.299 * r + 0.587 * g + 0.114 * b) > 140.0
+
+
+# How far a full-bleed section/closing fill is deepened toward the ink. A raw
+# mid-saturation accent flooded edge-to-edge reads cheap; blending it well toward
+# the text colour turns ANY accent into a deep, premium panel (and keeps the
+# inverted bg-coloured title high-contrast). Only applied to light-ground decks.
+_SECTION_FILL_DEEPEN = 0.62
+
+
+def _section_fill(theme: Theme) -> str:
+    """Fill colour for full-bleed section/closing pages (:data:`_ACCENT_BG_LAYOUTS`).
+
+    Deepens the accent toward the ink on light-ground decks so a mid-saturation
+    per-deck accent becomes a rich, editorial panel instead of a flat, cheap
+    wash. A dark theme's ground is already deep, so its bright accent is used
+    as-is (the intended pop). The inverted title/number colours are unchanged —
+    they key off ``theme.bg``, which still contrasts against the deepened fill.
+    """
+    if _is_light(theme.bg):
+        return _blend(theme.accent, theme.text, _SECTION_FILL_DEEPEN)
+    return theme.accent
+
+
 def _uses_gradient_bg(theme: Theme) -> bool:
     """True when this theme paints pages with the background gradient.
 
@@ -1263,7 +1290,7 @@ def build_content_xml(p: Presentation, theme: Theme) -> str:
     if any(slide.layout in _ACCENT_BG_LAYOUTS for slide in p.slides):
         drawing_pages += _drawing_page_style_xml(
             _SECTION_DRAWING_PAGE_STYLE,
-            f'draw:fill="solid" draw:fill-color="{_attr(theme.accent)}"',
+            f'draw:fill="solid" draw:fill-color="{_attr(_section_fill(theme))}"',
         )
 
     automatic_styles = (
