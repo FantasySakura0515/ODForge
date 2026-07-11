@@ -1,10 +1,10 @@
-import type { CockpitState, DocType, SseEvent, Unit } from "./types";
+import type { CockpitAction, CockpitState, DocType, Unit } from "./types";
 
 export function initialState(docType: DocType = "odp"): CockpitState {
   return {
     phase: "empty", docType, units: [],
     gates: { zip: "pending", xml: "pending", libreoffice: "pending", design: "pending" },
-    qaRounds: [],
+    qaRounds: [], regenTick: 0,
   };
 }
 
@@ -12,7 +12,13 @@ function withUnit(units: Unit[], n: number, patch: Partial<Unit>): Unit[] {
   return units.map((u) => (u.n === n ? { ...u, ...patch } : u));
 }
 
-export function cockpitReducer(state: CockpitState, event: SseEvent): CockpitState {
+// Re-point an image URL at the same resource with a fresh query so the browser
+// refetches it (per-slide regeneration keeps the same preview path).
+function cacheBust(url: string, tick: number): string {
+  return `${url.split("?")[0]}?t=${tick}`;
+}
+
+export function cockpitReducer(state: CockpitState, event: CockpitAction): CockpitState {
   switch (event.type) {
     case "outline": {
       const units: Unit[] = event.data.pages.map((p, i) => ({ n: i + 1, role: p.role, title: p.title, status: "skeleton" as const }));
@@ -49,6 +55,28 @@ export function cockpitReducer(state: CockpitState, event: SseEvent): CockpitSta
     case "error":
       // gate 失敗由 gate_result{fail} 表達;error 只轉 phase 與存訊息,不猜測性動 gates。
       return { ...state, phase: "error", error: event.data };
+    case "regen_start": {
+      const cur = state.units.find((u) => u.n === event.data.n);
+      return { ...state, units: withUnit(state.units, event.data.n, { status: "regen", regenPrev: cur?.status }) };
+    }
+    case "regen_done": {
+      const { n, slide, preview_url } = event.data;
+      const cur = state.units.find((u) => u.n === n);
+      const tick = state.regenTick + 1;
+      const base = preview_url ?? cur?.previewUrl;
+      const previewUrl = base ? cacheBust(base, tick) : cur?.previewUrl;
+      const title = (slide as { title?: string } | null)?.title ?? cur?.title ?? "";
+      const status = cur?.regenPrev === "done" ? "done" : "preview";
+      return {
+        ...state, regenTick: tick,
+        units: withUnit(state.units, n, { ir: slide, title, previewUrl, status, regenPrev: undefined }),
+      };
+    }
+    case "regen_error": {
+      const cur = state.units.find((u) => u.n === event.data.n);
+      const status = cur?.regenPrev ?? cur?.status ?? "preview";
+      return { ...state, units: withUnit(state.units, event.data.n, { status, regenPrev: undefined }) };
+    }
     default:
       return state;
   }

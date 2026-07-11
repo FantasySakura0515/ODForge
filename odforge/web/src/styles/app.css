@@ -433,6 +433,170 @@
 
 @keyframes odf-sheen { to { background-position: -200% 0; } }
 
+/* cells with a real preview are openable in the lightbox */
+.cell.clickable { cursor: pointer; }
+.cell.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------------- lightbox (unit detail) ---------------- */
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(12px, 4vw, 48px);
+  background: rgba(0, 0, 0, .62);
+  backdrop-filter: blur(2px);
+}
+
+.ud-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(920px, 100%);
+  max-height: 100%;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 30px 80px -30px rgba(0, 0, 0, .7);
+  outline: none;
+  animation: ud-in 140ms ease-out;
+}
+@keyframes ud-in { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: scale(1); } }
+
+.ud-head { display: flex; align-items: center; gap: 12px; }
+.ud-caption {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ud-caption .ud-role { font-family: var(--f-mono); font-size: 11.5px; color: var(--muted); }
+.ud-close {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+  color: var(--muted);
+  background: var(--surface2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: .16s;
+}
+.ud-close:hover { color: var(--text); }
+.ud-close:focus-visible, .ud-nav:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.ud-stage { display: flex; align-items: center; gap: 10px; }
+
+.ud-nav {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--text);
+  background: var(--surface2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: .16s;
+}
+.ud-nav:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.ud-nav:disabled { opacity: .35; cursor: not-allowed; }
+
+.ud-canvas {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  aspect-ratio: 16 / 10;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: var(--surface2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.ud-img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+
+.ud-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.ud-skel {
+  width: 120px;
+  height: 74px;
+  border-radius: 8px;
+  background: linear-gradient(100deg, transparent 20%, rgba(128, 128, 128, .16) 50%, transparent 80%), var(--surface);
+  background-size: 200% 100%, 100% 100%;
+  animation: odf-sheen 1.6s linear infinite;
+}
+
+/* re-forging overlay — reuses the data-status regen posture */
+.ud-regenning {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  background: rgba(0, 0, 0, .38);
+  box-shadow: inset 0 0 0 2px var(--warn);
+}
+
+.ud-regen { display: flex; align-items: center; gap: 8px; }
+.ud-input {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 0 12px;
+}
+.ud-input::placeholder { color: var(--muted); }
+.ud-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ud-input:disabled { opacity: .55; cursor: not-allowed; }
+
+.ud-forge {
+  flex: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--on-accent);
+  background: var(--accent);
+  border: none;
+  border-radius: 9px;
+  padding: 10px 16px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: .2s;
+}
+.ud-forge:hover:not(:disabled) { box-shadow: 0 6px 20px -6px var(--glow); }
+.ud-forge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ud-forge:disabled { background: var(--surface2); color: var(--muted); cursor: not-allowed; }
+
+.ud-error { margin: 0; font-size: 12.5px; color: var(--crit); }
+
 /* ---------------- gate rail ---------------- */
 
 .gates { display: flex; flex-direction: column; gap: 2px; padding: 12px 15px; }
@@ -560,8 +724,10 @@
 /* ---------------- reduced motion ---------------- */
 
 @media (prefers-reduced-motion: reduce) {
-  .cell, .thumb, .cockpit, .cockpit::before, .themetoggle button, .doctabs button, .forge, .dl {
+  .cell, .thumb, .cockpit, .cockpit::before, .themetoggle button, .doctabs button, .forge, .dl,
+  .ud-close, .ud-nav, .ud-forge {
     transition: none;
   }
-  .cell[data-status="skeleton"]::after { animation: none; }
+  .cell[data-status="skeleton"]::after, .ud-skel { animation: none; }
+  .ud-dialog { animation: none; }
 }

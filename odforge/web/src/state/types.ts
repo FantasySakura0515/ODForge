@@ -8,7 +8,7 @@ export interface PaletteHex { bg: string; surface: string; text: string; muted: 
 export interface DesignSpec { palette: PaletteHex; fonts: { display: string; body: string }; }
 export interface OutlineRow { role: string; title: string; gist: string; }
 export interface Outline { design: DesignSpec | null; mode: "detailed" | "presenter"; pages: OutlineRow[]; }
-export interface Unit { n: number; role: string; title: string; ir?: unknown; previewUrl?: string; status: UnitStatus; }
+export interface Unit { n: number; role: string; title: string; ir?: unknown; previewUrl?: string; status: UnitStatus; regenPrev?: UnitStatus; }
 export interface Finding { slide_no: number; issue: string; severity: "error" | "warn"; fix_hint: string; }
 
 export type SseEvent =
@@ -21,6 +21,16 @@ export type SseEvent =
   | { type: "complete"; data: { download_url: string; qa_report?: unknown } }
   | { type: "error"; data: { message: string; stage: string } };
 
+// Client-only actions (not sent by the server). Per-slide regeneration uses the
+// synchronous /regenerate endpoint, so its lifecycle is driven locally from the
+// UnitDetail lightbox rather than the SSE stream.
+export type LocalAction =
+  | { type: "regen_start"; data: { n: number } }
+  | { type: "regen_done"; data: { n: number; slide: unknown; preview_url: string | null } }
+  | { type: "regen_error"; data: { n: number } };
+
+export type CockpitAction = SseEvent | LocalAction;
+
 export interface CockpitState {
   phase: Phase;
   docType: DocType;
@@ -31,4 +41,5 @@ export interface CockpitState {
   qaRounds: { round: number; findings: Finding[] }[];
   downloadUrl?: string;
   error?: { message: string; stage: string };
+  regenTick: number;
 }

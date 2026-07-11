@@ -67,7 +67,7 @@ export default function App() {
             </div>
           </header>
           <OutlineRail outline={state.outline} />
-          <PreviewStage units={state.units} docType={state.docType} jobId={jobId} />
+          <PreviewStage units={state.units} docType={state.docType} jobId={jobId} dispatch={dispatch} />
           <GateRail gates={state.gates} qaRounds={state.qaRounds} />
           <footer className="foot">
             <StatusNarrator phase={state.phase} units={state.units} error={state.error} submitting={submitting} />

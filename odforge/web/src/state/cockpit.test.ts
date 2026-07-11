@@ -99,4 +99,62 @@ describe("cockpitReducer", () => {
     // gate 值只反映 gate_result,error 不動它
     expect(s.gates).toEqual({ zip: "fail", xml: "pending", libreoffice: "pending", design: "pending" });
   });
+
+  test("regen_start 把該單元設為 regen", () => {
+    const s = send(
+      initialState(),
+      { type: "outline", data: outline },
+      { type: "preview_ready", data: { n: 1, url: "/api/jobs/x/preview/1.png" } },
+      { type: "regen_start", data: { n: 1 } },
+    );
+    expect(s.units[0].status).toBe("regen");
+  });
+
+  test("regen_done 更新 ir/title、還原狀態,並為 previewUrl 加 cache-bust", () => {
+    const s = send(
+      initialState(),
+      { type: "outline", data: outline },
+      { type: "preview_ready", data: { n: 1, url: "/api/jobs/x/preview/1.png" } },
+      { type: "regen_start", data: { n: 1 } },
+      { type: "regen_done", data: { n: 1, slide: { layout: "title", title: "新封面" }, preview_url: "/api/jobs/x/preview/1.png" } },
+    );
+    expect(s.units[0].status).toBe("preview");
+    expect(s.units[0].title).toBe("新封面");
+    expect(s.units[0].ir).toMatchObject({ title: "新封面" });
+    // 同 URL 需 cache-bust:base 不變但帶遞增的 ?t=
+    expect(s.units[0].previewUrl).toMatch(/preview\/1\.png\?t=\d+/);
+  });
+
+  test("regen_done preview_url 為 null 時,沿用舊 base 並仍 cache-bust", () => {
+    const s = send(
+      initialState(),
+      { type: "outline", data: outline },
+      { type: "preview_ready", data: { n: 1, url: "/api/jobs/x/preview/1.png" } },
+      { type: "regen_start", data: { n: 1 } },
+      { type: "regen_done", data: { n: 1, slide: { layout: "title", title: "新封面" }, preview_url: null } },
+    );
+    expect(s.units[0].previewUrl).toMatch(/preview\/1\.png\?t=\d+/);
+  });
+
+  test("regen_done 從 done 還原回 done", () => {
+    const s = send(
+      initialState(),
+      { type: "outline", data: outline },
+      { type: "complete", data: { download_url: "/api/jobs/x/download" } },
+      { type: "regen_start", data: { n: 1 } },
+      { type: "regen_done", data: { n: 1, slide: { layout: "title", title: "改" }, preview_url: "/api/jobs/x/preview/1.png" } },
+    );
+    expect(s.units[0].status).toBe("done");
+  });
+
+  test("regen_error 把狀態還原成 regen 前的值", () => {
+    const s = send(
+      initialState(),
+      { type: "outline", data: outline },
+      { type: "preview_ready", data: { n: 1, url: "/api/jobs/x/preview/1.png" } },
+      { type: "regen_start", data: { n: 1 } },
+      { type: "regen_error", data: { n: 1 } },
+    );
+    expect(s.units[0].status).toBe("preview");
+  });
 });

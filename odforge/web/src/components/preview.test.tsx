@@ -10,12 +10,12 @@ const units: Unit[] = [
 ];
 
 test("標頭顯示完成數/總數", () => {
-  const { container } = render(<PreviewStage units={units} docType="odp" jobId={undefined} />);
+  const { container } = render(<PreviewStage units={units} docType="odp" jobId={undefined} dispatch={() => {}} />);
   expect(container.querySelector(".prog")?.textContent?.replace(/\s+/g, " ")).toContain("1 / 2");
 });
 
 test("每個單元一格且帶 data-status", () => {
-  const { container } = render(<PreviewStage units={units} docType="odp" jobId={undefined} />);
+  const { container } = render(<PreviewStage units={units} docType="odp" jobId={undefined} dispatch={() => {}} />);
   const cells = container.querySelectorAll(".cell");
   expect(cells).toHaveLength(2);
   expect(cells[0].getAttribute("data-status")).toBe("done");
@@ -23,7 +23,7 @@ test("每個單元一格且帶 data-status", () => {
 });
 
 test("網格帶 data-doctype", () => {
-  const { container } = render(<PreviewStage units={units} docType="odt" jobId={undefined} />);
+  const { container } = render(<PreviewStage units={units} docType="odt" jobId={undefined} dispatch={() => {}} />);
   expect(container.querySelector(".grid")?.getAttribute("data-doctype")).toBe("odt");
 });
 
