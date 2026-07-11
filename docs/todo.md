@@ -139,7 +139,7 @@ extract_design(template_path: Path) -> DesignSpec          # 從 styles.xml 抽�
 
 v1 的 `demo/tree.odp`/`tree.png` 是 CJK 字級 bug 修復**前**的舊產物(P1–P7 樣式缺 `style:font-size-asian`,demo 圖標題是預設小字)。
 
-- [ ] 真 API 重跑 `odforge new "幫我做一份資料結構第三章:樹與二元樹的教學簡報" -o demo/tree.odp`,LibreOffice 開檔確認字級正確,重截 `tree.png`,README 圖同步更新,commit `docs: regenerate demo with fixed cjk sizing`
+- [x] 真 API 重跑 `odforge new "幫我做一份資料結構第三章:樹與二元樹的教學簡報" -o demo/tree.odp`,LibreOffice 開檔確認字級正確,重截 `tree.png`,README 圖同步更新,commit `docs: regenerate demo with fixed cjk sizing`
 
 ---
 
