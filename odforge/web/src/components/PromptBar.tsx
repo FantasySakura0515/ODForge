@@ -122,9 +122,13 @@ export function PromptBar({ onGenerate }: { onGenerate: (body: GenerateBody) => 
         <button type="button" className="advtoggle" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
           進階選項 {open ? "▴" : "▾"}
         </button>
-        {!open && summary.length > 0 && (
+        {!open && (summary.length > 0 || pagesInvalid) && (
           <span className="advsummary" data-testid="adv-summary">
             {summary.map((s, i) => <span className="advchip" key={i}>{s}</span>)}
+            {/* 抽屜收合時,非法頁數看不到欄位提示 → 補一個警示 chip,說明已略過。 */}
+            {pagesInvalid && (
+              <span className="advchip warn" data-testid="adv-warn" role="status">頁數無效,已略過</span>
+            )}
           </span>
         )}
       </div>

@@ -283,6 +283,7 @@
   border-radius: 6px;
   padding: 2px 7px;
 }
+.advchip.warn { color: var(--crit); border-color: var(--crit); }
 
 .advdrawer {
   display: flex;

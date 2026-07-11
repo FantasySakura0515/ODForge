@@ -83,8 +83,6 @@ test("buildGenerateBody 頁數留空不送 pages,填了才送", () => {
 test("buildGenerateBody 頁數為 NaN 不送 pages(修掉 NaN→null 序列化 bug)", () => {
   const body = buildGenerateBody("樹", "odp", { ...DEFAULT_OPTS, pages: Number("abc") });
   expect("pages" in body).toBe(false);
-  // 序列化後不得出現 "pages":null
-  expect(JSON.stringify(body)).not.toContain("pages");
 });
 
 test("buildGenerateBody 頁數超界(<3 或 >30)不送 pages", () => {

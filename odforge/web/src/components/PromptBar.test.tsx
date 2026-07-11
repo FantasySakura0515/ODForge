@@ -101,6 +101,17 @@ test("預設狀態下收合不顯示 chip 摘要", () => {
   expect(screen.queryByTestId("adv-summary")).toBeNull();
 });
 
+test("抽屜收合且頁數非法時,摘要顯示「頁數無效,已略過」警示 chip", () => {
+  render(<PromptBar onGenerate={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: /進階選項/ }));
+  fireEvent.change(screen.getByLabelText(/頁數/), { target: { value: "100" } });
+  // 收合抽屜:欄位提示消失,但摘要要補警示 chip。
+  fireEvent.click(screen.getByRole("button", { name: /進階選項/ }));
+  const warn = screen.getByTestId("adv-warn");
+  expect(warn).toBeInTheDocument();
+  expect(warn.textContent).toMatch(/頁數無效/);
+});
+
 test("placeholder 鼓勵細節,不再教人用一句話", () => {
   render(<PromptBar onGenerate={vi.fn()} />);
   const ta = screen.getByRole("textbox", { name: /主題/ }) as HTMLTextAreaElement;

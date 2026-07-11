@@ -47,6 +47,12 @@ export default function App() {
   async function onConfirmOutline(action: OutlineActionBody) {
     if (!jobId || jobId === "mock") return;
     await postOutlineAction(jobId, action);
+    // 編輯成功後,後端不會重發 outline,直接發 N-1 個 slide_done。若不在本地
+    // 重新同步,被刪的第 N 格會永遠停在 skeleton,最後 complete 又無條件塗成
+    // done → 縮圖牆出現一張「已完成」但不存在於下載檔的幽靈頁。於是就地補一個
+    // synthetic outline 事件,讓 state.outline 與 units 依編輯後大綱重建。
+    // approve 未改動大綱,無需重同步。
+    if (action.action === "edit") dispatch({ type: "outline", data: action.outline });
   }
 
   // Show the prompt bar when idle OR after an error (so the user can retry);
