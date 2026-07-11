@@ -33,20 +33,48 @@ describe("cockpitReducer", () => {
     expect(s.units[0].role).toBe("title");
   });
 
-  test("preview_ready 設縮圖並讓三道格式閘通過", () => {
+  test("preview_ready 設縮圖但不再偽造 gates", () => {
     const s = send(initialState(), { type: "outline", data: outline }, { type: "preview_ready", data: { n: 1, url: "/api/jobs/x/preview/1.png" } });
     expect(s.units[0].previewUrl).toContain("preview/1.png");
     expect(s.units[0].status).toBe("preview");
-    expect(s.gates.zip).toBe("pass");
-    expect(s.gates.libreoffice).toBe("pass");
+    // preview_ready 不得再無中生有把格式閘設 pass(那是假綠勾)
+    expect(s.gates.zip).toBe("pending");
+    expect(s.gates.xml).toBe("pending");
+    expect(s.gates.libreoffice).toBe("pending");
   });
 
-  test("complete:全單元 done、四閘 pass、有下載連結", () => {
-    const s = send(initialState(), { type: "outline", data: outline }, { type: "complete", data: { download_url: "/api/jobs/x/download" } });
+  test("gate_result 逐一點亮各道閘", () => {
+    let s = send(initialState(), { type: "outline", data: outline });
+    s = cockpitReducer(s, { type: "gate_result", data: { gate: "zip", status: "pass" } });
+    expect(s.gates).toEqual({ zip: "pass", xml: "pending", libreoffice: "pending", design: "pending" });
+    s = cockpitReducer(s, { type: "gate_result", data: { gate: "xml", status: "pass" } });
+    expect(s.gates.xml).toBe("pass");
+    s = cockpitReducer(s, { type: "gate_result", data: { gate: "libreoffice", status: "skipped" } });
+    expect(s.gates.libreoffice).toBe("skipped");
+    s = cockpitReducer(s, { type: "gate_result", data: { gate: "design", status: "fail" } });
+    expect(s.gates.design).toBe("fail");
+  });
+
+  test("complete:全單元 done、gates 保持 gate_result 累積的真值(不強制全綠)", () => {
+    const s = send(
+      initialState(),
+      { type: "outline", data: outline },
+      { type: "gate_result", data: { gate: "zip", status: "pass" } },
+      { type: "gate_result", data: { gate: "xml", status: "pass" } },
+      { type: "gate_result", data: { gate: "libreoffice", status: "skipped" } },
+      { type: "gate_result", data: { gate: "design", status: "skipped" } },
+      { type: "complete", data: { download_url: "/api/jobs/x/download" } },
+    );
     expect(s.phase).toBe("complete");
     expect(s.downloadUrl).toContain("download");
     expect(s.units.every((u) => u.status === "done")).toBe(true);
-    expect(Object.values(s.gates).every((g) => g === "pass")).toBe(true);
+    // complete 不得無條件把四閘塗綠;保持真值
+    expect(s.gates).toEqual({ zip: "pass", xml: "pass", libreoffice: "skipped", design: "skipped" });
+  });
+
+  test("complete 不改動未回報的 gates(維持 pending)", () => {
+    const s = send(initialState(), { type: "outline", data: outline }, { type: "complete", data: { download_url: "/d" } });
+    expect(s.gates).toEqual({ zip: "pending", xml: "pending", libreoffice: "pending", design: "pending" });
   });
 
   test("qa_round 標記 error 單元並讓設計閘 active", () => {
@@ -57,10 +85,18 @@ describe("cockpitReducer", () => {
     expect(s.qaRounds[0].round).toBe(1);
   });
 
-  test("error 把對應閘設 fail", () => {
-    const s = send(initialState(), { type: "outline", data: outline }, { type: "error", data: { message: "轉檔失敗", stage: "libreoffice" } });
+  test("error 進 error phase、存訊息,但不再用 stage 映射偽造 gate fail", () => {
+    // 後端 stage 詞彙(outline/slides/render/preview/qa/validate/connect)與 GATE_IDS 永不重疊;
+    // gate 失敗改由 gate_result{fail} 直接表達,error 不得再猜測性地把某道閘塗紅。
+    const s = send(
+      initialState(),
+      { type: "outline", data: outline },
+      { type: "gate_result", data: { gate: "zip", status: "fail" } },
+      { type: "error", data: { message: "封裝結構錯誤", stage: "validate" } },
+    );
     expect(s.phase).toBe("error");
-    expect(s.gates.libreoffice).toBe("fail");
-    expect(s.error?.message).toBe("轉檔失敗");
+    expect(s.error?.message).toBe("封裝結構錯誤");
+    // gate 值只反映 gate_result,error 不動它
+    expect(s.gates).toEqual({ zip: "fail", xml: "pending", libreoffice: "pending", design: "pending" });
   });
 });

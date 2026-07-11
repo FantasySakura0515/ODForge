@@ -456,6 +456,11 @@
 .gate[data-status="fail"] .gi { border-color: var(--crit); color: var(--crit); }
 .gate[data-status="fail"] .gs { color: var(--crit); }
 
+/* skipped: 未啟用(如無 soffice 或未開 QA)— 中性 muted,明確非通過非失敗 */
+.gate[data-status="skipped"] { opacity: .72; }
+.gate[data-status="skipped"] .gi { border-style: dashed; color: var(--muted); }
+.gate[data-status="skipped"] .gs { font-size: 10.5px; color: var(--muted); }
+
 .qa {
   margin: 2px 15px 0;
   padding-top: 12px;

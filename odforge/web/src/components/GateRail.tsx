@@ -6,7 +6,7 @@ const GATES: { id: GateId; label: string; sub: string; code: string }[] = [
   { id: "libreoffice", label: "③ LibreOffice 轉檔", sub: "headless 真轉 PDF", code: "LO" },
   { id: "design", label: "④ 設計閘", sub: "vision 檢視 · 逐頁把關", code: "◑" },
 ];
-const SYM: Record<GateStatus, string> = { pending: "·", active: "⟳", pass: "✓", fail: "✕" };
+const SYM: Record<GateStatus, string> = { pending: "·", active: "⟳", pass: "✓", fail: "✕", skipped: "—" };
 
 export function GateRail({ gates, qaRounds }: { gates: Record<GateId, GateStatus>; qaRounds: { round: number }[] }) {
   return (
@@ -17,7 +17,7 @@ export function GateRail({ gates, qaRounds }: { gates: Record<GateId, GateStatus
           <div className="gate" key={g.id} data-gate={g.id} data-status={gates[g.id]}>
             <span className="gi">{g.code}</span>
             <span className="gt"><b>{g.label}</b><small>{g.sub}</small></span>
-            <span className="gs">{SYM[gates[g.id]]}</span>
+            <span className="gs">{gates[g.id] === "skipped" ? "— 未啟用" : SYM[gates[g.id]]}</span>
           </div>
         ))}
       </div>

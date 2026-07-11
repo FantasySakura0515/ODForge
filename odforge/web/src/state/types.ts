@@ -1,7 +1,7 @@
 export type DocType = "odp" | "odt" | "ods";
 export type UnitStatus = "skeleton" | "filling" | "preview" | "flagged" | "regen" | "done";
 export type GateId = "zip" | "xml" | "libreoffice" | "design";
-export type GateStatus = "pending" | "active" | "pass" | "fail";
+export type GateStatus = "pending" | "active" | "pass" | "fail" | "skipped";
 export type Phase = "empty" | "outline" | "await" | "generating" | "qa" | "complete" | "error";
 
 export interface PaletteHex { bg: string; surface: string; text: string; muted: string; accent: string; }
@@ -16,6 +16,7 @@ export type SseEvent =
   | { type: "awaiting_approval"; data: Record<string, never> }
   | { type: "slide_done"; data: { n: number; slide: { layout: string; title: string; [key: string]: unknown } } }
   | { type: "preview_ready"; data: { n: number; url: string } }
+  | { type: "gate_result"; data: { gate: GateId; status: "pass" | "fail" | "skipped" } }
   | { type: "qa_round"; data: { round: number; findings: Finding[] } }
   | { type: "complete"; data: { download_url: string; qa_report?: unknown } }
   | { type: "error"; data: { message: string; stage: string } };

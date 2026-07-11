@@ -28,6 +28,15 @@ test("GateRail 反映各閘狀態", () => {
   expect(container.querySelector('[data-gate="design"]')?.getAttribute("data-status")).toBe("pending");
 });
 
+test("GateRail skipped 顯示「未啟用」而非勾/叉", () => {
+  const { container } = render(<GateRail gates={{ zip: "pass", xml: "pass", libreoffice: "skipped", design: "skipped" }} qaRounds={[]} />);
+  const lo = container.querySelector('[data-gate="libreoffice"]');
+  expect(lo?.getAttribute("data-status")).toBe("skipped");
+  expect(lo?.textContent).toContain("未啟用");
+  expect(lo?.querySelector(".gs")?.textContent).not.toContain("✓");
+  expect(lo?.querySelector(".gs")?.textContent).not.toContain("✕");
+});
+
 test("StatusNarrator 完成態文字", () => {
   render(<StatusNarrator phase="complete" units={[]} />);
   expect(screen.getByText(/四道閘全綠|完成/)).toBeInTheDocument();

@@ -23,9 +23,16 @@ export function mockTreeEvents(): SseEvent[] {
   const pages: OutlineRow[] = ROWS.map(({ role, title, gist }) => ({ role, title, gist }));
   const evs: SseEvent[] = [{ type: "outline", data: { design: DESIGN, mode: "presenter", pages } }];
   for (const r of ROWS) evs.push({ type: "slide_done", data: { n: r.n, slide: { layout: r.role, title: r.title, bullets: [] } } });
+  // render 後:封裝結構閘、XML 閘依序點亮(真事件路徑,非偽造齊亮)
+  evs.push({ type: "gate_result", data: { gate: "zip", status: "pass" } });
+  evs.push({ type: "gate_result", data: { gate: "xml", status: "pass" } });
   for (const r of ROWS) evs.push({ type: "preview_ready", data: { n: r.n, url: `mock:preview/${r.n}` } });
+  // preview 後:LibreOffice 轉檔閘點亮
+  evs.push({ type: "gate_result", data: { gate: "libreoffice", status: "pass" } });
   evs.push({ type: "qa_round", data: { round: 1, findings: [{ slide_no: 3, issue: "文字溢出框外", severity: "error", fix_hint: "減兩行內文" }] } });
   evs.push({ type: "preview_ready", data: { n: 3, url: "mock:preview/3?fixed=1" } });
+  // complete 前:設計閘(demo 未開 QA gate → skipped)
+  evs.push({ type: "gate_result", data: { gate: "design", status: "skipped" } });
   evs.push({ type: "complete", data: { download_url: "mock:download" } });
   return evs;
 }
