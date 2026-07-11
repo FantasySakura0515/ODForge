@@ -128,3 +128,9 @@ test("該頁 status=regen 時輸入列停用並顯示重生中遮罩", () => {
   expect(screen.getByRole("button", { name: /重生此頁/ })).toBeDisabled();
   expect(screen.getByText(/重生中/)).toBeInTheDocument();
 });
+
+test("重生中遮罩帶 spin 旋轉指示符", () => {
+  const regen: Unit[] = units.map((u) => (u.n === 2 ? { ...u, status: "regen" } : u));
+  const { container } = render(<UnitDetail units={regen} n={2} jobId="j1" onClose={noop} onNavigate={noop} dispatch={noop} />);
+  expect(container.querySelector(".ud-regenning .spin")).not.toBeNull();
+});

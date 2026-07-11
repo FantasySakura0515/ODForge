@@ -37,6 +37,15 @@ test("GateRail skipped 顯示「未啟用」而非勾/叉", () => {
   expect(lo?.querySelector(".gs")?.textContent).not.toContain("✕");
 });
 
+test("GateRail active 閘的 ⟳ 帶 spin 類(轉檔中會旋轉)", () => {
+  const { container } = render(
+    <GateRail gates={{ zip: "pass", xml: "pass", libreoffice: "active", design: "pending" }} qaRounds={[]} />,
+  );
+  const spin = container.querySelector('[data-gate="libreoffice"] .gs .spin');
+  expect(spin).not.toBeNull();
+  expect(spin?.textContent).toBe("⟳");
+});
+
 test("StatusNarrator 完成態文字", () => {
   render(<StatusNarrator phase="complete" units={[]} />);
   expect(screen.getByText(/四道閘全綠|完成/)).toBeInTheDocument();

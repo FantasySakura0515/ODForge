@@ -2,10 +2,13 @@
   --page-bg:#eceae4; --bg:#f6f5f2; --surface:#ffffff; --surface2:#eef1f7; --text:#191d24;
   --muted:#63676f; --line:#e3e0d9; --accent:#234e9e; --accent2:#8a6d1f; --glow:rgba(35,78,158,.20);
   --pass:#2e8b57; --warn:#b6841c; --crit:#c0453f; --grid-op:0; --on-accent:#ffffff;
-  --f-brand:Georgia,"Noto Serif TC","Times New Roman",serif;
+  /* CJK 名優先,讓「文鍛」等中文字先命中思源宋/Noto Serif TC(真宋體);Georgia 只在
+     CJK 字型缺席時服務拉丁字元(它無 CJK 字身,不會攔截中文);serif 前再墊一道
+     Microsoft JhengHei,使無宋體字型的台灣 Windows 兜底到體面的正黑,而非落回新細明體。 */
+  --f-brand:"Noto Serif TC","Source Han Serif TC","思源宋體",Georgia,"Microsoft JhengHei",serif;
   --f-ui:"微軟正黑體","Microsoft JhengHei",system-ui,-apple-system,"Segoe UI",sans-serif;
   --f-mono:"Consolas","SFMono-Regular",ui-monospace,monospace;
-  --f-title:Georgia,"Noto Serif TC",serif;
+  --f-title:"Noto Serif TC","Source Han Serif TC","思源宋體",Georgia,"Microsoft JhengHei",serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -18,7 +21,7 @@
 :root[data-theme="light"] {
   --page-bg:#eceae4; --bg:#f6f5f2; --surface:#ffffff; --surface2:#eef1f7; --text:#191d24;
   --muted:#63676f; --line:#e3e0d9; --accent:#234e9e; --accent2:#8a6d1f; --glow:rgba(35,78,158,.20);
-  --pass:#2e8b57; --warn:#b6841c; --crit:#c0453f; --grid-op:0; --on-accent:#ffffff; --f-title:Georgia,"Noto Serif TC",serif;
+  --pass:#2e8b57; --warn:#b6841c; --crit:#c0453f; --grid-op:0; --on-accent:#ffffff; --f-title:"Noto Serif TC","Source Han Serif TC","思源宋體",Georgia,"Microsoft JhengHei",serif;
 }
 :root[data-theme="dark"] {
   --page-bg:#070a0e; --bg:#0b0e14; --surface:#12161f; --surface2:#171d29; --text:#d6dee8;
