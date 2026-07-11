@@ -180,6 +180,21 @@
 }
 .doctabs button.on { background: var(--accent); color: var(--on-accent); }
 .doctabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* 尚未支援的型別:停用、降透明、不可點,旁掛「即將支援」badge */
+.doctabs button.soon { opacity: .55; cursor: not-allowed; }
+.doctabs button.soon:hover { background: transparent; }
+.doctabs button .soonbadge {
+  margin-left: 5px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  padding: 1px 4px;
+  border-radius: 5px;
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  vertical-align: middle;
+  white-space: nowrap;
+}
 
 .promptbar textarea {
   flex: 1;
