@@ -9,6 +9,13 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
+/* Full-viewport reset: the browser default 8px body margin frames the dark
+   control-room in white when a slide is shown fullscreen. Reset it and paint the
+   root/body in the themed page colour so any overscroll / fullscreen gutter
+   stays on-theme. Pairs with <meta name="color-scheme"> in index.html. */
+html, body { margin: 0; }
+html, body { background: var(--page-bg); }
+
 .page {
   min-height: 100vh;
   margin: 0;
@@ -43,6 +50,20 @@
   /* intentionally theme-neutral: depth only, not a token-owned color */
   box-shadow: 0 24px 60px -34px rgba(0, 0, 0, .45);
   transition: background .3s, border-color .3s;
+}
+
+/* Before the outline arrives (empty / error / connecting) the left rail renders
+   nothing — drop its 248px track so the center isn't shoved right past an empty
+   vertical strip. Desktop-only (min-width) so the mobile single-column layout
+   below keeps precedence despite this attribute selector's higher specificity. */
+@media (min-width: 841px) {
+  .cockpit[data-outline="absent"] {
+    grid-template-columns: 1fr 262px;
+    grid-template-areas:
+      "top top"
+      "center right"
+      "foot foot";
+  }
 }
 
 /* blueprint grid overlay: invisible in light (--grid-op:0), faint in dark */

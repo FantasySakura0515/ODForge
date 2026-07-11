@@ -179,6 +179,28 @@ test("等待卡取消鈕:關閉 SSE、重置回 empty、prompt 保留", async ()
   expect(FakeEventSource.instances[0].closed).toBe(true);
 });
 
+test("空台(大綱未到)左欄收掉:cockpit data-outline=absent;大綱到後轉 present", async () => {
+  window.history.replaceState({}, "", "/");
+  vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+  vi.mocked(postGenerate).mockResolvedValue({ job_id: "j1" });
+
+  const { container } = render(<App />);
+  // 一開始 empty:左欄不佔位。
+  expect(container.querySelector(".cockpit")?.getAttribute("data-outline")).toBe("absent");
+  // 空台不擺「生成中…」假下載鈕。
+  expect(screen.queryByText(/生成中…/)).toBeNull();
+
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "左欄測試" } });
+  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+  await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+  FakeEventSource.instances[0].emit("outline", {
+    design: null, mode: "presenter", pages: [{ role: "title", title: "封面", gist: "g" }],
+  });
+
+  // 大綱到達 → 左欄回來(present)。
+  await waitFor(() => expect(container.querySelector(".cockpit")?.getAttribute("data-outline")).toBe("present"));
+});
+
 test("生成開始把 jobId 寫進 URL(?job=),供重整復原", async () => {
   window.history.replaceState({}, "", "/");
   vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);

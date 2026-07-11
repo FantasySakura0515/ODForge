@@ -150,7 +150,8 @@ export default function App() {
   return (
     <div className="page">
       <div className="stage">
-        <div className="cockpit">
+        {/* data-outline 讓 CSS 在大綱未到前收掉左欄,不留 248px 空白直條(空台矛盾)。 */}
+        <div className="cockpit" data-outline={state.outline ? "present" : "absent"}>
           <header className="top">
             <div className="brand"><span className="mark">文鍛</span><span className="en">ODForge</span></div>
             {chip && <span className="statuschip" data-kind={chip.kind}>{chip.label}</span>}
@@ -188,7 +189,7 @@ export default function App() {
           <GateRail gates={state.gates} qaRounds={state.qaRounds} onOpenFinding={(n) => setSelectedN(n)} />
           <footer className="foot">
             <StatusNarrator phase={state.phase} units={state.units} error={state.error} submitting={submitting} fillingPending={fillingPending} expired={expired} />
-            <DownloadDock jobId={jobId} downloadUrl={state.downloadUrl} docType={state.docType} />
+            <DownloadDock jobId={jobId} downloadUrl={state.downloadUrl} docType={state.docType} phase={state.phase} />
           </footer>
         </div>
       </div>
