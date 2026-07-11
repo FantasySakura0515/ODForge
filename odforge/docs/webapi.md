@@ -99,7 +99,7 @@ CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：�
 
 | Method | Path | Body → 回應 |
 |---|---|---|
-| POST | `/api/generate` | `{prompt, mode?, theme?, interactive?: bool, qa?: bool, backend?}` → `{job_id}` |
+| POST | `/api/generate` | `{prompt, mode?, theme?, interactive?: bool, qa?: bool, backend?, doc_type?: "odp", pages?: int}` → `{job_id}` |
 | GET | `/api/jobs/{id}/events` | SSE 事件流（見「SSE 事件」） |
 | POST | `/api/jobs/{id}/outline` | `{action: "approve"}` 或 `{action: "edit", outline: Outline}` → `{ok, status}` |
 | POST | `/api/jobs/{id}/slides/{n}/regenerate` | `{instruction?: str}` → `{ok, n, slide, preview_url}`（同步：新頁 + preview 直接回在回應內，**不**走 SSE） |
@@ -110,7 +110,7 @@ CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：�
 ### POST `/api/generate`
 請求：
 ```json
-{ "prompt": "介紹光合作用的兩階段", "mode": "presenter", "theme": null, "interactive": false, "qa": false }
+{ "prompt": "介紹光合作用的兩階段", "mode": "presenter", "theme": null, "interactive": false, "qa": false, "doc_type": "odp", "pages": 12 }
 ```
 回應 `200`：
 ```json
@@ -119,6 +119,12 @@ CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：�
 `job_id` 為伺服器產生的 uuid4 hex（32 字）。生成隨即在背景 asyncio task 執行，
 前端接著開 `GET /api/jobs/{id}/events` 訂閱進度。
 `mode` / `theme` 若給定會覆蓋 LLM 的選擇（`theme` 會同時剝除 AI 自選 design）。
+
+- `doc_type`（預設 `"odp"`）：目前**只**支援簡報（`odp`）。傳入其他值（如 `ods`／`odt`）
+  回 `422`，`detail` 為人可讀的中文字串（含「目前僅支援簡報(odp)」與「即將支援」字樣）。
+- `pages`（選填，整數 `3..30`）：目標頁數；後端把「約 N 頁（含封面與結尾，可 ±1）」的
+  軟性指示併入第一段（`generate_outline`）的提示，非硬性張數約束。超出 `3..30` 由 pydantic
+  回 `422`。
 
 ### POST `/api/jobs/{id}/outline`（僅 interactive）
 生成在 `awaiting_approval` 停下等待核可時使用。

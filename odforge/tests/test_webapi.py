@@ -70,7 +70,7 @@ def _install_fakes(monkeypatch, n=3, *, record_slides=None, qa_report=None):
     call appends the outline it received (for the regenerate assertion).
     """
 
-    def fake_outline(prompt, backend=None):
+    def fake_outline(prompt, backend=None, pages=None):
         return _outline(n)
 
     def fake_slides(outline, backend=None):

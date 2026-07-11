@@ -484,6 +484,51 @@ def test_generate_outline_facade_uses_backend(monkeypatch):
     assert result.design is not None
 
 
+def test_generate_outline_pages_hint_in_prompt(monkeypatch):
+    # A target page count is folded into the stage-1 user prompt.
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_VALID_OUTLINE))]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    backend.generate_outline("做一份簡報", pages=12)
+    user = " ".join(
+        m["content"]
+        for m in client.completions.calls[0]["messages"]
+        if m["role"] == "user"
+    )
+    assert "12" in user
+    assert "頁" in user
+
+
+def test_generate_outline_no_pages_no_hint(monkeypatch):
+    # Without pages, no page-count instruction is injected.
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_VALID_OUTLINE))]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    backend.generate_outline("做一份簡報")
+    user = " ".join(
+        m["content"]
+        for m in client.completions.calls[0]["messages"]
+        if m["role"] == "user"
+    )
+    assert "目標頁數" not in user
+
+
+def test_generate_outline_facade_forwards_pages(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_VALID_OUTLINE))]
+    )
+    monkeypatch.setenv("ODFORGE_BACKEND", "ollama")
+    llm.generate_outline("x", pages=7)
+    user = " ".join(
+        m["content"]
+        for m in client.completions.calls[0]["messages"]
+        if m["role"] == "user"
+    )
+    assert "7" in user
+
+
 # ---------------------------------------------------------------------------
 # Task 15.2 — generate_slides (stage-2: fill pages + layout-budget feedback)
 # ---------------------------------------------------------------------------

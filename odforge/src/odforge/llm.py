@@ -163,7 +163,9 @@ class LLMBackend(Protocol):
     def generate_ir(self, prompt: str, doc_type: str) -> Document:  # pragma: no cover
         ...
 
-    def generate_outline(self, prompt: str) -> Outline:  # pragma: no cover
+    def generate_outline(
+        self, prompt: str, pages: int | None = None
+    ) -> Outline:  # pragma: no cover
         ...
 
     def generate_slides(self, outline: Outline) -> Presentation:  # pragma: no cover
@@ -438,7 +440,7 @@ class OpenAICompatBackend:
         assert last_exc is not None
         raise last_exc
 
-    def generate_outline(self, prompt: str) -> Outline:
+    def generate_outline(self, prompt: str, pages: int | None = None) -> Outline:
         """Stage-1 of the pipeline: design + page-role outline in one call.
 
         Forces a function call against ``Outline.model_json_schema()`` (same
@@ -452,7 +454,17 @@ class OpenAICompatBackend:
           accepted. A bad palette never crashes generation.
         * A **pages-invalid** failure is retried once then raised, exactly like
           ``generate_ir``.
+
+        ``pages`` (when given) folds a target page-count instruction into the
+        user prompt (「目標頁數約 N 頁…」); it is a soft target, not a schema
+        constraint.
         """
+        base_prompt = prompt
+        if pages is not None:
+            base_prompt = (
+                f"{prompt}\n\n"
+                f"【目標頁數】整份簡報約 {pages} 頁(含封面與結尾,可 ±1)。"
+            )
         schema = Outline.model_json_schema()
         tools = [
             {
@@ -471,10 +483,10 @@ class OpenAICompatBackend:
         for attempt in range(2):
             is_last = attempt == 1
             messages = [{"role": "system", "content": OUTLINE_SYSTEM_PROMPT}]
-            user_content = prompt
+            user_content = base_prompt
             if error_summary is not None:
                 user_content = (
-                    f"{prompt}\n\n"
+                    f"{base_prompt}\n\n"
                     f"[系統提示] 上一次的輸出無法通過驗證,錯誤如下,請修正後重新輸出:\n"
                     f"{error_summary}"
                 )
@@ -698,9 +710,11 @@ def generate_ir(
     return get_backend(backend).generate_ir(prompt, doc_type)
 
 
-def generate_outline(prompt: str, backend: Optional[str] = None) -> Outline:
+def generate_outline(
+    prompt: str, backend: Optional[str] = None, pages: int | None = None
+) -> Outline:
     """Facade: resolve a backend and generate a stage-1 design + outline."""
-    return get_backend(backend).generate_outline(prompt)
+    return get_backend(backend).generate_outline(prompt, pages=pages)
 
 
 def generate_slides(

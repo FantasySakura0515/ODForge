@@ -96,6 +96,7 @@ class Job:
     interactive: bool = False
     qa: bool = False
     backend: Optional[str] = None
+    pages: Optional[int] = None
 
     status: str = "pending"
     outline: Optional[Outline] = None
@@ -130,6 +131,7 @@ def create_job(
     interactive: bool = False,
     qa: bool = False,
     backend: Optional[str] = None,
+    pages: Optional[int] = None,
 ) -> Job:
     """Register a new job with a server-minted id and its own artifact dir."""
     job_id = uuid.uuid4().hex
@@ -144,6 +146,7 @@ def create_job(
         interactive=interactive,
         qa=qa,
         backend=backend,
+        pages=pages,
     )
     app.state.jobs[job_id] = job
     return job
@@ -244,7 +247,9 @@ async def run_job(job: Job) -> None:
     stage = "outline"
     try:
         job.status = "generating_outline"
-        outline = await asyncio.to_thread(generate_outline, job.prompt, job.backend)
+        outline = await asyncio.to_thread(
+            generate_outline, job.prompt, job.backend, pages=job.pages
+        )
         if job.mode:
             outline = outline.model_copy(update={"mode": job.mode})
         job.outline = outline
@@ -385,6 +390,12 @@ class GenerateBody(BaseModel):
     interactive: bool = False
     qa: bool = False
     backend: Optional[str] = None
+    # Only presentations (odp) are supported today; a non-"odp" value is a 422
+    # with a human message (checked in the endpoint so ``detail`` is a plain
+    # zh-TW string, not pydantic's list-of-errors shape).
+    doc_type: str = "odp"
+    # Optional target page count (inclusive 3..30); out of range → pydantic 422.
+    pages: Optional[int] = Field(default=None, ge=3, le=30)
 
 
 class OutlineActionBody(BaseModel):
@@ -443,6 +454,11 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
 
     @app.post("/api/generate")
     async def generate(body: GenerateBody) -> Dict[str, str]:
+        if body.doc_type != "odp":
+            raise HTTPException(
+                status_code=422,
+                detail="目前僅支援簡報(odp);文件(odt)與試算表(ods)即將支援。",
+            )
         job = create_job(
             app,
             prompt=body.prompt,
@@ -451,6 +467,7 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
             interactive=body.interactive,
             qa=body.qa,
             backend=body.backend,
+            pages=body.pages,
         )
         # Background task on the running loop; keep a ref so it isn't GC'd.
         job.task = asyncio.create_task(run_job(job))
