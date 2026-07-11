@@ -26,6 +26,8 @@ export function cockpitReducer(state: CockpitState, event: CockpitAction): Cockp
     }
     case "awaiting_approval":
       return { ...state, phase: "await" };
+    // slide_done 與其 F4 正名別名 unit_done 收斂於此(同 data、同處理)。
+    case "unit_done":
     case "slide_done": {
       const { n, slide } = event.data;
       const cur = state.units.find((u) => u.n === n);

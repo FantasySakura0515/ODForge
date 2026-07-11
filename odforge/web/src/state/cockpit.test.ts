@@ -33,6 +33,18 @@ describe("cockpitReducer", () => {
     expect(s.units[0].role).toBe("title");
   });
 
+  test("unit_done 與 slide_done 等價(reducer 收斂成同一 case)", () => {
+    const s = send(
+      initialState(),
+      { type: "outline", data: outline },
+      { type: "unit_done", data: { n: 1, slide: { layout: "title", title: "封面!" } } },
+    );
+    expect(s.phase).toBe("generating");
+    expect(s.units[0].status).toBe("filling");
+    expect(s.units[0].title).toBe("封面!");
+    expect(s.units[0].role).toBe("title");
+  });
+
   test("preview_ready 設縮圖但不再偽造 gates", () => {
     const s = send(initialState(), { type: "outline", data: outline }, { type: "preview_ready", data: { n: 1, url: "/api/jobs/x/preview/1.png" } });
     expect(s.units[0].previewUrl).toContain("preview/1.png");

@@ -191,11 +191,12 @@ def test_event_sequence_direct(app, monkeypatch):
     asyncio.run(webapi.run_job(job))
 
     names = [e["event"] for e in job.events]
+    # Each page emits slide_done then its F4 alias unit_done (same data).
     assert names == [
         "outline",
-        "slide_done",
-        "slide_done",
-        "slide_done",
+        "slide_done", "unit_done",
+        "slide_done", "unit_done",
+        "slide_done", "unit_done",
         "gate_result",  # zip
         "gate_result",  # xml
         "gate_result",  # libreoffice
@@ -217,7 +218,7 @@ def test_event_sequence_direct(app, monkeypatch):
     assert gates[1]["data"] == {"gate": "xml", "status": "pass"}
     assert gates[2]["data"] == {"gate": "libreoffice", "status": "pass"}
     assert gates[3]["data"] == {"gate": "design", "status": "skipped"}
-    pr = job.events[7]["data"]
+    pr = next(e for e in job.events if e["event"] == "preview_ready")["data"]
     assert pr["n"] == 1 and pr["url"].endswith("/preview/1.png")
     done = job.events[-1]["data"]
     assert done["download_url"].endswith("/download")
@@ -236,8 +237,8 @@ def test_sse_replay_over_http(app, monkeypatch):
     names = [e["event"] for e in events]
     assert names == [
         "outline",
-        "slide_done",
-        "slide_done",
+        "slide_done", "unit_done",
+        "slide_done", "unit_done",
         "gate_result",  # zip
         "gate_result",  # xml
         "gate_result",  # libreoffice
@@ -490,6 +491,44 @@ def test_regenerate_reruns_only_that_page(app, monkeypatch):
     assert body["ok"] is True and body["n"] == 2
     assert body["slide"]["title"] == job.ir.slides[1].title
     assert body["preview_url"].endswith("/preview/2.png")
+
+
+def test_unit_done_mirrors_slide_done(app, monkeypatch):
+    """Every ``slide_done`` is followed by a ``unit_done`` alias with identical data."""
+    _install_fakes(monkeypatch, n=3)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+
+    slide_dones = [e for e in job.events if e["event"] == "slide_done"]
+    unit_dones = [e for e in job.events if e["event"] == "unit_done"]
+    assert len(slide_dones) == len(unit_dones) == 3
+    # same payloads, and each unit_done immediately follows its slide_done
+    assert [e["data"] for e in slide_dones] == [e["data"] for e in unit_dones]
+    idx = [i for i, e in enumerate(job.events) if e["event"] == "slide_done"]
+    for i in idx:
+        assert job.events[i + 1]["event"] == "unit_done"
+        assert job.events[i + 1]["data"] == job.events[i]["data"]
+
+
+def test_regenerate_via_units_alias(app, monkeypatch):
+    """``/units/{n}/regenerate`` is an alias of ``/slides/{n}/regenerate`` (same handler)."""
+    _install_fakes(monkeypatch, n=3)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+
+    with TestClient(app) as client:
+        r = client.post(
+            f"/api/jobs/{job.id}/units/2/regenerate", json={"instruction": "更大膽"}
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True and body["n"] == 2
+        assert body["preview_url"].endswith("/preview/2.png")
+        # out-of-range still 404 on the alias path
+        assert (
+            client.post(f"/api/jobs/{job.id}/units/99/regenerate", json={}).status_code
+            == 404
+        )
 
 
 def test_regenerate_out_of_range_404(app, monkeypatch):

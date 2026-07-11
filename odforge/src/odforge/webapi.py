@@ -300,9 +300,10 @@ async def run_job(job: Job) -> None:
         job.ir = ir
         for n, slide in enumerate(ir.slides, start=1):
             job.slides_done = n
-            await _emit(
-                job, "slide_done", {"n": n, "slide": slide.model_dump(mode="json")}
-            )
+            payload = {"n": n, "slide": slide.model_dump(mode="json")}
+            await _emit(job, "slide_done", payload)
+            # unit_done 為 F4 起的正名;與 slide_done 同 data 並發。舊事件保留以向前相容。
+            await _emit(job, "unit_done", payload)
 
         stage = "render"
         job.status = "rendering"
@@ -559,6 +560,8 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
         job.approval.set()
         return {"ok": True, "status": job.status}
 
+    # units/{n}/regenerate 為 F4 正名別名;slides/{n}/regenerate 保留向前相容,同一 handler。
+    @app.post("/api/jobs/{job_id}/units/{n}/regenerate")
     @app.post("/api/jobs/{job_id}/slides/{n}/regenerate")
     async def regenerate(job_id: str, n: int, body: RegenerateBody) -> Dict[str, Any]:
         job = _get_job(job_id)
