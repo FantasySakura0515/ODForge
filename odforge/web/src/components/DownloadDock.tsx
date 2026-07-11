@@ -12,6 +12,12 @@ export function DownloadDock({
   phase?: Phase;
 }) {
   if (downloadUrl && jobId) {
+    // 展示模式(?mock)沒有真實產物:download_url 是 "mock:download",而 buildUrl 只會
+    // 組出 /api/jobs/mock/download → 404。誠實標「展示模式不提供下載」並 disabled,
+    // 不擺一顆點了就 404 的假下載鈕。
+    if (jobId === "mock") {
+      return <button className="dl" disabled title="展示模式為預錄流程,未產生真實檔案">展示模式 · 不提供下載 <span className="odp">ODF</span></button>;
+    }
     return <a className="dl done" href={buildUrl(jobId)} download>下載 {EXT[docType]} <span className="odp">ODF</span></a>;
   }
   // 空台:還沒開始生成,不擺一顆「生成中…」的假動作按鈕(空台矛盾)。

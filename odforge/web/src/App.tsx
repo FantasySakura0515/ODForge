@@ -53,9 +53,14 @@ export default function App() {
       jobParam,
       (e) => { received = true; throttle.push(e); },
       EventSource,
-      () => {
+      (e) => {
         // 已在重播事件了才錯 → 屬於正常結束後的斷線,忽略;完全沒收到事件才算過期。
         if (received) return;
+        // EventSource 在斷線後會「自動重連」:那段期間 readyState 為 CONNECTING(0),
+        // 是暫時性錯誤,不該誤判 job 過期。只有 readyState 已 CLOSED(2)——真正放棄
+        // 重連(如 job 404)——才視為過期。無 readyState 資訊時退回舊行為(視為過期)。
+        const rs = (e as { target?: { readyState?: number } } | undefined)?.target?.readyState;
+        if (rs != null && rs !== 2 /* EventSource.CLOSED */) return;
         close();
         throttle.cancel();
         cancelRef.current = undefined;
@@ -187,7 +192,9 @@ export default function App() {
               onSelect={setSelectedN}
             />
           )}
-          <GateRail gates={state.gates} qaRounds={state.qaRounds} onOpenFinding={(n) => setSelectedN(n)} />
+          {/* error 時改渲染 ErrorPanel(非 PreviewStage),lightbox host 未掛載——
+              此時 FindingRow 不可點,避免點了無反應的死互動。 */}
+          <GateRail gates={state.gates} qaRounds={state.qaRounds} onOpenFinding={state.phase === "error" ? undefined : (n) => setSelectedN(n)} />
           <footer className="foot">
             <StatusNarrator phase={state.phase} units={state.units} error={state.error} submitting={submitting} fillingPending={fillingPending} expired={expired} />
             <DownloadDock jobId={jobId} downloadUrl={state.downloadUrl} docType={state.docType} phase={state.phase} />

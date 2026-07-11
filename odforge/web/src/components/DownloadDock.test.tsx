@@ -21,3 +21,11 @@ test("完成時為連結、副檔名依型別", () => {
   expect(link).toHaveAttribute("href", "/api/jobs/j1/download");
   expect(link).toHaveTextContent(/\.ods/);
 });
+
+test("展示模式(jobId=mock)不出真下載連結,改 disabled 誠實鈕(避免 /api/jobs/mock/download 404)", () => {
+  render(<DownloadDock jobId="mock" downloadUrl="mock:download" docType="odp" phase="complete" />);
+  expect(screen.queryByRole("link")).toBeNull();
+  const btn = screen.getByRole("button");
+  expect(btn).toBeDisabled();
+  expect(btn).toHaveTextContent(/不提供下載/);
+});

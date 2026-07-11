@@ -211,8 +211,9 @@ data: {"n":1,"slide":{…}}
 `gate_result{design}` → `complete`。
 （interactive 時 `outline` 後先出 `awaiting_approval`，核可後才續。無 soffice 時
 `libreoffice` 閘回 `skipped` 且略過所有 `preview_ready`，其餘照舊。QA 若實際修頁
-（多於一輪），修好的頁會再補一次 `preview_ready`，故同一頁的 `preview_ready` 可能出現
-一次以上——以最後一次為準。）
+（多於一輪），會重跑 preview 階段刷新過期 PNG，故會**再發一次** `gate_result{libreoffice}`
+與修好頁的 `preview_ready`；同一 `gate`／同一頁因此可能出現一次以上——前端一律**以最後
+一次為準**（last-wins）。)
 
 以下為每個事件 `data` 的完整 JSON 範例。
 
@@ -342,7 +343,11 @@ data: {"n":1,"slide":{…}}
 5. 收 `qa_round` 顯示評審結果；收 `complete` 後以 `download_url` 提供下載。
 6. 使用者想改某頁 → `POST /slides/{n}/regenerate`，直接用回應裡的 `slide` 與
    `preview_url` 更新該頁（同步；此路徑不走 SSE）。
-7. 重整／重連 → `GET /api/jobs/{id}` 取快照重建畫面，再重開 SSE 補收後續。
+7. 重整／重連 → 直接重開 `EventSource("/api/jobs/{id}/events")`。事件 log 是 append-only
+   且**完整回放**：晚訂閱者會從 `outline` 起依序重收全部歷史事件，reducer 天然重建整個
+   狀態（`awaiting_approval` 回到確認站、`complete` 回到可下載）。故復原**走全量事件重播**，
+   不需先打 `GET /api/jobs/{id}` 快照；本專案前端即如此（`?job=` 直接重訂閱）。`GET
+   /api/jobs/{id}` 快照端點仍可用於不想重播事件流的輕量狀態查詢（如輪詢 `status`）。
 
 ## 安全性
 

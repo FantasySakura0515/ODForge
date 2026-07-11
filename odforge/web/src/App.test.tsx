@@ -14,13 +14,19 @@ class FakeEventSource {
   listeners: Record<string, (e: { data: string }) => void> = {};
   onerror: ((e: unknown) => void) | null = null;
   closed = false;
+  // 0 CONNECTING · 1 OPEN · 2 CLOSED,鏡射真實 EventSource.readyState。
+  readyState = 0;
   constructor(public url: string) { FakeEventSource.instances.push(this); }
   addEventListener(type: string, cb: (e: { data: string }) => void) { this.listeners[type] = cb; }
-  close() { this.closed = true; }
+  close() { this.closed = true; this.readyState = 2; }
   emit(type: string, data: unknown) {
     act(() => this.listeners[type]?.({ data: JSON.stringify(data) }));
   }
-  fail() { act(() => this.onerror?.({})); }
+  // 預設以 CLOSED(2)失敗(已放棄重連 → 視為過期);傳 0 模擬自動重連中的暫時錯誤。
+  fail(readyState = 2) {
+    this.readyState = readyState;
+    act(() => this.onerror?.({ target: this }));
+  }
 }
 
 beforeEach(() => {
@@ -33,14 +39,18 @@ afterEach(() => {
   vi.mocked(postOutlineAction).mockReset();
 });
 
-test("?mock 模式:mock 流跑到完成,格式閘依序點亮、設計閘顯示未啟用、可下載", async () => {
+test("?mock 模式:mock 流跑到完成,格式閘依序點亮、設計閘顯示未啟用、下載鈕誠實 disabled", async () => {
   window.history.replaceState({}, "", "/?mock=1&mockStep=5");
   const { container } = render(<App />);
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "樹與二元樹" } });
   fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
 
   await waitFor(() => expect(screen.getAllByText("樹與二元樹").length).toBeGreaterThan(0));
-  await waitFor(() => expect(screen.getByRole("link", { name: /下載/ })).toBeInTheDocument(), { timeout: 4000 });
+  // 完成訊號:頂欄「再鍛一份」出現(mock 產物非真檔,不再以假下載連結當完成證據)。
+  await waitFor(() => expect(screen.getByRole("button", { name: /再鍛一份/ })).toBeInTheDocument(), { timeout: 4000 });
+  // 展示模式誠實:不擺點了就 404 的假下載連結,改 disabled 說明鈕。
+  expect(screen.queryByRole("link", { name: /下載/ })).toBeNull();
+  expect(screen.getByRole("button", { name: /不提供下載/ })).toBeDisabled();
   // 誠實的 gate 真值:zip/xml/libreoffice 通過,design 因 demo 未開 QA 而 skipped(非偽造全綠)
   await waitFor(() => expect(container.querySelectorAll('[data-gate][data-status="pass"]')).toHaveLength(3));
   expect(container.querySelector('[data-gate="design"]')?.getAttribute("data-status")).toBe("skipped");
@@ -270,6 +280,20 @@ test("?job= 但 job 不存在(傳輸錯誤/404):顯示過期文案並清掉 URL 
   // URL 的 ?job= 已清掉,回到輸入畫面。
   expect(new URLSearchParams(window.location.search).get("job")).toBeNull();
   expect(screen.getByRole("button", { name: /鍛造/ })).toBeInTheDocument();
+});
+
+test("?job= 復原:自動重連中(readyState=CONNECTING)的暫時錯誤不誤判為過期", async () => {
+  window.history.replaceState({}, "", "/?job=reconnecting");
+  vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+
+  render(<App />);
+  await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+  // 尚未收到任何事件,但這是自動重連中的暫時性錯誤(CONNECTING)→ 不算過期。
+  FakeEventSource.instances[0].fail(0);
+
+  // 不顯示過期文案,?job= 仍保留(繼續等重連)。
+  expect(screen.queryByText(/找不到這個任務/)).toBeNull();
+  expect(new URLSearchParams(window.location.search).get("job")).toBe("reconnecting");
 });
 
 test("錯誤區「重試」以同樣參數重新送出上一次 generate", async () => {

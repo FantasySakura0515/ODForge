@@ -68,3 +68,18 @@ test("點 FindingRow → 以該頁碼呼叫 onOpenFinding", () => {
   fireEvent.click(screen.getByRole("button", { name: /第 4 頁/ }));
   expect(onOpen).toHaveBeenCalledWith(4);
 });
+
+test("無 onOpenFinding(如 error 態,lightbox host 未掛載)→ FindingRow 不可點、無按鈕語義與 clickable affordance", () => {
+  const { container } = render(
+    <GateRail
+      gates={gates}
+      qaRounds={[{ round: 1, findings: [{ slide_no: 4, issue: "溢出", severity: "error", fix_hint: "y" }] }]}
+    />,
+  );
+  // 沒有 button 語義(不會被讀屏器/滑鼠當可點),也不加 clickable class。
+  expect(screen.queryByRole("button", { name: /第 4 頁/ })).toBeNull();
+  const row = container.querySelector(".finding");
+  expect(row?.classList.contains("clickable")).toBe(false);
+  // 內容照樣顯示(只是不可點)。
+  expect(screen.getByText("溢出")).toBeInTheDocument();
+});
