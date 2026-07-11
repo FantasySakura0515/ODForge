@@ -131,6 +131,17 @@ test("該頁 status=regen 時輸入列停用並顯示重生中遮罩", () => {
 
 test("重生中遮罩帶 spin 旋轉指示符", () => {
   const regen: Unit[] = units.map((u) => (u.n === 2 ? { ...u, status: "regen" } : u));
-  const { container } = render(<UnitDetail units={regen} n={2} jobId="j1" onClose={noop} onNavigate={noop} dispatch={noop} />);
-  expect(container.querySelector(".ud-regenning .spin")).not.toBeNull();
+  render(<UnitDetail units={regen} n={2} jobId="j1" onClose={noop} onNavigate={noop} dispatch={noop} />);
+  // dialog 已 portal 到 body,RTL container 查不到 → 查 document。
+  expect(document.querySelector(".ud-regenning .spin")).not.toBeNull();
+});
+
+// 圖層回歸:lightbox 必須 portal 到 body,不能困在 .center(z-index:2)的
+// stacking context 裡——否則同層 .rail/.foot 會整片蓋過遮罩(2026-07-11 實測)。
+test("lightbox portal 到 document.body(不被 .center stacking context 困住)", () => {
+  render(<PreviewStage units={units} docType="odp" jobId="j1" dispatch={noop} />);
+  fireEvent.click(screen.getByRole("button", { name: /第 1 頁/ }));
+  const overlay = document.querySelector(".lightbox");
+  expect(overlay?.parentElement).toBe(document.body);
+  expect(overlay?.closest(".center")).toBeNull();
 });

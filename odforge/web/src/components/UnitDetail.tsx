@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { postRegenerate } from "../state/api";
 import type { CockpitAction, Unit } from "../state/types";
 
@@ -94,7 +95,10 @@ export function UnitDetail({ units, n, jobId, onClose, onNavigate, dispatch }: P
     }
   }
 
-  return (
+  // Portal 到 body:.center 是 position:relative + z-index:2 的 stacking context,
+  // 在裡面時 z-index:50 只跟 center 的子元素比;同層的 .rail/.foot(z-index:2、DOM
+  // 在後)會整片蓋過遮罩。跳出去,fixed 遮罩才真的罩住整個 cockpit。
+  return createPortal(
     <div className="lightbox" onClick={onClose}>
       <div
         className="ud-dialog"
@@ -144,6 +148,7 @@ export function UnitDetail({ units, n, jobId, onClose, onNavigate, dispatch }: P
         </form>
         {error && <p className="ud-error" role="alert">{error}</p>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
