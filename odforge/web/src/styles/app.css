@@ -215,7 +215,10 @@
   line-height: 20px;
   padding: 6px 4px;
 }
+/* 滑鼠點擊不顯環(:focus),鍵盤聚焦顯可見焦點環(:focus-visible)。
+   後置且同特異度,故聚焦來自鍵盤時此規則勝出,蓋掉上面的 outline:none。 */
 .promptbar textarea:focus { outline: none; }
+.promptbar textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
 .promptbar textarea::placeholder { color: var(--muted); }
 
 .forge {

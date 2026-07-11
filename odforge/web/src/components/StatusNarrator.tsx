@@ -24,7 +24,11 @@ export function StatusNarrator({
     : phase === "complete" ? "完成 · 原生 ODF"
     : forging ? `第 ${forging.n} 頁鍛造中…` : "生成中…";
   return (
-    <div className={"narrator" + (isError ? " is-error" : "")} title={isError && error ? error.message : undefined}>
+    <div
+      className={"narrator" + (isError ? " is-error" : "")}
+      aria-live="polite"
+      title={isError && error ? error.message : undefined}
+    >
       <span className="ndot">{isError ? "✕" : "◆"}</span>
       <span className="nn">{text}</span>
     </div>

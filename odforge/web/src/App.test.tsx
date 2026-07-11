@@ -79,6 +79,13 @@ test("正常(非 mock、未失敗)頂欄不顯示狀態 chip", () => {
   expect(screen.queryByText("後端未連線")).toBeNull();
 });
 
+test("主題切換鈕有可及名稱(淺色主題/深色主題)", () => {
+  window.history.replaceState({}, "", "/");
+  render(<App />);
+  expect(screen.getByRole("button", { name: "淺色主題" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "深色主題" })).toBeInTheDocument();
+});
+
 test("大綱刪 1 頁 → 確認成功 → units 隨編輯後大綱重同步,complete 後無幽靈 done 格", async () => {
   window.history.replaceState({}, "", "/");
   vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);

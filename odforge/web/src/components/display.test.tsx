@@ -42,6 +42,12 @@ test("StatusNarrator 完成態文字", () => {
   expect(screen.getByText(/四道閘全綠|完成/)).toBeInTheDocument();
 });
 
+test("StatusNarrator 容器為 aria-live polite(讀屏器聽得到進度)", () => {
+  const { container } = render(<StatusNarrator phase="qa" units={[]} />);
+  const el = container.querySelector(".narrator");
+  expect(el?.getAttribute("aria-live")).toBe("polite");
+});
+
 test("StatusNarrator 錯誤態顯示訊息與階段", () => {
   const { container } = render(
     <StatusNarrator phase="error" units={[]} error={{ message: "環境變數 DEEPSEEK_API_KEY 未設定", stage: "outline" }} />,

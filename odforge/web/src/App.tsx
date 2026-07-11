@@ -73,9 +73,9 @@ export default function App() {
             <div className="brand"><span className="mark">文鍛</span><span className="en">ODForge</span></div>
             {chip && <span className="statuschip" data-kind={chip.kind}>{chip.label}</span>}
             {!busy ? <PromptBar onGenerate={onGenerate} /> : <div className="promptline">生成中的文件</div>}
-            <div className="themetoggle">
-              <button aria-pressed={theme === "light"} onClick={() => setTheme("light")}>☀</button>
-              <button aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>☾</button>
+            <div className="themetoggle" role="group" aria-label="主題">
+              <button aria-label="淺色主題" aria-pressed={theme === "light"} onClick={() => setTheme("light")}>☀</button>
+              <button aria-label="深色主題" aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>☾</button>
             </div>
           </header>
           <OutlineRail outline={state.outline} phase={state.phase} onConfirm={onConfirmOutline} />
