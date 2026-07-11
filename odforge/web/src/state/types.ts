@@ -15,6 +15,8 @@ export type SseEvent =
   | { type: "outline"; data: Outline }
   | { type: "awaiting_approval"; data: Record<string, never> }
   | { type: "slide_done"; data: { n: number; slide: { layout: string; title: string; [key: string]: unknown } } }
+  // F4 起的正名:unit_done 與 slide_done 同 data,後端兩者並發,reducer 收斂成同一 case。
+  | { type: "unit_done"; data: { n: number; slide: { layout: string; title: string; [key: string]: unknown } } }
   | { type: "preview_ready"; data: { n: number; url: string } }
   | { type: "gate_result"; data: { gate: GateId; status: "pass" | "fail" | "skipped" } }
   | { type: "qa_round"; data: { round: number; findings: Finding[] } }

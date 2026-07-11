@@ -17,7 +17,11 @@ export function GateRail({ gates, qaRounds }: { gates: Record<GateId, GateStatus
           <div className="gate" key={g.id} data-gate={g.id} data-status={gates[g.id]}>
             <span className="gi">{g.code}</span>
             <span className="gt"><b>{g.label}</b><small>{g.sub}</small></span>
-            <span className="gs">{gates[g.id] === "skipped" ? "— 未啟用" : SYM[gates[g.id]]}</span>
+            <span className="gs">
+              {gates[g.id] === "skipped" ? "— 未啟用"
+                : gates[g.id] === "active" ? <span className="spin" aria-hidden="true">{SYM.active}</span>
+                : SYM[gates[g.id]]}
+            </span>
           </div>
         ))}
       </div>

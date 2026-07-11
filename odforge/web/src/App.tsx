@@ -110,9 +110,9 @@ export default function App() {
               // 生成中:頂欄細條顯示真實 prompt(過長由 CSS 截斷,title 給全文)。
               <div className="promptline" title={prompt || undefined}>{prompt || "生成中的文件"}</div>
             )}
-            <div className="themetoggle">
-              <button aria-pressed={theme === "light"} onClick={() => setTheme("light")}>☀</button>
-              <button aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>☾</button>
+            <div className="themetoggle" role="group" aria-label="主題">
+              <button aria-label="淺色主題" aria-pressed={theme === "light"} onClick={() => setTheme("light")}>☀</button>
+              <button aria-label="深色主題" aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>☾</button>
             </div>
           </header>
           <OutlineRail outline={state.outline} phase={state.phase} onConfirm={onConfirmOutline} />

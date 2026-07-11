@@ -125,7 +125,7 @@ export function UnitDetail({ units, n, jobId, onClose, onNavigate, dispatch }: P
                 <span>此頁尚無預覽</span>
               </div>
             )}
-            {isRegen && <div className="ud-regenning" aria-hidden="true">重生中…</div>}
+            {isRegen && <div className="ud-regenning" aria-hidden="true"><span className="spin">⟳</span> 重生中…</div>}
           </div>
 
           <button className="ud-nav next" type="button" aria-label="下一張" disabled={n >= total} onClick={() => go(1)}>›</button>

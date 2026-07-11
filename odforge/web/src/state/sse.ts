@@ -1,7 +1,8 @@
 import { eventsUrl } from "./api";
 import type { SseEvent } from "./types";
 
-const KNOWN = new Set(["outline", "awaiting_approval", "slide_done", "preview_ready", "gate_result", "qa_round", "complete", "error"]);
+// unit_done 為 slide_done 的 F4 正名別名(後端並發兩者);兩者都收,reducer 等價處理。
+const KNOWN = new Set(["outline", "awaiting_approval", "slide_done", "unit_done", "preview_ready", "gate_result", "qa_round", "complete", "error"]);
 
 export function parseSseEvent(type: string, data: string): SseEvent | null {
   if (!KNOWN.has(type)) return null;
@@ -12,7 +13,7 @@ export function parseSseEvent(type: string, data: string): SseEvent | null {
   }
 }
 
-const EVENT_NAMES = ["outline", "awaiting_approval", "slide_done", "preview_ready", "gate_result", "qa_round", "complete", "error"];
+const EVENT_NAMES = ["outline", "awaiting_approval", "slide_done", "unit_done", "preview_ready", "gate_result", "qa_round", "complete", "error"];
 
 export function subscribeJob(
   jobId: string,

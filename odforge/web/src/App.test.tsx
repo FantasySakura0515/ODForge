@@ -177,6 +177,13 @@ test("等待卡取消鈕:關閉 SSE、重置回 empty、prompt 保留", async ()
   expect(FakeEventSource.instances[0].closed).toBe(true);
 });
 
+test("主題切換鈕有可及名稱(淺色主題/深色主題)", () => {
+  window.history.replaceState({}, "", "/");
+  render(<App />);
+  expect(screen.getByRole("button", { name: "淺色主題" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "深色主題" })).toBeInTheDocument();
+});
+
 test("大綱刪 1 頁 → 確認成功 → units 隨編輯後大綱重同步,complete 後無幽靈 done 格", async () => {
   window.history.replaceState({}, "", "/");
   vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);

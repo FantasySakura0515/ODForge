@@ -54,9 +54,24 @@ test("StatusNarrator await 但已確認大綱時,報逐頁填充而非等待確�
   expect(screen.queryByText(/等待你確認/)).toBeNull();
 });
 
+test("GateRail active 閘的 ⟳ 帶 spin 類(轉檔中會旋轉)", () => {
+  const { container } = render(
+    <GateRail gates={{ zip: "pass", xml: "pass", libreoffice: "active", design: "pending" }} qaRounds={[]} />,
+  );
+  const spin = container.querySelector('[data-gate="libreoffice"] .gs .spin');
+  expect(spin).not.toBeNull();
+  expect(spin?.textContent).toBe("⟳");
+});
+
 test("StatusNarrator 完成態文字", () => {
   render(<StatusNarrator phase="complete" units={[]} />);
   expect(screen.getByText(/四道閘全綠|完成/)).toBeInTheDocument();
+});
+
+test("StatusNarrator 容器為 aria-live polite(讀屏器聽得到進度)", () => {
+  const { container } = render(<StatusNarrator phase="qa" units={[]} />);
+  const el = container.querySelector(".narrator");
+  expect(el?.getAttribute("aria-live")).toBe("polite");
 });
 
 test("StatusNarrator 錯誤態顯示訊息與階段", () => {

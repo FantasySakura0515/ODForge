@@ -103,6 +103,7 @@ CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：�
 | GET | `/api/jobs/{id}/events` | SSE 事件流（見「SSE 事件」） |
 | POST | `/api/jobs/{id}/outline` | `{action: "approve"}` 或 `{action: "edit", outline: Outline}` → `{ok, status}` |
 | POST | `/api/jobs/{id}/slides/{n}/regenerate` | `{instruction?: str}` → `{ok, n, slide, preview_url}`（同步：新頁 + preview 直接回在回應內，**不**走 SSE） |
+| POST | `/api/jobs/{id}/units/{n}/regenerate` | 同上（`slides/{n}/regenerate` 的 F4 正名別名，同一 handler） |
 | GET | `/api/jobs/{id}/preview/{n}.png` | 第 n 頁 PNG（`image/png`） |
 | GET | `/api/jobs/{id}/download` | 最終 `.odp`（`Content-Disposition: attachment`） |
 | GET | `/api/jobs/{id}` | 狀態快照 `{status, slides_done, outline?, findings?, download_url?, error?}` |
@@ -258,6 +259,12 @@ data: {"n":1,"slide":{…}}
   }
 }
 ```
+
+### `unit_done` — `slide_done` 的 F4 正名別名
+
+自 F4 起，「頁」的正名為 unit。每發一個 `slide_done` 會**緊接**並發一個 `unit_done`，
+`data` 完全相同（`{n, slide}`）。`slide_done` 保留以向前相容；新前端可只監聽 `unit_done`，
+或兩者皆聽並收斂成同一處理（本專案前端即如此）。
 
 ### `preview_ready` — 第 n 頁 PNG 就緒
 ```json

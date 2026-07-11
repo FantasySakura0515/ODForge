@@ -69,3 +69,24 @@ test("mock previewUrl → 佔位而非 img", () => {
   expect(container.querySelector("img")).toBeNull();
   expect(container.querySelector(".placeholder")?.textContent).toContain("內文");
 });
+
+test("非可點單元有可及名稱(頁碼＋標題),而非只靠 aria-hidden 佔位", () => {
+  render(
+    <UnitCell unit={{ n: 2, role: "content", title: "內文", status: "skeleton" }} jobId="j1" />,
+  );
+  // 讀屏器聽得到「第 2 頁 · 內文」,不再是一個無名格子。
+  const cell = screen.getByRole("img", { name: /第\s*2\s*頁/ });
+  expect(cell.getAttribute("aria-label")).toContain("內文");
+});
+
+test("可點單元的可及名稱含開啟動作與標題", () => {
+  render(
+    <UnitCell
+      unit={{ n: 1, role: "title", title: "封面", status: "done", previewUrl: "/api/jobs/j1/preview/1.png" }}
+      jobId="j1"
+      onOpen={() => {}}
+    />,
+  );
+  const btn = screen.getByRole("button", { name: /開啟第\s*1\s*頁/ });
+  expect(btn.getAttribute("aria-label")).toContain("封面");
+});
