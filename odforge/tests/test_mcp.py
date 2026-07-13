@@ -205,7 +205,7 @@ def _parse_md_two_col(path: Path) -> tuple[dict[str, str], dict[str, int]]:
     return palette, scale
 
 
-@pytest.mark.parametrize("name", ["academic", "minimal", "dark"])
+@pytest.mark.parametrize("name", sorted(THEMES))
 def test_theme_md_lockstep_with_themes(name: str) -> None:
     theme = THEMES[name]
     palette, scale = _parse_md_two_col(THEME_MD_DIR / f"{name}.md")
@@ -226,7 +226,7 @@ def test_theme_md_lockstep_with_themes(name: str) -> None:
 def test_theme_md_scale_equals_standard_tier() -> None:
     # Presets are built at the 'standard' tier; the md scale must mirror it too.
     display_pt, h1_pt, body_pt, caption_pt = SCALES["standard"]
-    for name in ("academic", "minimal", "dark"):
+    for name in THEMES:
         _, scale = _parse_md_two_col(THEME_MD_DIR / f"{name}.md")
         assert scale["display"] == display_pt
         assert scale["h1"] == h1_pt
@@ -268,5 +268,5 @@ def test_skill_md_references_all_tools_and_layouts() -> None:
 
 def test_skill_md_links_theme_specs() -> None:
     content = SKILL_MD.read_text(encoding="utf-8")
-    for name in ("academic", "minimal", "dark"):
+    for name in THEMES:
         assert f"themes/{name}.md" in content, f"SKILL.md must link themes/{name}.md"

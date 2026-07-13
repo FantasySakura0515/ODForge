@@ -99,7 +99,8 @@ def forge_presentation(document: dict, out_path: str) -> str:
     fields:
 
     * ``title`` (str, required) — deck title.
-    * ``theme`` (str) — ``academic`` | ``minimal`` | ``dark``.
+    * ``theme`` (str) — ``academic`` | ``minimal`` | ``dark`` | ``teal`` |
+      ``forest`` | ``navy`` | ``violet``.
     * ``slides`` (list) — each slide has a ``layout``: ``title`` (``title``,
       ``subtitle``), ``title-content`` (``title``, ``bullets``), ``two-col``
       (``title``, ``left``, ``right``), ``section`` (``title``), ``big-fact``

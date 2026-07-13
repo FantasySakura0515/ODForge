@@ -42,6 +42,10 @@ class Theme(str, Enum):
     academic = "academic"
     minimal = "minimal"
     dark = "dark"
+    teal = "teal"
+    forest = "forest"
+    navy = "navy"
+    violet = "violet"
 
 
 class Backend(str, Enum):

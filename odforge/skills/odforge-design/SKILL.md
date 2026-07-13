@@ -91,7 +91,8 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
 }
 ```
 
-- `theme`：`"academic"` | `"minimal"` | `"dark"`（沒給 `design` 時就用這個內建主題）。
+- `theme`：`"academic"` | `"minimal"` | `"dark"` | `"teal"` | `"forest"` | `"navy"` |
+  `"violet"`（沒給 `design` 時就用這個內建主題；七套的定位見 ④）。
 - `slides`：至少 1 張。
 - `forge_presentation` 會把 `type` 強制成 `"presentation"`，你標錯也會被更正。
 
@@ -121,6 +122,11 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
 ### DesignSpec（每份簡報客製設計，可省略）
 
 把 ① 訪談定案的美術方向落成 `design`。省略則用 `theme` 內建主題。
+
+**配色心法（60-30-10）**：五個 palette token 就是一套 60-30-10——`bg` 是 60% 的底、
+`surface`+`text`+`muted` 是 30% 的結構、`accent` 是那 10%（**全簡報唯一的彩色**，只點在
+一個關鍵字／標題底線／一條 highlight）。要自訂 palette、想懂配色配方與趨勢／色盲安全
+的圖表用色，讀 [themes/color-system.md](themes/color-system.md)。
 
 ```json
 "design": {
@@ -152,14 +158,21 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
 
 ## ④ 主題規格書（給 LLM 讀的鏡像）
 
-三套內建美術方向的完整 hex 表、字級刻度、字型與每個版型的使用時機，寫在：
+七套內建美術方向的完整 hex 表、字級刻度、字型與每個版型的使用時機，寫在下面。
+五套淺底、兩套暗底，挑最扣題的一套當 `theme`，或當自訂 `design` 的技術底：
 
 - [themes/academic.md](themes/academic.md) — 學術藍＋暖白，serif 標題，適合論文口試／研究報告。
 - [themes/minimal.md](themes/minimal.md) — 暖灰單色＋一點橘，克制留白，適合產品發表／pitch。
+- [themes/teal.md](themes/teal.md) — 企業青綠（2026 年度色）＋冷白，冷靜可信，適合企業／SaaS／ESG。
+- [themes/forest.md](themes/forest.md) — 森綠＋暖奶油，serif，editorial 質感，適合永續／生態／人文。
+- [themes/navy.md](themes/navy.md) — 海軍藍＋冷白，最通用的商務配色，適合正式簡報／投資人場。
 - [themes/dark.md](themes/dark.md) — 深靛＋亮青，暗底舞台感，適合技術分享／demo。
+- [themes/violet.md](themes/violet.md) — 午夜紫＋電光紫，暗底創意戲劇感，適合創意提案／設計敘事。
 
-這些數值與 `odforge.themes.THEMES` / `SCALES` 常數 lockstep（有測試防漂移）。要客製
-`design` 時，可拿最接近的一套當技術底，再微調 palette。
+配色方法論（60-30-10、配色配方、趨勢與色盲安全的圖表用色）另寫在
+[themes/color-system.md](themes/color-system.md)。這些數值與 `odforge.themes.THEMES` /
+`SCALES` 常數 lockstep（有測試防漂移）。要客製 `design` 時，可拿最接近的一套當技術底，
+再微調 palette。
 
 ---
 

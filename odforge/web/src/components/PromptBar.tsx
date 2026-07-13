@@ -18,7 +18,9 @@ const MODES: { id: "presenter" | "detailed"; label: string; hint: string }[] = [
 // "" = 自動(不送 theme,交給 AI 依主題設計)
 const THEMES: { id: string; label: string }[] = [
   { id: "", label: "自動" }, { id: "academic", label: "academic" },
-  { id: "minimal", label: "minimal" }, { id: "dark", label: "dark" },
+  { id: "minimal", label: "minimal" }, { id: "teal", label: "teal" },
+  { id: "forest", label: "forest" }, { id: "navy", label: "navy" },
+  { id: "dark", label: "dark" }, { id: "violet", label: "violet" },
 ];
 
 // 展示「好 prompt」:含受眾/頁數/語氣線索,主題台灣在地、評審看得懂。

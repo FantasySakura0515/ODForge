@@ -282,7 +282,9 @@ class DesignSpec(BaseModel):
 class Presentation(BaseModel):
     type: Literal["presentation"] = "presentation"
     title: str
-    theme: Literal["academic", "minimal", "dark"] = "academic"
+    theme: Literal[
+        "academic", "minimal", "dark", "teal", "forest", "navy", "violet"
+    ] = "academic"
     slides: List[Slide] = Field(default_factory=list, min_length=1)
     # Optional per-deck design tokens. Absent (``None``) keeps v1 behaviour.
     design: Optional[DesignSpec] = None

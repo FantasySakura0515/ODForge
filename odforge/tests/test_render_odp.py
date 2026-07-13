@@ -19,8 +19,10 @@ def test_frames_within_page_bounds():
             assert f.y + f.h <= PAGE_H, (name, f.role)
 
 
-def test_all_three_themes_exist():
-    assert set(THEMES) == {"academic", "minimal", "dark"}
+def test_all_presets_exist():
+    assert set(THEMES) == {
+        "academic", "minimal", "dark", "teal", "forest", "navy", "violet"
+    }
 
 
 def test_theme_colors_are_valid_hex():

@@ -213,6 +213,46 @@ THEMES: dict[str, Theme] = {
         font_display="Noto Sans TC",
         font_body="Noto Sans TC",
     ),
+    # 企業青綠: 2026 'Transformative Teal' on a cool near-white; calm/trustworthy.
+    "teal": _preset(
+        bg="#F4F7F7",
+        surface="#E4EDEC",
+        text="#1B2A2C",
+        muted="#556463",
+        accent="#0F766E",
+        font_display="Noto Sans TC",
+        font_body="Noto Sans TC",
+    ),
+    # 森綠 + 奶油: deep forest green on warm cream, serif display; editorial/永續.
+    "forest": _preset(
+        bg="#F6F2E9",
+        surface="#E9E1CE",
+        text="#23291F",
+        muted="#5E5849",
+        accent="#2C6E49",
+        font_display="Noto Serif TC",
+        font_body="Noto Sans TC",
+    ),
+    # 海軍藍 + 冷白: navy ink + electric-blue accent on cool white; corporate/SaaS.
+    "navy": _preset(
+        bg="#FAFBFD",
+        surface="#EAEEF5",
+        text="#16233F",
+        muted="#55617A",
+        accent="#2563EB",
+        font_display="Noto Sans TC",
+        font_body="Noto Sans TC",
+    ),
+    # 午夜紫 + 電光紫: midnight-plum ground with a bright violet accent; creative/tech.
+    "violet": _preset(
+        bg="#1A1526",
+        surface="#2A2440",
+        text="#ECEAF4",
+        muted="#9A93B8",
+        accent="#B49BF5",
+        font_display="Noto Sans TC",
+        font_body="Noto Sans TC",
+    ),
 }
 
 
