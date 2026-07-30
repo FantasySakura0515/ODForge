@@ -139,6 +139,7 @@ export function UnitDetail({ units, n, jobId, onClose, onNavigate, dispatch }: P
           <input
             type="text"
             className="ud-input"
+            aria-label="重生指令"
             placeholder="用一句話描述要怎麼改,例如:改成比較表、字再少一點"
             value={instruction}
             disabled={disabled}

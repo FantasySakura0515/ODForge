@@ -22,7 +22,7 @@ DISPATCH: dict[str, Callable[..., Path]] = {
 }
 
 
-def render(ir, out_path: Path) -> Path:
+def render(ir, out_path: Path, **kwargs) -> Path:
     """Render ``ir`` to ``out_path`` using the renderer for its ``type``.
 
     Raises ``ValueError`` (with the offending type in the message) when no
@@ -32,6 +32,8 @@ def render(ir, out_path: Path) -> Path:
     renderer = DISPATCH.get(ir_type)
     if renderer is None:
         raise ValueError(f"No renderer registered for document type: {ir_type!r}")
+    if ir_type == "presentation":
+        return renderer(ir, Path(out_path), **kwargs)
     return renderer(ir, Path(out_path))
 
 

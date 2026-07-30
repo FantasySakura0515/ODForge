@@ -13,14 +13,34 @@ skipped; speaker notes are emitted only when non-empty.
 
 from __future__ import annotations
 
+import hashlib
+import math
+from collections.abc import Mapping, MutableMapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Callable
 from xml.sax.saxutils import escape
 
-from odforge.ir import BulletItem, ChartSpec, Presentation, Slide
+from odforge.ir import (
+    BulletItem,
+    ChartSpec,
+    DiagramSpec,
+    MetricSpec,
+    Presentation,
+    ProcessStep,
+    Slide,
+    TimelineEvent,
+)
+from odforge.media import (
+    AssetBlob,
+    AssetInput,
+    ImageProvider,
+    MediaError,
+    configured_image_provider,
+    normalize_assets,
+    resolve_image,
+)
 from odforge.package import ODP_MIMETYPE, write_odf_package
-from odforge.textmetrics import estimate_height_cm, fact_font_size_pt
+from odforge.textmetrics import estimate_height_cm, fact_font_size_pt, text_width_cm
 from odforge.themes import (
     LAYOUTS,
     LIST_ROLES,
@@ -165,6 +185,58 @@ _DECO_OPACITY_SPAN = 0.30
 # frame so document order puts the text on top (ODF z-order == document order).
 _CARD_ROLES = frozenset({"left", "right"})
 _CARD_PAD = 0.3  # cm the card overhangs its text frame on every side
+
+# Interior metrics for the idea-card grid (cm). Kept as named constants because
+# both the card's height and its children's baseline are derived from them —
+# a literal in one place and not the other is how the box and its contents
+# drifted apart in the first place.
+_CARD_PAD_X = 0.45
+_CARD_PAD_TOP = 0.45
+_CARD_PAD_BOTTOM = 0.5
+_CARD_BADGE_H = 0.55
+_CARD_BADGE_GAP = 0.35  # badge baseline → title top
+_CARD_TITLE_GAP = 0.4  # title → children
+_CARD_TITLE_LINE_HEIGHT = 1.2  # matches the title's line-height="120%"
+_CARD_CHILD_LINE_HEIGHT = 1.35  # matches the children's line-height="135%"
+_CARD_MIN_H = 3.2  # below this a card stops reading as a container
+_CARD_MAX_H = 6.8
+
+# Timeline event cards. The stem is the fixed distance from the axis to a card,
+# so a taller row grows away from the line instead of into it.
+_TIMELINE_STEM = 0.85
+_TIMELINE_TITLE_TOP = 1.05  # label sits above, at +0.30
+_TIMELINE_DETAIL_GAP = 0.3
+_TIMELINE_DETAIL_LINE_HEIGHT = 1.3  # matches the detail's line-height="130%"
+_TIMELINE_PAD_BOTTOM = 0.4
+_TIMELINE_MIN_H = 3.0
+_TIMELINE_MAX_H = 5.2
+
+# Process step cards, same badge → title → detail stack.
+_PROCESS_TITLE_TOP = 1.65
+_PROCESS_TITLE_LINE_HEIGHT = 1.15  # matches the title's line-height="115%"
+_PROCESS_DETAIL_GAP = 0.35
+_PROCESS_DETAIL_LINE_HEIGHT = 1.35
+_PROCESS_PAD_BOTTOM = 0.5
+_PROCESS_MIN_H = 3.4
+_PROCESS_MAX_H = 7.0
+
+# Diagram edge labels. The chip is sized to its text; the clearance is the
+# run of connector that must stay visible either side of it, and decides
+# whether the chip can sit on the line at all.
+_EDGE_LABEL_PAD = 0.22
+_EDGE_LABEL_CLEARANCE = 0.35
+
+# LibreOffice insets a draw text-box by this much on each side unless the
+# graphic style says otherwise, and `gr1` does not. Measuring a wrap against
+# the full frame width is therefore optimistic by half a centimetre — enough
+# to under-count a line and size a box too short. Every box sized to its own
+# text measures against `_wrap_width` instead.
+_FRAME_INSET_X = 0.25
+
+
+def _wrap_width(frame_w: float) -> float:
+    """Usable text width inside a frame of ``frame_w`` (cm)."""
+    return max(0.1, frame_w - 2 * _FRAME_INSET_X)
 _CARD_CORNER = 0.3  # cm corner radius
 
 # Task 13.5: shape-drawn horizontal bar charts. The "chart" layout that drops
@@ -180,6 +252,19 @@ _CHART_GAP = 0.2  # cm — breathing space before a bar and before its value tex
 _CHART_BAR_H_FRAC = 0.42  # bar thickness as a fraction of its row's height
 _CHART_BAR_CORNER = 0.08  # cm — bars are barely rounded
 _CHART_OTHER_BLEND = 0.55  # non-highlight bars: _blend(muted, bg, this amount)
+
+# Shape-rendered visual layouts.
+_VISUAL_CARD_CORNER = 0.28
+_VISUAL_GAP = 0.55
+_VISUAL_LINE_WIDTH_PT = 1.5
+_VISUAL_LINE_BLEND = 0.55
+_PROCESS_BADGE_SIZE = 0.76
+_TIMELINE_NODE_SIZE = 0.58
+_METRIC_ACCENT_H = 0.14
+_DIAGRAM_NODE_H = 2.45
+_DIAGRAM_NODE_W = 5.2
+_DIAGRAM_LINE_BLEND = 0.62
+_SOURCE_FRAME = Frame("sources", 1.5, 14.08, 21.8, 0.75, 9)
 
 
 def _attr(value: str) -> str:
@@ -318,8 +403,18 @@ class _ParagraphStyles:
         line_height: str | None = None,
         margin_bottom: str | None = None,
         letter_spacing: str | None = None,
+        font: str | None = None,
     ) -> str:
-        key = (size_pt, bold, center, color, line_height, margin_bottom, letter_spacing)
+        key = (
+            font or self._font,
+            size_pt,
+            bold,
+            center,
+            color,
+            line_height,
+            margin_bottom,
+            letter_spacing,
+        )
         name = self._names.get(key)
         if name is None:
             name = f"P{len(self._names) + 1}"
@@ -328,7 +423,7 @@ class _ParagraphStyles:
 
     def xml(self) -> str:
         return "".join(
-            _paragraph_style_xml(name, self._font, *key)
+            _paragraph_style_xml(name, *key)
             for key, name in self._names.items()
         )
 
@@ -567,6 +662,23 @@ def _line_xml(
     )
 
 
+def _ellipse_xml(
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    *,
+    fill: str,
+    style_name: str,
+) -> str:
+    """Build a filled ellipse for process badges and timeline nodes."""
+    return (
+        f'<draw:ellipse draw:style-name="{_attr(style_name)}"'
+        f' svg:x="{_cm(x)}" svg:y="{_cm(y)}"'
+        f' svg:width="{_cm(w)}" svg:height="{_cm(h)}"/>'
+    )
+
+
 # ---------------------------------------------------------------------------
 # Title-page SVG decoration (engine-generated, deterministic)
 # ---------------------------------------------------------------------------
@@ -706,6 +818,109 @@ def _frame_xml(
     return _frame_box_xml(frame, paragraphs)
 
 
+def _image_area_xml(
+    slide: Slide,
+    frame: Frame,
+    theme: Theme,
+    graphics: _GraphicStyles,
+    styles: _ParagraphStyles,
+    resolved: tuple[str, AssetBlob] | None,
+) -> str:
+    """Render a packaged raster image, or an honest editable placeholder."""
+
+    if slide.image is None:
+        return ""
+
+    caption_parts = [part for part in (slide.image.caption, slide.image.credit) if part]
+    caption = " · ".join(caption_parts)
+    caption_h = 0.72 if caption else 0.0
+    image_h = max(0.5, frame.h - caption_h)
+    inset = 0.08
+    target_x = frame.x + inset
+    target_y = frame.y + inset
+    target_w = frame.w - inset * 2
+    target_h = image_h - inset * 2
+
+    surface_style = graphics.name_for_fill(theme.surface)
+    parts = [
+        _rect_xml(
+            frame.x,
+            frame.y,
+            frame.w,
+            image_h,
+            fill=theme.surface,
+            corner_radius_cm=0.18,
+            style_name=surface_style,
+        )
+    ]
+
+    if resolved is not None:
+        href, blob = resolved
+        draw_x, draw_y, draw_w, draw_h = target_x, target_y, target_w, target_h
+        if slide.image.fit == "contain":
+            image_ratio = blob.width / blob.height
+            frame_ratio = target_w / target_h
+            if image_ratio > frame_ratio:
+                draw_h = target_w / image_ratio
+                draw_y += (target_h - draw_h) / 2
+            else:
+                draw_w = target_h * image_ratio
+                draw_x += (target_w - draw_w) / 2
+        parts.append(
+            f'<draw:frame draw:style-name="{_GRAPHIC_STYLE}"'
+            f' svg:x="{_cm(draw_x)}" svg:y="{_cm(draw_y)}"'
+            f' svg:width="{_cm(draw_w)}" svg:height="{_cm(draw_h)}">'
+            f'<draw:image xlink:href="{_attr(href)}" xlink:type="simple"'
+            f' xlink:show="embed" xlink:actuate="onLoad"/>'
+            f"</draw:frame>"
+        )
+    else:
+        placeholder_style = styles.name_for(
+            theme.caption_pt,
+            False,
+            True,
+            theme.muted,
+        )
+        placeholder = Frame(
+            "image-placeholder",
+            target_x + 0.6,
+            target_y + target_h / 2 - 0.75,
+            max(0.5, target_w - 1.2),
+            1.5,
+            theme.caption_pt,
+            center=True,
+        )
+        placeholder_text = f"圖片待補\n{slide.image.alt}"
+        parts.append(
+            _frame_box_xml(
+                placeholder,
+                "".join(
+                    f'<text:p text:style-name="{_attr(placeholder_style)}">'
+                    f"{escape(line)}</text:p>"
+                    for line in placeholder_text.splitlines()
+                ),
+            )
+        )
+
+    if caption:
+        caption_style = styles.name_for(
+            theme.caption_pt,
+            False,
+            False,
+            theme.muted,
+        )
+        caption_frame = Frame(
+            "image-caption",
+            frame.x,
+            frame.y + image_h + 0.12,
+            frame.w,
+            max(0.45, caption_h - 0.12),
+            theme.caption_pt,
+        )
+        parts.append(_frame_xml(caption_frame, [caption], caption_style))
+    return "".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Task 13.5: shape-drawn horizontal bar charts
 # ---------------------------------------------------------------------------
@@ -835,6 +1050,947 @@ def _chart_xml(
         )
 
     return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Shape-rendered process, timeline, metric and idea-card layouts
+# ---------------------------------------------------------------------------
+
+
+def _visual_text_xml(
+    text: str,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    styles: _ParagraphStyles,
+    *,
+    size_pt: int,
+    color: str,
+    bold: bool = False,
+    center: bool = False,
+    font: str | None = None,
+    line_height: str | None = None,
+) -> str:
+    """Render one styled paragraph in a positioned text frame."""
+    style_name = styles.name_for(
+        size_pt,
+        bold,
+        center,
+        color,
+        line_height=line_height,
+        font=font,
+    )
+    frame = Frame("visual-text", x, y, w, h, size_pt, bold=bold, center=center)
+    inner = (
+        f'<text:p text:style-name="{_attr(style_name)}">'
+        f"{escape(text)}</text:p>"
+    )
+    return _frame_box_xml(frame, inner)
+
+
+def _trim_to_boxes(
+    source: tuple[float, float, float, float],
+    target: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """Clip the centre-to-centre segment between two boxes to their edges.
+
+    Returns the visible span ``(x1, y1, x2, y2)`` — where the line leaves the
+    source card to where it meets the target card. Degenerate cases (concentric
+    or overlapping boxes) fall back to the centres, which is what the renderer
+    drew before and is never worse.
+    """
+    sx, sy, sw, sh = source
+    tx, ty, tw, th = target
+    cx1, cy1 = sx + sw / 2, sy + sh / 2
+    cx2, cy2 = tx + tw / 2, ty + th / 2
+    dx, dy = cx2 - cx1, cy2 - cy1
+    span = (dx * dx + dy * dy) ** 0.5
+    if span == 0:
+        return cx1, cy1, cx2, cy2
+
+    def _exit(w: float, h: float) -> float:
+        """Distance from a box's centre to its edge along (dx, dy)."""
+        limits = []
+        if dx:
+            limits.append((w / 2) / abs(dx / span))
+        if dy:
+            limits.append((h / 2) / abs(dy / span))
+        return min(limits) if limits else 0.0
+
+    start, end = _exit(sw, sh), _exit(tw, th)
+    if start + end >= span:  # cards touch or overlap: nothing to draw between
+        return cx1, cy1, cx2, cy2
+    ux, uy = dx / span, dy / span
+    return (
+        cx1 + ux * start,
+        cy1 + uy * start,
+        cx2 - ux * end,
+        cy2 - uy * end,
+    )
+
+
+def _stacked_card_h(
+    title_h: float,
+    detail_h: float,
+    *,
+    title_top: float,
+    detail_gap: float,
+    pad_bottom: float,
+    min_h: float,
+    max_h: float,
+    available: float,
+) -> tuple[float, float]:
+    """Height of a badge → title → detail card, and where its detail starts.
+
+    Both numbers derive from the same measured ``title_h``, so the title's box
+    can never end above the text it was drawn to hold and the detail can never
+    be pinned at an offset the title has already grown past. That single shared
+    derivation is the fix for the defect where a two-line timeline heading
+    printed straight through the caption beneath it.
+
+    Returns ``(card_h, detail_y)``, both offsets from the card's top edge.
+    """
+    detail_y = title_top + title_h + (detail_gap if detail_h else 0.0)
+    needed = detail_y + detail_h + pad_bottom
+    return max(min_h, min(needed, max_h, available)), detail_y
+
+
+def _visual_card_xml(
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    theme: Theme,
+    graphics: _GraphicStyles,
+) -> str:
+    """Render the shared rounded surface used by visual-layout cards."""
+    style_name = graphics.name_for_fill(theme.surface)
+    return _rect_xml(
+        x,
+        y,
+        w,
+        h,
+        fill=theme.surface,
+        corner_radius_cm=_VISUAL_CARD_CORNER,
+        style_name=style_name,
+    )
+
+
+def _process_xml(
+    steps: list[ProcessStep],
+    area: Frame,
+    theme: Theme,
+    graphics: _GraphicStyles,
+    styles: _ParagraphStyles,
+) -> str:
+    """Render 2–5 connected process cards with numbered accent badges."""
+    n = len(steps)
+    gap = _VISUAL_GAP
+    card_w = (area.w - gap * (n - 1)) / n
+
+    text_w = card_w - 0.96
+    title_pt = min(theme.body_pt, 17)
+    detail_pt = min(theme.caption_pt, 13)
+    title_h = max(
+        estimate_height_cm(
+            s.title, title_pt, _wrap_width(text_w), _PROCESS_TITLE_LINE_HEIGHT
+        )
+        for s in steps
+    )
+    detail_h = max(
+        (
+            estimate_height_cm(
+                s.detail, detail_pt, _wrap_width(text_w), _PROCESS_DETAIL_LINE_HEIGHT
+            )
+            for s in steps
+            if s.detail
+        ),
+        default=0.0,
+    )
+    card_h, detail_offset = _stacked_card_h(
+        title_h,
+        detail_h,
+        title_top=_PROCESS_TITLE_TOP,
+        detail_gap=_PROCESS_DETAIL_GAP,
+        pad_bottom=_PROCESS_PAD_BOTTOM,
+        min_h=_PROCESS_MIN_H,
+        max_h=_PROCESS_MAX_H,
+        available=area.h - 0.8,
+    )
+    card_y = area.y + (area.h - card_h) / 2
+    badge_y = card_y + 0.55
+    badge_center_y = badge_y + _PROCESS_BADGE_SIZE / 2
+
+    parts: list[str] = []
+    line_color = _blend(theme.accent, theme.bg, _VISUAL_LINE_BLEND)
+    line_style = graphics.name_for_stroke(line_color, _VISUAL_LINE_WIDTH_PT)
+    first_center = area.x + 0.48 + _PROCESS_BADGE_SIZE / 2
+    last_card_x = area.x + (n - 1) * (card_w + gap)
+    last_center = last_card_x + 0.48 + _PROCESS_BADGE_SIZE / 2
+    parts.append(
+        _line_xml(
+            first_center,
+            badge_center_y,
+            last_center,
+            badge_center_y,
+            color=line_color,
+            width_pt=_VISUAL_LINE_WIDTH_PT,
+            style_name=line_style,
+        )
+    )
+
+    badge_style = graphics.name_for_fill(theme.accent)
+    for i, step in enumerate(steps):
+        card_x = area.x + i * (card_w + gap)
+        parts.append(_visual_card_xml(card_x, card_y, card_w, card_h, theme, graphics))
+        parts.append(
+            _ellipse_xml(
+                card_x + 0.48,
+                badge_y,
+                _PROCESS_BADGE_SIZE,
+                _PROCESS_BADGE_SIZE,
+                fill=theme.accent,
+                style_name=badge_style,
+            )
+        )
+        parts.append(
+            _visual_text_xml(
+                str(i + 1),
+                card_x + 0.43,
+                badge_y + 0.08,
+                _PROCESS_BADGE_SIZE + 0.1,
+                0.48,
+                styles,
+                size_pt=theme.caption_pt,
+                color=theme.bg,
+                bold=True,
+                center=True,
+            )
+        )
+        parts.append(
+            _visual_text_xml(
+                step.title,
+                card_x + 0.48,
+                card_y + _PROCESS_TITLE_TOP,
+                text_w,
+                title_h,
+                styles,
+                size_pt=title_pt,
+                color=theme.text,
+                bold=True,
+                font=theme.font_display,
+                line_height="115%",
+            )
+        )
+        if step.detail:
+            parts.append(
+                _visual_text_xml(
+                    step.detail,
+                    card_x + 0.48,
+                    card_y + detail_offset,
+                    text_w,
+                    max(0.4, card_h - detail_offset - _PROCESS_PAD_BOTTOM),
+                    styles,
+                    size_pt=detail_pt,
+                    color=theme.muted,
+                    line_height="135%",
+                )
+            )
+    return "".join(parts)
+
+
+def _timeline_xml(
+    events: list[TimelineEvent],
+    area: Frame,
+    theme: Theme,
+    graphics: _GraphicStyles,
+    styles: _ParagraphStyles,
+) -> str:
+    """Render a horizontal timeline with alternating event cards."""
+    n = len(events)
+    line_y = area.y + area.h / 2
+    slot_w = area.w / n
+    card_w = min(slot_w - 0.35, 5.4)
+
+    # Size the row to the tallest event, then hang the cards off the axis by a
+    # fixed stem: cards above it grow *upward* so a taller row can never reach
+    # down and collide with the line it is supposed to hang from.
+    text_w = card_w - 0.7
+    title_pt = min(theme.body_pt, 17)
+    detail_pt = min(theme.caption_pt, 12)
+    title_h = max(
+        estimate_height_cm(e.title, title_pt, _wrap_width(text_w)) for e in events
+    )
+    detail_h = max(
+        (
+            estimate_height_cm(
+                e.detail, detail_pt, _wrap_width(text_w), _TIMELINE_DETAIL_LINE_HEIGHT
+            )
+            for e in events
+            if e.detail
+        ),
+        default=0.0,
+    )
+    room = min(
+        line_y - _TIMELINE_STEM - area.y,
+        area.y + area.h - (line_y + _TIMELINE_STEM),
+    ) - 0.1
+    card_h, detail_offset = _stacked_card_h(
+        title_h,
+        detail_h,
+        title_top=_TIMELINE_TITLE_TOP,
+        detail_gap=_TIMELINE_DETAIL_GAP,
+        pad_bottom=_TIMELINE_PAD_BOTTOM,
+        min_h=_TIMELINE_MIN_H,
+        max_h=_TIMELINE_MAX_H,
+        available=max(_TIMELINE_MIN_H, room),
+    )
+    top_y = max(area.y + 0.1, line_y - _TIMELINE_STEM - card_h)
+    bottom_y = line_y + _TIMELINE_STEM
+    line_color = _blend(theme.accent, theme.bg, _VISUAL_LINE_BLEND)
+    line_style = graphics.name_for_stroke(line_color, _VISUAL_LINE_WIDTH_PT)
+    node_style = graphics.name_for_fill(theme.accent)
+
+    first_x = area.x + slot_w / 2
+    last_x = area.x + area.w - slot_w / 2
+    parts: list[str] = [
+        _line_xml(
+            first_x,
+            line_y,
+            last_x,
+            line_y,
+            color=line_color,
+            width_pt=_VISUAL_LINE_WIDTH_PT,
+            style_name=line_style,
+        )
+    ]
+    for i, event in enumerate(events):
+        center_x = area.x + slot_w * (i + 0.5)
+        card_x = center_x - card_w / 2
+        card_y = top_y if i % 2 == 0 else bottom_y
+        stem_y = card_y + card_h if i % 2 == 0 else card_y
+        parts.append(
+            _line_xml(
+                center_x,
+                line_y,
+                center_x,
+                stem_y,
+                color=line_color,
+                width_pt=_VISUAL_LINE_WIDTH_PT,
+                style_name=line_style,
+            )
+        )
+        parts.append(_visual_card_xml(card_x, card_y, card_w, card_h, theme, graphics))
+        parts.append(
+            _ellipse_xml(
+                center_x - _TIMELINE_NODE_SIZE / 2,
+                line_y - _TIMELINE_NODE_SIZE / 2,
+                _TIMELINE_NODE_SIZE,
+                _TIMELINE_NODE_SIZE,
+                fill=theme.accent,
+                style_name=node_style,
+            )
+        )
+        parts.append(
+            _visual_text_xml(
+                event.label,
+                card_x + 0.35,
+                card_y + 0.3,
+                card_w - 0.7,
+                0.55,
+                styles,
+                size_pt=theme.caption_pt,
+                color=theme.accent,
+                bold=True,
+            )
+        )
+        parts.append(
+            _visual_text_xml(
+                event.title,
+                card_x + 0.35,
+                card_y + _TIMELINE_TITLE_TOP,
+                text_w,
+                title_h,
+                styles,
+                size_pt=title_pt,
+                color=theme.text,
+                bold=True,
+                font=theme.font_display,
+            )
+        )
+        if event.detail:
+            parts.append(
+                _visual_text_xml(
+                    event.detail,
+                    card_x + 0.35,
+                    card_y + detail_offset,
+                    text_w,
+                    max(0.4, card_h - detail_offset - _TIMELINE_PAD_BOTTOM),
+                    styles,
+                    size_pt=detail_pt,
+                    color=theme.muted,
+                    line_height="130%",
+                )
+            )
+    return "".join(parts)
+
+
+def _metrics_xml(
+    metrics: list[MetricSpec],
+    area: Frame,
+    theme: Theme,
+    graphics: _GraphicStyles,
+    styles: _ParagraphStyles,
+) -> str:
+    """Render 2–4 metrics as a balanced one- or two-row card grid."""
+    n = len(metrics)
+    cols = 2 if n == 4 else n
+    rows = 2 if n == 4 else 1
+    gap = _VISUAL_GAP
+    card_w = (area.w - gap * (cols - 1)) / cols
+    raw_h = (area.h - gap * (rows - 1)) / rows
+    card_h = min(raw_h, 7.2 if rows == 1 else raw_h)
+    grid_h = card_h * rows + gap * (rows - 1)
+    start_y = area.y + (area.h - grid_h) / 2
+    accent_style = graphics.name_for_fill(theme.accent)
+
+    parts: list[str] = []
+    for i, metric in enumerate(metrics):
+        row, col = divmod(i, cols)
+        card_x = area.x + col * (card_w + gap)
+        card_y = start_y + row * (card_h + gap)
+        parts.append(_visual_card_xml(card_x, card_y, card_w, card_h, theme, graphics))
+        parts.append(
+            _rect_xml(
+                card_x,
+                card_y,
+                card_w,
+                _METRIC_ACCENT_H,
+                fill=theme.accent,
+                style_name=accent_style,
+            )
+        )
+        value_size = fact_font_size_pt(
+            metric.value,
+            card_w - 0.9,
+            min(theme.display_pt, 44),
+            theme.h1_pt,
+        )
+        parts.append(
+            _visual_text_xml(
+                metric.value,
+                card_x + 0.45,
+                card_y + 0.75,
+                card_w - 0.9,
+                1.65,
+                styles,
+                size_pt=value_size,
+                color=theme.accent,
+                bold=True,
+                font=theme.font_display,
+            )
+        )
+        parts.append(
+            _visual_text_xml(
+                metric.label,
+                card_x + 0.45,
+                card_y + 2.65,
+                card_w - 0.9,
+                0.8,
+                styles,
+                size_pt=min(theme.body_pt, 17),
+                color=theme.text,
+                bold=True,
+            )
+        )
+        if metric.detail:
+            parts.append(
+                _visual_text_xml(
+                    metric.detail,
+                    card_x + 0.45,
+                    card_y + 3.65,
+                    card_w - 0.9,
+                    card_h - 4.1,
+                    styles,
+                    size_pt=min(theme.caption_pt, 12),
+                    color=theme.muted,
+                    line_height="130%",
+                )
+            )
+    return "".join(parts)
+
+
+def _cards_xml(
+    items: list,
+    area: Frame,
+    theme: Theme,
+    graphics: _GraphicStyles,
+    styles: _ParagraphStyles,
+) -> str:
+    """Render 2–4 parallel ideas as editorial cards rather than a bullet list.
+
+    Cards are sized to what they actually hold. The height used to be a flat
+    ``min(area.h, 6.8)``, which drew a 6.8cm box around a one-line idea and left
+    its bottom 60% empty, while the title itself was pinned to a 1.65cm frame a
+    three-line CJK heading overran. Both come from the same measurement now:
+    :func:`estimate_height_cm` gives the wrapped title height, the card grows to
+    fit it (plus any children), and the tallest card sets the height for the
+    whole row — uniform, but never larger than its content needs.
+    """
+    n = len(items)
+    cols = 2 if n in (2, 4) else 3
+    rows = 2 if n == 4 else 1
+    gap = _VISUAL_GAP
+    card_w = (area.w - gap * (cols - 1)) / cols
+    raw_h = (area.h - gap * (rows - 1)) / rows
+
+    text_w = card_w - 2 * _CARD_PAD_X
+    title_pt = min(theme.body_pt, 18)
+    child_pt = min(theme.caption_pt, 12)
+    title_top = _CARD_PAD_TOP + _CARD_BADGE_H + _CARD_BADGE_GAP
+
+    normalised = [
+        item if isinstance(item, tuple) else (str(item), []) for item in items
+    ]
+    # One title height for the row so every card's children start on the same
+    # baseline; one card height so the row stays visually even.
+    title_h = max(
+        estimate_height_cm(text, title_pt, _wrap_width(text_w), _CARD_TITLE_LINE_HEIGHT)
+        for text, _ in normalised
+    )
+    child_texts = {
+        i: " · ".join(str(child) for child in children)
+        for i, (_, children) in enumerate(normalised)
+        if children
+    }
+    child_h = max(
+        (
+            estimate_height_cm(text, child_pt, _wrap_width(text_w), _CARD_CHILD_LINE_HEIGHT)
+            for text in child_texts.values()
+        ),
+        default=0.0,
+    )
+    needed = title_top + title_h + _CARD_PAD_BOTTOM
+    if child_texts:
+        needed += _CARD_TITLE_GAP + child_h
+    card_h = max(_CARD_MIN_H, min(needed, _CARD_MAX_H, raw_h))
+
+    grid_h = rows * card_h + gap * (rows - 1)
+    start_y = area.y + (area.h - grid_h) / 2
+    child_y_offset = title_top + title_h + _CARD_TITLE_GAP
+
+    parts: list[str] = []
+    for i, (text, _children) in enumerate(normalised):
+        row, col = divmod(i, cols)
+        card_x = area.x + col * (card_w + gap)
+        card_y = start_y + row * (card_h + gap)
+        parts.append(_visual_card_xml(card_x, card_y, card_w, card_h, theme, graphics))
+        parts.append(
+            _visual_text_xml(
+                f"{i + 1:02d}",
+                card_x + _CARD_PAD_X,
+                card_y + _CARD_PAD_TOP,
+                1.6,
+                _CARD_BADGE_H,
+                styles,
+                size_pt=theme.caption_pt,
+                color=theme.accent,
+                bold=True,
+            )
+        )
+        parts.append(
+            _visual_text_xml(
+                text,
+                card_x + _CARD_PAD_X,
+                card_y + title_top,
+                text_w,
+                title_h,
+                styles,
+                size_pt=title_pt,
+                color=theme.text,
+                bold=True,
+                font=theme.font_display,
+                line_height="120%",
+            )
+        )
+        child_text = child_texts.get(i)
+        if child_text:
+            parts.append(
+                _visual_text_xml(
+                    child_text,
+                    card_x + _CARD_PAD_X,
+                    card_y + child_y_offset,
+                    text_w,
+                    max(0.4, card_h - child_y_offset - _CARD_PAD_BOTTOM),
+                    styles,
+                    size_pt=child_pt,
+                    color=theme.muted,
+                    line_height="135%",
+                )
+            )
+    return "".join(parts)
+
+
+def _closing_actions_xml(
+    items: list,
+    area: Frame,
+    theme: Theme,
+    graphics: _GraphicStyles,
+    styles: _ParagraphStyles,
+) -> str:
+    """Render concrete closing actions as compact cards on the inverted page."""
+    if not items:
+        return ""
+
+    count = len(items)
+    gap = 0.45
+    card_w = min(10.0, (area.w - gap * (count - 1)) / count)
+    grid_w = card_w * count + gap * (count - 1)
+    start_x = area.x + (area.w - grid_w) / 2
+    card_h = min(3.35, area.h)
+    start_y = area.y + (area.h - card_h) / 2
+
+    parts: list[str] = []
+    for index, item in enumerate(items):
+        card_x = start_x + index * (card_w + gap)
+        text, children = item if isinstance(item, tuple) else (str(item), [])
+        parts.append(
+            _visual_card_xml(card_x, start_y, card_w, card_h, theme, graphics)
+        )
+        parts.append(
+            _visual_text_xml(
+                f"{index + 1:02d}",
+                card_x + 0.4,
+                start_y + 0.38,
+                card_w - 0.8,
+                0.5,
+                styles,
+                size_pt=theme.caption_pt,
+                color=theme.accent,
+                bold=True,
+            )
+        )
+        parts.append(
+            _visual_text_xml(
+                text,
+                card_x + 0.4,
+                start_y + 1.15,
+                card_w - 0.8,
+                1.25 if children else 1.65,
+                styles,
+                size_pt=min(theme.body_pt, 17),
+                color=theme.text,
+                bold=True,
+                font=theme.font_display,
+                line_height="120%",
+            )
+        )
+        if children:
+            parts.append(
+                _visual_text_xml(
+                    " · ".join(str(child) for child in children),
+                    card_x + 0.4,
+                    start_y + 2.35,
+                    card_w - 0.8,
+                    0.65,
+                    styles,
+                    size_pt=min(theme.caption_pt, 12),
+                    color=theme.muted,
+                    line_height="125%",
+                )
+            )
+    return "".join(parts)
+
+
+def _diagram_positions(
+    diagram: DiagramSpec,
+    area: Frame,
+) -> dict[str, tuple[float, float, float, float]]:
+    """Return deterministic node boxes for hub or hierarchy diagrams."""
+    if diagram.kind == "hub":
+        center_x = area.x + area.w / 2
+        center_y = area.y + area.h / 2
+        positions = {
+            diagram.nodes[0].id: (
+                center_x - _DIAGRAM_NODE_W / 2,
+                center_y - _DIAGRAM_NODE_H / 2,
+                _DIAGRAM_NODE_W,
+                _DIAGRAM_NODE_H,
+            )
+        }
+        outer = diagram.nodes[1:]
+        count = len(outer)
+        radius_x = min(8.2, (area.w - _DIAGRAM_NODE_W) / 2)
+        radius_y = min(3.45, (area.h - _DIAGRAM_NODE_H) / 2)
+        for i, node in enumerate(outer):
+            angle = -math.pi / 2 + 2 * math.pi * i / count
+            node_x = center_x + radius_x * math.cos(angle)
+            node_y = center_y + radius_y * math.sin(angle)
+            positions[node.id] = (
+                node_x - _DIAGRAM_NODE_W / 2,
+                node_y - _DIAGRAM_NODE_H / 2,
+                _DIAGRAM_NODE_W,
+                _DIAGRAM_NODE_H,
+            )
+        return positions
+
+    node_ids = [node.id for node in diagram.nodes]
+    indegree = {node_id: 0 for node_id in node_ids}
+    for edge in diagram.edges:
+        indegree[edge.target] += 1
+    roots = [node_id for node_id in node_ids if indegree[node_id] == 0]
+    if not roots:
+        roots = [node_ids[0]]
+    levels = {root: 0 for root in roots}
+    for _ in node_ids:
+        changed = False
+        for edge in diagram.edges:
+            if edge.source in levels:
+                candidate = levels[edge.source] + 1
+                if candidate > levels.get(edge.target, -1):
+                    levels[edge.target] = candidate
+                    changed = True
+        if not changed:
+            break
+    for node_id in node_ids:
+        levels.setdefault(node_id, 0)
+
+    max_level = max(levels.values())
+    # A cycle can make the relaxation above grow indefinitely. Collapse such a
+    # graph to a single balanced row rather than drawing outside the page.
+    if max_level >= len(node_ids):
+        levels = {node_id: 0 for node_id in node_ids}
+        max_level = 0
+    groups: dict[int, list[str]] = {}
+    for node_id in node_ids:
+        groups.setdefault(levels[node_id], []).append(node_id)
+
+    level_count = max_level + 1
+    vertical_gap = 0.45
+    node_h = min(
+        _DIAGRAM_NODE_H,
+        (area.h - vertical_gap * (level_count - 1)) / level_count,
+    )
+    grid_h = node_h * level_count + vertical_gap * (level_count - 1)
+    start_y = area.y + (area.h - grid_h) / 2
+    positions: dict[str, tuple[float, float, float, float]] = {}
+    for level in range(level_count):
+        row = groups.get(level, [])
+        if not row:
+            continue
+        horizontal_gap = _VISUAL_GAP
+        node_w = min(
+            _DIAGRAM_NODE_W,
+            (area.w - horizontal_gap * (len(row) - 1)) / len(row),
+        )
+        row_w = node_w * len(row) + horizontal_gap * (len(row) - 1)
+        start_x = area.x + (area.w - row_w) / 2
+        for i, node_id in enumerate(row):
+            positions[node_id] = (
+                start_x + i * (node_w + horizontal_gap),
+                start_y + level * (node_h + vertical_gap),
+                node_w,
+                node_h,
+            )
+    return positions
+
+
+def _diagram_xml(
+    diagram: DiagramSpec,
+    area: Frame,
+    theme: Theme,
+    graphics: _GraphicStyles,
+    styles: _ParagraphStyles,
+) -> str:
+    """Render an editable hub or hierarchy diagram with labelled relations."""
+    positions = _diagram_positions(diagram, area)
+    line_color = _blend(theme.accent, theme.bg, _DIAGRAM_LINE_BLEND)
+    line_style = graphics.name_for_stroke(line_color, _VISUAL_LINE_WIDTH_PT)
+    parts: list[str] = []
+
+    label_pt = min(theme.caption_pt, 11)
+    for edge in diagram.edges:
+        sx, sy, sw, sh = positions[edge.source]
+        tx, ty, tw, th = positions[edge.target]
+        # Draw the connector between the two cards' edges rather than their
+        # centres. The old version relied on the cards to mask the overshoot,
+        # which left the label chip masking everything that remained.
+        x1, y1, x2, y2 = _trim_to_boxes(
+            (sx, sy, sw, sh), (tx, ty, tw, th)
+        )
+        parts.append(
+            _line_xml(
+                x1,
+                y1,
+                x2,
+                y2,
+                color=line_color,
+                width_pt=_VISUAL_LINE_WIDTH_PT,
+                style_name=line_style,
+            )
+        )
+        if edge.label:
+            label_h = 0.58
+            label_w = (
+                text_width_cm(edge.label, label_pt)
+                + 2 * _FRAME_INSET_X
+                + 2 * _EDGE_LABEL_PAD
+            )
+            span = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+            mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
+            # A chip may only sit *on* the connector when it still leaves a
+            # readable run of line either side of it; otherwise it steps aside
+            # and the connector stays whole.
+            on_line = span >= label_w + 2 * _EDGE_LABEL_CLEARANCE
+            if on_line:
+                label_x = mid_x - label_w / 2
+                label_y = mid_y - label_h / 2
+                label_bg = graphics.name_for_fill(theme.bg)
+                parts.append(
+                    _rect_xml(
+                        label_x,
+                        label_y,
+                        label_w,
+                        label_h,
+                        fill=theme.bg,
+                        corner_radius_cm=0.08,
+                        style_name=label_bg,
+                    )
+                )
+            else:
+                # Offset perpendicular to the edge, on the side away from the
+                # hub, so the label reads beside its line instead of over it.
+                nx, ny = -(y2 - y1), (x2 - x1)
+                norm = (nx * nx + ny * ny) ** 0.5 or 1.0
+                push = label_w / 2 + _EDGE_LABEL_CLEARANCE
+                label_x = mid_x + nx / norm * push - label_w / 2
+                label_y = mid_y + ny / norm * push - label_h / 2
+            parts.append(
+                _visual_text_xml(
+                    edge.label,
+                    label_x,
+                    label_y + 0.03,
+                    label_w,
+                    label_h,
+                    styles,
+                    size_pt=label_pt,
+                    color=theme.muted,
+                    bold=True,
+                    center=True,
+                )
+            )
+
+    accent_style = graphics.name_for_fill(theme.accent)
+    surface_style = graphics.name_for_fill(theme.surface)
+    for i, node in enumerate(diagram.nodes):
+        x, y, w, h = positions[node.id]
+        emphasized = node.emphasis or (diagram.kind == "hub" and i == 0)
+        fill = theme.accent if emphasized else theme.surface
+        card_style = accent_style if emphasized else surface_style
+        parts.append(
+            _rect_xml(
+                x,
+                y,
+                w,
+                h,
+                fill=fill,
+                corner_radius_cm=_VISUAL_CARD_CORNER,
+                style_name=card_style,
+            )
+        )
+        text_color = theme.bg if emphasized else theme.text
+        detail_color = theme.bg if emphasized else theme.muted
+        title_size = fact_font_size_pt(
+            node.title,
+            max(w - 1.5, 0.5),
+            min(theme.body_pt, 17),
+            min(theme.caption_pt, 12),
+        )
+        title_text_h = estimate_height_cm(
+            node.title,
+            title_size,
+            max(w - 0.7, 0.5),
+            line_height=1.15,
+        )
+        title_h = min(max(title_text_h + 0.1, 0.62), max(h - 0.75, 0.62))
+        title_y = y + 0.28
+        parts.append(
+            _visual_text_xml(
+                node.title,
+                x + 0.35,
+                title_y,
+                w - 0.7,
+                title_h,
+                styles,
+                size_pt=title_size,
+                color=text_color,
+                bold=True,
+                center=True,
+                font=theme.font_display,
+            )
+        )
+        detail_y = title_y + title_h + 0.12
+        detail_h = y + h - 0.22 - detail_y
+        if node.detail and detail_h >= 0.45:
+            parts.append(
+                _visual_text_xml(
+                    node.detail,
+                    x + 0.35,
+                    detail_y,
+                    w - 0.7,
+                    detail_h,
+                    styles,
+                    size_pt=min(theme.caption_pt, 11),
+                    color=detail_color,
+                    center=True,
+                    line_height="125%",
+                )
+            )
+    return "".join(parts)
+
+
+def _sources_xml(
+    sources,
+    theme: Theme,
+    styles: _ParagraphStyles,
+    spans: _SpanStyles,
+) -> str:
+    """Render concise, clickable source references above the master footer."""
+    paragraph_style = styles.name_for(
+        _SOURCE_FRAME.size_pt,
+        False,
+        False,
+        theme.muted,
+    )
+    label_style = spans.name_for(_SOURCE_FRAME.size_pt, True, theme.accent)
+    source_style = spans.name_for(_SOURCE_FRAME.size_pt, False, theme.muted)
+    body = (
+        f'<text:span text:style-name="{_attr(label_style)}">來源</text:span>'
+        f'<text:span text:style-name="{_attr(source_style)}">  </text:span>'
+    )
+    rendered = []
+    for source in sources:
+        label = escape(source.label)
+        if source.url:
+            rendered.append(
+                f'<text:a text:style-name="{_attr(source_style)}"'
+                f' xlink:type="simple" xlink:href="{_attr(source.url)}">'
+                f"{label}</text:a>"
+            )
+        else:
+            rendered.append(
+                f'<text:span text:style-name="{_attr(source_style)}">'
+                f"{label}</text:span>"
+            )
+    separator = (
+        f'<text:span text:style-name="{_attr(source_style)}"> · </text:span>'
+    )
+    body += separator.join(rendered)
+    inner = (
+        f'<text:p text:style-name="{_attr(paragraph_style)}">{body}</text:p>'
+    )
+    return _frame_box_xml(_SOURCE_FRAME, inner)
 
 
 # ---------------------------------------------------------------------------
@@ -1024,6 +2180,7 @@ def _page_xml(
     graphics: _GraphicStyles,
     spans: _SpanStyles,
     section_ordinal: int | None,
+    resolved_image: tuple[str, AssetBlob] | None = None,
 ) -> str:
     """Build one ``draw:page`` for a slide, registering its paragraph styles.
 
@@ -1076,6 +2233,50 @@ def _page_xml(
                     )
                 )
             continue
+        if role == "process-area":
+            parts.append(_process_xml(slide.steps, frame, theme, graphics, styles))
+            continue
+        if role == "timeline-area":
+            parts.append(_timeline_xml(slide.events, frame, theme, graphics, styles))
+            continue
+        if role == "metrics-area":
+            parts.append(_metrics_xml(slide.metrics, frame, theme, graphics, styles))
+            continue
+        if role == "cards-area":
+            parts.append(
+                _cards_xml(
+                    _coerce_bullet_items(slide.bullets),
+                    frame,
+                    theme,
+                    graphics,
+                    styles,
+                )
+            )
+            continue
+        if role == "closing-actions":
+            parts.append(
+                _closing_actions_xml(
+                    _coerce_bullet_items(slide.bullets),
+                    frame,
+                    theme,
+                    graphics,
+                    styles,
+                )
+            )
+            continue
+        if role == "diagram-area":
+            if slide.diagram is not None:
+                parts.append(
+                    _diagram_xml(slide.diagram, frame, theme, graphics, styles)
+                )
+            continue
+        if role == "image-area":
+            parts.append(
+                _image_area_xml(
+                    slide, frame, theme, graphics, styles, resolved_image
+                )
+            )
+            continue
 
         lines = _role_lines(slide, role)
         if not lines:
@@ -1100,8 +2301,14 @@ def _page_xml(
 
         # closing: inverted message (title + optional subtitle) in the bg colour.
         if role == "message":
+            if layout == "closing" and not slide.bullets:
+                frame = replace(frame, y=6)
             msg_style = styles.name_for(
-                theme.h1_pt, frame.bold, frame.center, theme.bg
+                theme.h1_pt,
+                frame.bold,
+                frame.center,
+                theme.bg,
+                font=theme.font_display,
             )
             inner = (
                 f'<text:p text:style-name="{_attr(msg_style)}">'
@@ -1168,7 +2375,13 @@ def _page_xml(
                 )
             # Section/closing titles invert onto the accent background.
             color = theme.bg if layout in _ACCENT_BG_LAYOUTS else theme.title_color
-            title_style = styles.name_for(frame.size_pt, frame.bold, frame.center, color)
+            title_style = styles.name_for(
+                frame.size_pt,
+                frame.bold,
+                frame.center,
+                color,
+                font=theme.font_display,
+            )
             inner = ""
             if slide.kicker and layout not in PLAIN_LAYOUTS:
                 inner += _kicker_paragraph_xml(slide.kicker, styles, theme)
@@ -1216,8 +2429,20 @@ def _page_xml(
         else:
             color = theme.text_color
 
-        style_name = styles.name_for(size_pt, frame.bold, frame.center, color)
+        display_font = (
+            theme.font_display if role in {"fact", "quote"} else theme.font_body
+        )
+        style_name = styles.name_for(
+            size_pt,
+            frame.bold,
+            frame.center,
+            color,
+            font=display_font,
+        )
         parts.append(_frame_xml(frame, lines, style_name))
+
+    if slide.sources:
+        parts.append(_sources_xml(slide.sources, theme, styles, spans))
 
     if slide.notes:
         notes_style = styles.name_for(_NOTES_SIZE_PT, False, False, theme.text_color)
@@ -1257,7 +2482,11 @@ def _drawing_page_style_xml(
     )
 
 
-def build_content_xml(p: Presentation, theme: Theme) -> str:
+def build_content_xml(
+    p: Presentation,
+    theme: Theme,
+    resolved_images: Mapping[int, tuple[str, AssetBlob]] | None = None,
+) -> str:
     """Build ``content.xml`` for a presentation. Pure function."""
     styles = _ParagraphStyles(theme.font)
     # Graphic styles for shapes drawn on pages (accent bars, etc.).
@@ -1276,7 +2505,16 @@ def build_content_xml(p: Presentation, theme: Theme) -> str:
     # Build pages first so every referenced paragraph/graphic/span style is
     # registered.
     pages = "".join(
-        _page_xml(i, slide, theme, styles, graphics, spans, section_ordinal.get(i))
+        _page_xml(
+            i,
+            slide,
+            theme,
+            styles,
+            graphics,
+            spans,
+            section_ordinal.get(i),
+            (resolved_images or {}).get(i),
+        )
         for i, slide in enumerate(p.slides)
     )
 
@@ -1482,17 +2720,69 @@ def build_meta_xml(title: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def render_odp(p: Presentation, out_path: Path) -> Path:
+def render_odp(
+    p: Presentation,
+    out_path: Path,
+    *,
+    assets: Mapping[str, AssetInput] | None = None,
+    image_provider: ImageProvider | None = None,
+) -> Path:
     """Render presentation ``p`` to a native ``.odp`` file at ``out_path``."""
     # resolve_design returns the preset THEMES[p.theme] for v1 decks (design is
     # None) and a custom Theme built from the per-deck DesignSpec otherwise, so a
     # deck carrying design tokens actually renders with them.
     theme = resolve_design(p)
+    normalized_assets = normalize_assets(assets)
+    provider = image_provider
+    if provider is None and any(
+        slide.image is not None and bool(slide.image.prompt)
+        for slide in p.slides
+    ):
+        provider = configured_image_provider()
+
+    # Materialize provider output once. The slide is rewritten to asset:// and,
+    # when the caller supplied a mutable asset map (Web/CLI do), the bytes are
+    # cached there for deterministic QA re-renders and single-page regeneration.
+    if provider is not None:
+        for slide in p.slides:
+            image = slide.image
+            if image is None or image.src or not image.prompt:
+                continue
+            try:
+                generated = provider.generate(image.prompt)
+            except MediaError:
+                continue
+            digest = hashlib.sha256(generated.data).hexdigest()[:16]
+            asset_id = f"generated-{digest}"
+            normalized_assets[asset_id] = generated
+            if isinstance(assets, MutableMapping):
+                assets[asset_id] = generated
+            slide.image = image.model_copy(update={"src": f"asset://{asset_id}"})
+
+    resolved_images: dict[int, tuple[str, AssetBlob]] = {}
+    image_parts: dict[str, bytes] = {}
+    for index, slide in enumerate(p.slides):
+        if slide.image is None:
+            continue
+        try:
+            blob = resolve_image(slide.image, normalized_assets)
+        except MediaError:
+            # Unsafe/unavailable model-proposed sources render as a visible
+            # placeholder. Explicit app-owned uploads are validated earlier.
+            blob = None
+        if blob is None:
+            continue
+        digest = hashlib.sha256(blob.data).hexdigest()[:16]
+        href = f"Pictures/image-{digest}{blob.extension}"
+        image_parts[href] = blob.data
+        resolved_images[index] = (href, blob)
+
     parts: dict[str, str | bytes] = {
-        "content.xml": build_content_xml(p, theme),
+        "content.xml": build_content_xml(p, theme, resolved_images),
         "styles.xml": build_styles_xml(theme, p.title),
         "meta.xml": build_meta_xml(p.title),
     }
+    parts.update(image_parts)
     # Only ship the decoration SVG when a title page actually references it —
     # keeps non-title decks free of an unused Pictures part. build_content_xml
     # emits the <draw:image> under the same title-layout condition.

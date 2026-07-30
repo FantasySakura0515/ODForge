@@ -27,16 +27,16 @@ export function StatusNarrator({
   const text =
     // 人話前綴(stage → 白話);原始技術訊息留給 ErrorPanel 的「技術細節」與此處 title。
     isError ? humanizeStage(error?.stage)
-    : submitting && phase === "empty" ? "已送出,正在生成大綱…"
-    : phase === "empty" && expired ? "找不到這個任務,可能已過期"
+    : submitting && phase === "empty" ? "正在生成大綱…"
+    : phase === "empty" && expired ? "任務不存在或已過期"
     : phase === "empty" ? "準備就緒"
     // 編輯確認後 synthetic outline dispatch 會把 phase 設回 "outline";此時
     // fillingPending 已立起,narrator 應報「逐頁填充」而非久掛「已產生大綱與配色」。
-    : phase === "outline" ? (fillingPending ? "大綱已確認,正在逐頁填充…" : "已產生大綱與配色")
-    : phase === "await" ? (fillingPending ? "大綱已確認,正在逐頁填充…" : "等待你確認大綱…")
-    : phase === "qa" ? "設計閘檢視中…"
+    : phase === "outline" ? (fillingPending ? "正在逐頁生成…" : "大綱與配色已完成")
+    : phase === "await" ? (fillingPending ? "正在逐頁生成…" : "請確認大綱")
+    : phase === "qa" ? "正在檢查設計…"
     : phase === "complete" ? "完成 · 原生 ODF"
-    : forging ? `第 ${forging.n} 頁鍛造中…` : "生成中…";
+    : forging ? `正在生成第 ${forging.n} 頁…` : "生成中…";
   return (
     <div
       className={"narrator" + (isError ? " is-error" : "")}

@@ -29,8 +29,16 @@ export function PreviewStage({
   return (
     <section className="center">
       <div className="stagehead">
-        <span className="t">預覽舞台 Preview</span>
-        <span className="prog"><b>{filled}</b> / {units.length} 頁</span>
+        <div>
+          <span className="section-index">Canvas / 文件畫布</span>
+          <h2 className="t">預覽舞台</h2>
+        </div>
+        <div className="progress-block" aria-label={`已完成 ${filled} 頁，共 ${units.length} 頁`}>
+          <span className="prog"><b>{filled}</b><i> / </i>{units.length}</span>
+          <span className="progress-track" aria-hidden="true">
+            <i style={{ width: `${units.length ? (filled / units.length) * 100 : 0}%` }} />
+          </span>
+        </div>
       </div>
       {waiting ? (
         <WaitingCard onCancel={() => onCancel?.()} />

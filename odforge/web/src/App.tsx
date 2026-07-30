@@ -6,7 +6,20 @@ import { GateRail } from "./components/GateRail";
 import { StatusNarrator } from "./components/StatusNarrator";
 import { DownloadDock } from "./components/DownloadDock";
 import { ErrorPanel } from "./components/ErrorPanel";
-import { postGenerate, postOutlineAction, type GenerateBody, type OutlineActionBody } from "./state/api";
+import { DiscoveryPanel } from "./components/DiscoveryPanel";
+import { HomeDashboard } from "./components/HomeDashboard";
+import {
+  getSessions,
+  postCancel,
+  postDiscoveryQuestions,
+  postGenerate,
+  postOutlineAction,
+  type DiscoveryPlan,
+  type DiscoveryProgress,
+  type GenerateBody,
+  type OutlineActionBody,
+  type SessionSummary,
+} from "./state/api";
 import { cockpitReducer, initialState } from "./state/cockpit";
 import { playMock } from "./state/mockStream";
 import { subscribeJob } from "./state/sse";
@@ -17,26 +30,62 @@ import "./styles/app.css";
 
 export default function App() {
   const [state, dispatch] = useReducer(cockpitReducer, undefined, () => initialState());
+  const [view, setView] = useState<"home" | "create" | "workspace">(() => {
+    const initial = new URLSearchParams(window.location.search);
+    if (initial.has("job")) return "workspace";
+    if (initial.has("new") || initial.has("mock")) return "create";
+    return "home";
+  });
   const [jobId, setJobId] = useState<string | undefined>();
   const [submitting, setSubmitting] = useState(false);
   // Prompt text lives here (single source of truth) so it survives an error or a
   // completed run — PromptBar is controlled from this state.
   const [prompt, setPrompt] = useState("");
+  const [discoveryRequest, setDiscoveryRequest] = useState<GenerateBody>();
+  const [discoveryPlan, setDiscoveryPlan] = useState<DiscoveryPlan>();
+  const [discoveryLoading, setDiscoveryLoading] = useState(false);
+  const [discoveryError, setDiscoveryError] = useState("");
+  const [discoveryProgress, setDiscoveryProgress] = useState<DiscoveryProgress[]>([]);
   // 大綱已確認、等待第一個 slide_done 的空窗:讓 narrator 報「逐頁填充」而非「等待確認」。
   const [fillingPending, setFillingPending] = useState(false);
   // ?job= 復原失敗(job 不存在/已過期)時,於輸入畫面報一行人話。
   const [expired, setExpired] = useState(false);
   // 目前開啟 lightbox 的頁碼(提升到 App,讓 FindingRow 點擊也能開該頁)。
   const [selectedN, setSelectedN] = useState<number | null>(null);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionsError, setSessionsError] = useState("");
   const { theme, setTheme } = useTheme();
   const cancelRef = useRef<() => void>();
+  const discoveryAbortRef = useRef<AbortController>();
   // 上一次送出的 generate body,供錯誤區「重試」以同樣參數重送。
   const lastBodyRef = useRef<GenerateBody>();
   const params = new URLSearchParams(window.location.search);
   const mockMode = params.has("mock");
   const mockStep = Number(params.get("mockStep") ?? "250");
 
-  useEffect(() => () => cancelRef.current?.(), []);
+  async function loadSessions() {
+    setSessionsLoading(true);
+    setSessionsError("");
+    try {
+      setSessions(await getSessions());
+    } catch (error) {
+      setSessionsError(
+        error instanceof Error ? error.message : "無法讀取工作紀錄。",
+      );
+    } finally {
+      setSessionsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (view === "home") void loadSessions();
+  }, [view]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => () => {
+    cancelRef.current?.();
+    discoveryAbortRef.current?.abort();
+  }, []);
 
   // 重整/斷線復原:URL 帶 ?job= 時直接重新訂閱事件流,後端會從頭重播全部事件
   // (outline → slide_done×N → …),reducer 天然重建狀態——含 awaiting_approval
@@ -45,6 +94,7 @@ export default function App() {
   useEffect(() => {
     const jobParam = params.get("job");
     if (!jobParam || mockMode) return;
+    setView("workspace");
     setJobId(jobParam);
     setSubmitting(true); // 首個事件到達前顯示等待卡
     const throttle = createThrottledDispatch(dispatch);
@@ -68,6 +118,7 @@ export default function App() {
         setJobId(undefined);
         setSubmitting(false);
         setExpired(true);
+        setView("create");
       },
     );
     cancelRef.current = () => { close(); throttle.cancel(); };
@@ -83,10 +134,18 @@ export default function App() {
 
   async function onGenerate(body: GenerateBody) {
     cancelRef.current?.();
+    discoveryAbortRef.current?.abort();
+    discoveryAbortRef.current = undefined;
+    setDiscoveryRequest(undefined);
+    setDiscoveryPlan(undefined);
+    setDiscoveryLoading(false);
+    setDiscoveryError("");
+    setDiscoveryProgress([]);
     setExpired(false);
     setSelectedN(null); // 新一輪生成:關掉任何殘留開著的 lightbox
     lastBodyRef.current = body;
     setSubmitting(true);
+    setView("workspace");
     if (mockMode) { setJobId("mock"); cancelRef.current = playMock(dispatch, { step: mockStep }); return; }
     try {
       const { job_id } = await postGenerate(body);
@@ -101,22 +160,104 @@ export default function App() {
       // 後端不可用時,誠實回報連線失敗(不再靜默退回 mock 演假簡報)。
       // phase 進 error 後 PromptBar 會回來,使用者可重試。
       dispatch({ type: "error", data: { message: "無法連上後端,請確認 odforge serve 是否在執行", stage: "connect" } });
+      setView("create");
     }
   }
 
-  // 「再鍛一份」/ 等待卡取消:關閉舊 SSE、丟掉待播佇列、清 jobId、重置 cockpit 回 empty。
-  // prompt 文字刻意保留在輸入框(受控 state 不動),使用者可微調再送。
-  function resetCockpit() {
+  async function beginDiscovery(body: GenerateBody) {
+    discoveryAbortRef.current?.abort();
+    const controller = new AbortController();
+    discoveryAbortRef.current = controller;
+    setDiscoveryRequest(body);
+    setDiscoveryPlan(undefined);
+    setDiscoveryError("");
+    setDiscoveryProgress([]);
+    setDiscoveryLoading(true);
+    try {
+      const plan = await postDiscoveryQuestions(body, {
+        signal: controller.signal,
+        onProgress: (progress) => {
+          setDiscoveryProgress((current) => {
+            const previous = current[current.length - 1];
+            if (previous?.stage === progress.stage) {
+              return [...current.slice(0, -1), progress];
+            }
+            return [...current, progress];
+          });
+        },
+      });
+      setDiscoveryPlan(plan);
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") return;
+      setDiscoveryError(
+        error instanceof Error ? error.message : "需求訪談暫時無法使用。",
+      );
+    } finally {
+      if (discoveryAbortRef.current === controller) {
+        discoveryAbortRef.current = undefined;
+        setDiscoveryLoading(false);
+      }
+    }
+  }
+
+  function leaveDiscovery() {
+    discoveryAbortRef.current?.abort();
+    discoveryAbortRef.current = undefined;
+    setDiscoveryRequest(undefined);
+    setDiscoveryPlan(undefined);
+    setDiscoveryLoading(false);
+    setDiscoveryError("");
+    setDiscoveryProgress([]);
+  }
+
+  function clearWorkspace() {
     cancelRef.current?.();
     cancelRef.current = undefined;
+    discoveryAbortRef.current?.abort();
+    discoveryAbortRef.current = undefined;
     setJobId(undefined);
     setSubmitting(false);
     setFillingPending(false);
     setExpired(false);
     setSelectedN(null);
-    // 放棄此 job → 清掉 URL 的 ?job=,重整不再嘗試復原舊任務。
-    history.replaceState(null, "", window.location.pathname);
+    setDiscoveryRequest(undefined);
+    setDiscoveryPlan(undefined);
+    setDiscoveryLoading(false);
+    setDiscoveryError("");
+    setDiscoveryProgress([]);
     dispatch({ type: "reset" });
+  }
+
+  function startNew() {
+    clearWorkspace();
+    setPrompt("");
+    history.replaceState(null, "", `${window.location.pathname}?new=1`);
+    setView("create");
+  }
+
+  function goHome() {
+    clearWorkspace();
+    history.replaceState(null, "", window.location.pathname);
+    setView("home");
+  }
+
+  // 「再鍛一份」/ 等待卡取消:關閉舊 SSE、丟掉待播佇列、清 jobId、重置 cockpit 回 empty。
+  // prompt 文字刻意保留在輸入框(受控 state 不動),使用者可微調再送。
+  function resetCockpit() {
+    clearWorkspace();
+    history.replaceState(null, "", `${window.location.pathname}?new=1`);
+    setView("create");
+  }
+
+  function cancelCurrentJob() {
+    const currentJobId = jobId;
+    if (currentJobId && currentJobId !== "mock") {
+      // Best effort: reset the local UI immediately, while the backend stops all
+      // remaining stages for this job. A request already sent to an LLM cannot
+      // be recalled, but no later generation/render work will be started.
+      void postCancel(currentJobId).catch(() => undefined);
+    }
+    resetCockpit();
   }
 
   // 錯誤區「重試」:清掉失敗殘留的 units/gates,再以同樣參數重送上一次 generate。
@@ -143,9 +284,6 @@ export default function App() {
     if (action.action === "edit") dispatch({ type: "outline", data: action.outline });
   }
 
-  // Show the prompt bar when idle OR after an error (so the user can retry);
-  // hide it while a request is in flight or generation is streaming.
-  const busy = submitting || (state.phase !== "empty" && state.phase !== "error");
   // 頂欄常駐狀態 chip:展示模式(?mock)優先;否則連線失敗顯示「後端未連線」;正常不顯示。
   const disconnected = state.phase === "error" && state.error?.stage === "connect";
   const chip = mockMode
@@ -153,54 +291,136 @@ export default function App() {
     : disconnected
     ? { kind: "offline" as const, label: "後端未連線" }
     : null;
+  const home = view === "home" && !submitting && state.phase === "empty";
+  const composer = view === "create"
+    && !submitting
+    && (state.phase === "empty" || state.phase === "error");
+
   return (
-    <div className="page">
-      <div className="stage">
-        {/* data-outline 讓 CSS 在大綱未到前收掉左欄,不留 248px 空白直條(空台矛盾)。 */}
-        <div className="cockpit" data-outline={state.outline ? "present" : "absent"}>
-          <header className="top">
-            <div className="brand"><span className="mark">文鍛</span><span className="en">ODForge</span></div>
+    <div className="page" data-view={home ? "home" : composer ? "welcome" : "workspace"}>
+      <a className="skiplink" href="#main-content">跳到主要內容</a>
+
+      <header className="sitebar">
+        <div className="sitebar-inner">
+          <button type="button" className="brand" aria-label="回到首頁" onClick={goHome}>
+            <span className="brand-seal" aria-hidden="true">文</span>
+            <span className="brand-copy">
+              <span className="mark">文鍛</span>
+              <span className="en">ODForge</span>
+            </span>
+          </button>
+          <div className="sitebar-status">
             {chip && <span className="statuschip" data-kind={chip.kind}>{chip.label}</span>}
-            {!busy ? (
-              <PromptBar onGenerate={onGenerate} value={prompt} onValueChange={setPrompt} />
-            ) : state.phase === "complete" ? (
-              <div className="promptline done">
-                <span className="pl-text" title={prompt}>{prompt || "文件"}</span>
-                <button type="button" className="reforge" onClick={resetCockpit}>再鍛一份</button>
-              </div>
-            ) : (
-              // 生成中:頂欄細條顯示真實 prompt(過長由 CSS 截斷,title 給全文)。
-              <div className="promptline" title={prompt || undefined}>{prompt || "生成中的文件"}</div>
-            )}
             <div className="themetoggle" role="group" aria-label="主題">
-              <button aria-label="淺色主題" aria-pressed={theme === "light"} onClick={() => setTheme("light")}>☀</button>
-              <button aria-label="深色主題" aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>☾</button>
+              <button aria-label="淺色主題" aria-pressed={theme === "light"} onClick={() => setTheme("light")}>
+                <span aria-hidden="true">日</span>
+              </button>
+              <button aria-label="深色主題" aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}>
+                <span aria-hidden="true">夜</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {home ? (
+        <HomeDashboard
+          sessions={sessions}
+          loading={sessionsLoading}
+          error={sessionsError}
+          onNew={startNew}
+          onReload={() => void loadSessions()}
+        />
+      ) : composer ? (
+        <main className="welcome-shell" id="main-content">
+          <span className="cockpit state-probe" data-outline="absent" hidden />
+          <section className="composer-panel" aria-labelledby="composer-title">
+            <div className="panel-intro">
+              <h1 id="composer-title">
+                {discoveryRequest ? "補齊需求" : "想做什麼簡報？"}
+              </h1>
+              <p>
+                {discoveryRequest
+                  ? "回答幾個關鍵問題，再生成大綱。"
+                  : "先描述需求；缺少的資訊會再問你。"}
+              </p>
+            </div>
+            {discoveryRequest ? (
+              <DiscoveryPanel
+                request={discoveryRequest}
+                plan={discoveryPlan}
+                loading={discoveryLoading}
+                error={discoveryError}
+                progress={discoveryProgress}
+                onBack={leaveDiscovery}
+                onRetry={() => void beginDiscovery(discoveryRequest)}
+                onGenerate={onGenerate}
+              />
+            ) : (
+              <PromptBar
+                onDiscover={(body) => void beginDiscovery(body)}
+                value={prompt}
+                onValueChange={setPrompt}
+              />
+            )}
+            {state.phase === "error" && (
+              <ErrorPanel error={state.error} onRetry={lastBodyRef.current ? retryGenerate : undefined} />
+            )}
+            {expired && (
+              <div className="welcome-status">
+                <StatusNarrator
+                  phase={state.phase}
+                  units={state.units}
+                  error={state.error}
+                  submitting={submitting}
+                  fillingPending={fillingPending}
+                  expired={expired}
+                />
+              </div>
+            )}
+          </section>
+        </main>
+      ) : (
+        <main className="workbench" id="main-content">
+          <header className="workhead">
+            <div className="workbrief">
+              <span className="worklabel">目前任務</span>
+              <div className="promptline" title={prompt || undefined}>
+                <span className="pl-text">{prompt || "生成中的文件"}</span>
+              </div>
+            </div>
+            <div className="work-actions">
+              <button type="button" className="work-home" onClick={goHome}>首頁</button>
+              {state.phase === "complete" && (
+                <button type="button" className="reforge" onClick={resetCockpit}>
+                  <span aria-hidden="true">＋</span> 再鍛一份
+                </button>
+              )}
             </div>
           </header>
+
+          {/* data-outline 讓 CSS 在大綱未到前收掉左欄,避免空白直條。 */}
+          <div className="cockpit" data-outline={state.outline ? "present" : "absent"}>
           <OutlineRail outline={state.outline} phase={state.phase} onConfirm={onConfirmOutline} />
-          {state.phase === "error" ? (
-            <ErrorPanel error={state.error} onRetry={lastBodyRef.current ? retryGenerate : undefined} />
-          ) : (
-            <PreviewStage
-              units={state.units}
-              docType={state.docType}
-              jobId={jobId}
-              dispatch={dispatch}
-              submitting={submitting}
-              onCancel={resetCockpit}
-              selectedN={selectedN}
-              onSelect={setSelectedN}
-            />
-          )}
-          {/* error 時改渲染 ErrorPanel(非 PreviewStage),lightbox host 未掛載——
-              此時 FindingRow 不可點,避免點了無反應的死互動。 */}
+          <PreviewStage
+            units={state.units}
+            docType={state.docType}
+            jobId={jobId}
+            dispatch={dispatch}
+            submitting={submitting}
+            onCancel={cancelCurrentJob}
+            selectedN={selectedN}
+            onSelect={setSelectedN}
+          />
           <GateRail gates={state.gates} qaRounds={state.qaRounds} onOpenFinding={state.phase === "error" ? undefined : (n) => setSelectedN(n)} />
+          </div>
+
           <footer className="foot">
             <StatusNarrator phase={state.phase} units={state.units} error={state.error} submitting={submitting} fillingPending={fillingPending} expired={expired} />
             <DownloadDock jobId={jobId} downloadUrl={state.downloadUrl} docType={state.docType} phase={state.phase} />
           </footer>
-        </div>
-      </div>
+        </main>
+      )}
     </div>
   );
 }

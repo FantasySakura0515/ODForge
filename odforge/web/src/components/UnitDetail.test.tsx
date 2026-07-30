@@ -59,6 +59,11 @@ test("在輸入框內按方向鍵不換頁,但 Esc 仍可關閉", () => {
   expect(onClose).toHaveBeenCalled();
 });
 
+test("重生指令輸入框有明確可及名稱", () => {
+  render(<UnitDetail units={units} n={2} jobId="j1" onClose={noop} onNavigate={noop} dispatch={noop} />);
+  expect(screen.getByRole("textbox", { name: "重生指令" })).toBeInTheDocument();
+});
+
 // Minor: 導覽到邊界(鈕被 disable)後,焦點應回到 dialog 容器而非掉到 body
 test("導覽後焦點回到 dialog 容器(不掉到 body)", () => {
   render(<UnitDetail units={units} n={2} jobId="j1" onClose={noop} onNavigate={noop} dispatch={noop} />);

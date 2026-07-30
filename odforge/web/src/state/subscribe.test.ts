@@ -13,9 +13,18 @@ class FakeEventSource {
   fail() { this.onerror?.({}); }
 }
 
+function fakeEventSourceCtor(onCreate: (source: FakeEventSource) => void): typeof EventSource {
+  return class extends FakeEventSource {
+    constructor(url: string) {
+      super(url);
+      onCreate(this);
+    }
+  } as unknown as typeof EventSource;
+}
+
 test("subscribeJob 把 SSE 事件解析後回呼", () => {
   let src!: FakeEventSource;
-  const Ctor = vi.fn((url: string) => (src = new FakeEventSource(url))) as unknown as typeof EventSource;
+  const Ctor = fakeEventSourceCtor((source) => { src = source; });
   const seen: SseEvent[] = [];
   const close = subscribeJob("j1", (e) => seen.push(e), Ctor);
 
@@ -30,7 +39,7 @@ test("subscribeJob 把 SSE 事件解析後回呼", () => {
 
 test("subscribeJob 收到 complete 後自動關閉串流(不需手動 close)", () => {
   let src!: FakeEventSource;
-  const Ctor = vi.fn((url: string) => (src = new FakeEventSource(url))) as unknown as typeof EventSource;
+  const Ctor = fakeEventSourceCtor((source) => { src = source; });
   subscribeJob("j1", () => {}, Ctor);
   expect(src.closed).toBe(false);
   src.emit("complete", { download_url: "/d" });
@@ -39,7 +48,7 @@ test("subscribeJob 收到 complete 後自動關閉串流(不需手動 close)", (
 
 test("subscribeJob 收到 error 後自動關閉串流", () => {
   let src!: FakeEventSource;
-  const Ctor = vi.fn((url: string) => (src = new FakeEventSource(url))) as unknown as typeof EventSource;
+  const Ctor = fakeEventSourceCtor((source) => { src = source; });
   subscribeJob("j1", () => {}, Ctor);
   src.emit("error", { message: "x", stage: "slides" });
   expect(src.closed).toBe(true);
@@ -47,7 +56,7 @@ test("subscribeJob 收到 error 後自動關閉串流", () => {
 
 test("subscribeJob 傳輸層錯誤(如 404)回呼 onError", () => {
   let src!: FakeEventSource;
-  const Ctor = vi.fn((url: string) => (src = new FakeEventSource(url))) as unknown as typeof EventSource;
+  const Ctor = fakeEventSourceCtor((source) => { src = source; });
   const onError = vi.fn();
   subscribeJob("j1", () => {}, Ctor, onError);
   src.fail();

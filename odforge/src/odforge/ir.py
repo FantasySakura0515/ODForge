@@ -138,9 +138,143 @@ class ChartSpec(BaseModel):
 # The 10 page layouts a slide can render. Shared verbatim by ``Slide.layout``
 # and ``PageRole.role`` (Task 15.1) — an outline page names the layout its
 # stage-2 slide will use, so the two vocabularies must never drift apart.
+class ProcessStep(BaseModel):
+    """One concise step in a shape-rendered process flow."""
+
+    title: str = Field(min_length=1, max_length=24)
+    detail: str = Field(default="", max_length=56)
+
+
+class TimelineEvent(BaseModel):
+    """One event in a shape-rendered horizontal timeline."""
+
+    label: str = Field(min_length=1, max_length=18)
+    title: str = Field(min_length=1, max_length=24)
+    detail: str = Field(default="", max_length=48)
+
+
+class MetricSpec(BaseModel):
+    """One headline metric rendered as a large-number card."""
+
+    value: str = Field(min_length=1, max_length=18)
+    label: str = Field(min_length=1, max_length=24)
+    detail: str = Field(default="", max_length=56)
+
+
+class DiagramNode(BaseModel):
+    """One editable node in a relationship or hierarchy diagram."""
+
+    id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,16}$")
+    title: str = Field(min_length=1, max_length=24)
+    detail: str = Field(default="", max_length=48)
+    emphasis: bool = False
+
+
+class DiagramEdge(BaseModel):
+    """A directed semantic relationship between two diagram nodes."""
+
+    source: str
+    target: str
+    label: str = Field(default="", max_length=18)
+
+
+class DiagramSpec(BaseModel):
+    """A small editable diagram with deterministic node placement."""
+
+    kind: Literal["hub", "hierarchy"] = "hub"
+    nodes: List[DiagramNode] = Field(min_length=2, max_length=6)
+    edges: List[DiagramEdge] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def _check_graph(self) -> "DiagramSpec":
+        ids = [node.id for node in self.nodes]
+        if len(ids) != len(set(ids)):
+            raise ValueError("diagram node ids must be unique")
+        known = set(ids)
+        for edge in self.edges:
+            if edge.source not in known or edge.target not in known:
+                raise ValueError(
+                    "diagram edges must reference existing node ids"
+                )
+            if edge.source == edge.target:
+                raise ValueError("diagram edges cannot connect a node to itself")
+        return self
+
+
+class SourceRef(BaseModel):
+    """A concise source label with an optional clickable HTTP(S) URL."""
+
+    label: str = Field(min_length=1, max_length=32)
+    url: str = Field(default="", max_length=500)
+
+    @field_validator("url")
+    @classmethod
+    def _http_url_when_present(cls, value: str) -> str:
+        if value and not re.match(r"^https?://", value, flags=re.IGNORECASE):
+            raise ValueError("source url must start with http:// or https://")
+        return value
+
+
+class MediaAssetRef(BaseModel):
+    """Application-owned image asset made available to the slide writer.
+
+    The model sees only the stable ``id`` and descriptive metadata. It never
+    receives a local filesystem path.
+    """
+
+    id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,48}$")
+    description: str = Field(min_length=1, max_length=240)
+    credit: str = Field(default="", max_length=160)
+
+
+class ImageSpec(BaseModel):
+    """One raster image placed on a slide.
+
+    ``src`` may be an app-managed ``asset://`` reference, an HTTPS URL, or a
+    PNG/JPEG data URI. Remote fetching is disabled unless the host application
+    explicitly opts in. ``prompt`` is used only when a configured image
+    provider is available.
+    """
+
+    src: str = Field(default="", max_length=12_000_000)
+    prompt: str = Field(default="", max_length=800)
+    alt: str = Field(min_length=1, max_length=240)
+    caption: str = Field(default="", max_length=180)
+    credit: str = Field(default="", max_length=160)
+    fit: Literal["contain", "fill"] = "contain"
+
+    @field_validator("src")
+    @classmethod
+    def _safe_source_scheme(cls, value: str) -> str:
+        if not value:
+            return value
+        if value.startswith("asset://"):
+            asset_id = value.removeprefix("asset://")
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,48}", asset_id):
+                raise ValueError("asset image src must use asset://<safe-id>")
+            return value
+        if re.match(
+            r"^data:image/(?:png|jpeg);base64,", value, flags=re.IGNORECASE
+        ):
+            return value
+        if re.match(r"^https://", value, flags=re.IGNORECASE):
+            return value
+        raise ValueError(
+            "image src must use asset://, https://, or a PNG/JPEG data URI"
+        )
+
+    @model_validator(mode="after")
+    def _source_or_prompt(self) -> "ImageSpec":
+        if not self.src and not self.prompt.strip():
+            raise ValueError("image requires either src or prompt")
+        return self
+
+
 PageRoleName = Literal[
     "title", "title-content", "two-col", "section", "big-fact",
     "quote", "agenda", "comparison", "chart", "closing",
+    "process", "timeline", "metrics", "cards", "diagram",
+    "image-focus", "image-split",
 ]
 
 
@@ -162,6 +296,12 @@ class Slide(BaseModel):
     attribution: str = ""
     kicker: str = ""
     chart: Optional[ChartSpec] = None
+    steps: List[ProcessStep] = Field(default_factory=list, max_length=5)
+    events: List[TimelineEvent] = Field(default_factory=list, max_length=5)
+    metrics: List[MetricSpec] = Field(default_factory=list, max_length=4)
+    diagram: Optional[DiagramSpec] = None
+    image: Optional[ImageSpec] = None
+    sources: List[SourceRef] = Field(default_factory=list, max_length=3)
     notes: str = ""
 
     @model_validator(mode="after")
@@ -176,6 +316,30 @@ class Slide(BaseModel):
             raise ValueError(
                 'layout="quote" requires non-empty quote text: set Slide.quote. '
                 "Got an empty quote."
+            )
+        if self.layout == "process" and len(self.steps) < 2:
+            raise ValueError(
+                'layout="process" requires 2 to 5 steps in Slide.steps.'
+            )
+        if self.layout == "timeline" and len(self.events) < 2:
+            raise ValueError(
+                'layout="timeline" requires 2 to 5 events in Slide.events.'
+            )
+        if self.layout == "metrics" and len(self.metrics) < 2:
+            raise ValueError(
+                'layout="metrics" requires 2 to 4 metrics in Slide.metrics.'
+            )
+        if self.layout == "cards" and not 2 <= len(self.bullets) <= 4:
+            raise ValueError(
+                'layout="cards" requires 2 to 4 items in Slide.bullets.'
+            )
+        if self.layout == "diagram" and self.diagram is None:
+            raise ValueError(
+                'layout="diagram" requires a DiagramSpec in Slide.diagram.'
+            )
+        if self.layout in {"image-focus", "image-split"} and self.image is None:
+            raise ValueError(
+                f'layout="{self.layout}" requires an ImageSpec in Slide.image.'
             )
         return self
 
@@ -313,6 +477,7 @@ class PageRole(BaseModel):
     role: PageRoleName
     title: str
     gist: str = Field(min_length=1)
+    visual_intent: str = Field(default="", max_length=160)
 
 
 class Outline(BaseModel):
@@ -328,6 +493,11 @@ class Outline(BaseModel):
     design: Optional[DesignSpec] = None
     mode: Literal["detailed", "presenter"] = "presenter"
     pages: List[PageRole] = Field(min_length=1)
+    # Application-owned context copied from the user's original request after
+    # stage 1 so the content-writing model keeps the full brief.
+    source_prompt: str = ""
+    media_assets: List[MediaAssetRef] = Field(default_factory=list, max_length=12)
+    image_generation_available: bool = False
 
 
 # ---------------------------------------------------------------------------

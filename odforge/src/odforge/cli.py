@@ -8,21 +8,24 @@ blocks together and presents the result. Task 8.2 adds a ``check`` subcommand.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import List, Mapping, Optional
 
 import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from odforge.benchmark import run_benchmark
 from odforge.check import check_odf, diff_docx_odt
 from odforge.critic import QAReport, run_qa_loop
 from odforge.extract import extract_design
-from odforge.ir import Outline
+from odforge.ir import MediaAssetRef, Outline
 from odforge.llm import generate_ir, generate_outline, generate_slides
+from odforge.media import AssetBlob, AssetInput, MediaError, load_local_image
 from odforge.render import render
 from odforge.textmetrics import check_budget
 from odforge.textutil import concise
@@ -51,6 +54,7 @@ class Theme(str, Enum):
 class Backend(str, Enum):
     deepseek = "deepseek"
     ollama = "ollama"
+    custom = "custom"
 
 
 class Mode(str, Enum):
@@ -75,7 +79,7 @@ def _concise(exc: Exception) -> str:
 def _print_outline(outline: Outline) -> None:
     """Render a stage-1 outline for the interactive checkpoint.
 
-    Prints a page-role table (頁碼 / 版型 / 標題 / gist) and a design summary:
+    Prints a page-role table (頁碼 / 版型 / 標題 / gist / 視覺意圖) and a design summary:
     the palette shown as five hex colour swatches, the font pairing, density
     scale and narrative mode. LLM-provided strings (titles, gists, fonts) are
     ``escape``\\ d before interpolation into rich markup; palette values are
@@ -86,8 +90,15 @@ def _print_outline(outline: Outline) -> None:
     table.add_column("版型")
     table.add_column("標題", overflow="fold")
     table.add_column("gist", overflow="fold")
+    table.add_column("視覺意圖", overflow="fold")
     for i, page in enumerate(outline.pages, start=1):
-        table.add_row(str(i), escape(page.role), escape(page.title), escape(page.gist))
+        table.add_row(
+            str(i),
+            escape(page.role),
+            escape(page.title),
+            escape(page.gist),
+            escape(page.visual_intent),
+        )
     _out.print(table)
 
     design = outline.design
@@ -136,6 +147,7 @@ def _run_qa(
     out_path: Path,
     outline: Optional[Outline],
     llm_backend: Optional[str],
+    assets: Mapping[str, AssetInput] | None = None,
 ) -> None:
     """Run the design-QA loop (第四道閘) and print a before/after summary.
 
@@ -160,13 +172,14 @@ def _run_qa(
         return
 
     try:
-        report = run_qa_loop(
-            ir,
-            out_path,
-            outline=outline,
-            backend=vision_backend,
-            llm_backend=llm_backend,
-        )
+        qa_kwargs = {
+            "outline": outline,
+            "backend": vision_backend,
+            "llm_backend": llm_backend,
+        }
+        if assets:
+            qa_kwargs["render_assets"] = assets
+        report = run_qa_loop(ir, out_path, **qa_kwargs)
     except Exception as exc:  # noqa: BLE001 - QA must never fail the command
         _err.print(f"[yellow]--qa 已略過[/yellow] 設計評審發生問題：{_concise(exc)}")
         return
@@ -200,6 +213,14 @@ def new(
     ),
     backend: Optional[Backend] = typer.Option(
         None, "--backend", help="LLM 後端；省略則使用預設。"
+    ),
+    image: Optional[List[Path]] = typer.Option(
+        None,
+        "--image",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="加入可供簡報使用的 PNG/JPEG 素材；可重複指定。",
     ),
     from_template: Optional[Path] = typer.Option(
         None,
@@ -244,6 +265,25 @@ def new(
         raise typer.Exit(code=2)
 
     backend_name = backend.value if backend else None
+    asset_blobs: dict[str, AssetBlob] = {}
+    asset_refs: list[MediaAssetRef] = []
+    if image:
+        if doc_type != "presentation":
+            _err.print("[dim]--image 僅適用於 .odp，已忽略。[/dim]")
+        else:
+            try:
+                for index, image_path in enumerate(image, start=1):
+                    asset_id = f"image-{index:02d}"
+                    asset_blobs[asset_id] = load_local_image(image_path)
+                    asset_refs.append(
+                        MediaAssetRef(
+                            id=asset_id,
+                            description=image_path.stem.replace("_", " "),
+                        )
+                    )
+            except MediaError as exc:
+                _err.print(f"[red]FAIL[/red] 圖片素材無法使用：{_concise(exc)}")
+                raise typer.Exit(code=1)
 
     # --from-template (吃現有範本): extract a DesignSpec from a public template and
     # LOCK it — the LLM only produces content, the look comes from the template.
@@ -276,6 +316,15 @@ def new(
         # --mode overrides the outline's narrative register before stage 2.
         if mode is not None:
             outline = outline.model_copy(update={"mode": mode.value})
+        outline = outline.model_copy(
+            update={
+                "media_assets": asset_refs,
+                "image_generation_available": (
+                    os.getenv("ODFORGE_IMAGE_BACKEND", "off").lower() == "http"
+                    and bool(os.getenv("ODFORGE_IMAGE_ENDPOINT", "").strip())
+                ),
+            }
+        )
 
         # --from-template locks the design: overwrite the outline's design with
         # the extracted one so stage 2 fills content against the locked art
@@ -331,7 +380,7 @@ def new(
     out_path = out.resolve()
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        render(ir, out_path)
+        render(ir, out_path, assets=asset_blobs)
         with_soffice = bool(soffice) and find_soffice() is not None
         report = validate_odf(out_path, with_soffice=with_soffice)
     except Exception as exc:  # noqa: BLE001 - present a concise message, no traceback
@@ -352,7 +401,13 @@ def new(
     # soffice or a vision backend is missing.
     if qa:
         if doc_type == "presentation":
-            _run_qa(ir, out_path, outline=outline, llm_backend=backend_name)
+            _run_qa(
+                ir,
+                out_path,
+                outline=outline,
+                llm_backend=backend_name,
+                assets=asset_blobs,
+            )
         else:
             _err.print("[dim]--qa 僅適用於簡報(.odp),已略過[/dim]")
 
@@ -365,17 +420,129 @@ def new(
 
 
 @app.command()
+def benchmark(
+    prompt: str = typer.Argument(..., help="所有候選模型共用的簡報題目。"),
+    out_dir: Path = typer.Option(
+        Path("benchmark-results"),
+        "--out-dir",
+        help="儲存各候選 outline、IR、ODP、預覽與比較報告的目錄。",
+    ),
+    candidate: Optional[List[Backend]] = typer.Option(
+        None,
+        "--backend",
+        help="要比較的 backend；可重複指定，預設 deepseek + ollama。",
+    ),
+    pages: Optional[int] = typer.Option(
+        None, "--pages", min=3, max=30, help="所有候選共用的目標頁數。"
+    ),
+    image: Optional[List[Path]] = typer.Option(
+        None,
+        "--image",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="所有候選共用的 PNG/JPEG 素材；可重複指定。",
+    ),
+) -> None:
+    """同題執行多個模型，保留完整產物並輸出可稽核的結構品質報告。"""
+
+    assets: dict[str, AssetBlob] = {}
+    refs: list[MediaAssetRef] = []
+    try:
+        for index, image_path in enumerate(image or [], start=1):
+            asset_id = f"image-{index:02d}"
+            assets[asset_id] = load_local_image(image_path)
+            refs.append(
+                MediaAssetRef(
+                    id=asset_id,
+                    description=image_path.stem.replace("_", " "),
+                )
+            )
+    except MediaError as exc:
+        _err.print(f"[red]FAIL[/red] 圖片素材無法使用：{_concise(exc)}")
+        raise typer.Exit(code=1)
+
+    names = (
+        [item.value for item in candidate]
+        if candidate
+        else [Backend.deepseek.value, Backend.ollama.value]
+    )
+    report = run_benchmark(
+        prompt,
+        names,
+        out_dir.resolve(),
+        pages=pages,
+        assets=assets,
+        asset_refs=refs,
+    )
+
+    table = Table(title="模型同題 benchmark")
+    table.add_column("Candidate")
+    table.add_column("Status")
+    table.add_column("Score", justify="right")
+    table.add_column("Slides", justify="right")
+    table.add_column("Visual", justify="right")
+    table.add_column("Seconds", justify="right")
+    for entry in report.entries:
+        table.add_row(
+            escape(entry.candidate),
+            "[green]OK[/green]" if entry.success else "[red]FAIL[/red]",
+            f"{entry.score:.1f}",
+            str(entry.metrics.slide_count),
+            f"{entry.metrics.visual_slide_ratio:.0%}",
+            f"{entry.elapsed_seconds:.1f}",
+        )
+    _out.print(table)
+    if report.winner:
+        _out.print(f"[green]結構分數最高[/green] {escape(report.winner)}")
+    _out.print(f"報告：{escape(str((out_dir.resolve() / 'report.md')))}")
+    raise typer.Exit(code=0 if any(entry.success for entry in report.entries) else 1)
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return whether a uvicorn bind host is explicitly loopback-only."""
+    candidate = host.strip().strip("[]")
+    if candidate.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
+@app.command()
 def serve(
     host: str = typer.Option(
         "127.0.0.1", "--host", help="伺服器綁定的位址（本機工具預設 127.0.0.1）。"
     ),
     port: int = typer.Option(8000, "--port", help="伺服器連接埠。"),
+    allow_remote: bool = typer.Option(
+        False,
+        "--allow-remote",
+        help="明確允許非 loopback 綁定；API 無認證，僅限受信任網路。",
+    ),
 ) -> None:
     """啟動 ODForge Web API 伺服器（FastAPI + SSE），供前端控制台驅動兩段式生成。
 
     需安裝 web 相依：``pip install "odforge[web]"``。fastapi / uvicorn /
     sse-starlette 只在此指令內延遲載入，核心套件不因它們而變重。
     """
+    if not _is_loopback_host(host) and not allow_remote:
+        raise typer.BadParameter(
+            "非本機綁定會暴露無認證且可花用 LLM 金鑰的 API；"
+            "若已確認網路與防火牆可信，請加上 --allow-remote。",
+            param_hint="--host",
+        )
+    if not _is_loopback_host(host):
+        _err.print(
+            "[bold yellow]警告[/bold yellow] 遠端模式無認證；請只在受信任網路使用，"
+            "並設定明確的 ODFORGE_CORS_ORIGINS。"
+        )
+        # Subscription-authenticated backends (codex) refuse to run behind a
+        # public bind: with no authentication in front of the API, they would
+        # spend the operator's personal plan for whoever reaches the port.
+        os.environ["ODFORGE_PUBLIC_BIND"] = "1"
+
     # Load a local .env (odforge/.env) so DEEPSEEK_API_KEY etc. can live in a file
     # instead of the shell env. Best-effort: python-dotenv ships with the web extra,
     # and this runs only for `serve`, never at import time (so tests stay unaffected).

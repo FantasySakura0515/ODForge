@@ -15,6 +15,9 @@ odforge serve --host 127.0.0.1 --port 8000
 CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：預設放行本機開發來源
 `http://localhost:5173`、`http://127.0.0.1:5173`、`http://localhost:3000`、
 `http://127.0.0.1:3000`，可用環境變數 `ODFORGE_CORS_ORIGINS`（逗號分隔）覆寫。
+覆寫值必須是明確的 `http(s)` origin；`*`、`null`、缺 scheme、含路徑／query 的值會在
+啟動時直接拒絕。非 loopback `--host` 也必須明確加上 `--allow-remote`；遠端模式仍無認證，
+只應在受信任網路與防火牆內使用。
 綁定 127.0.0.1 不能取代此檢查——請求來自使用者自己的瀏覽器，故以 Origin 白名單擋下
 任意網站驅動本工具（此 API 無認證且會花用使用者的真實 LLM 金鑰）。所有回應與 SSE
 `data:` 一律為 UTF-8 JSON。
@@ -40,16 +43,25 @@ CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：�
     "mode": "presenter"
   },
   "mode": "presenter",
+  "source_prompt": "為高中生製作一份光合作用簡報",
+  "media_assets": [
+    { "id": "asset-01", "description": "葉片顯微照片", "credit": "校內實驗室" }
+  ],
+  "image_generation_available": false,
   "pages": [
-    { "role": "title",         "title": "光合作用",       "gist": "全片主題與定位" },
-    { "role": "title-content", "title": "反應總覽",       "gist": "光反應與暗反應兩階段" },
-    { "role": "big-fact",      "title": "能量轉換效率",   "gist": "強調約 3–6% 的實際效率" }
+    { "role": "title",   "title": "光合作用", "gist": "全片主題與定位", "visual_intent": "簡潔封面" },
+    { "role": "process", "title": "反應總覽", "gist": "光反應與暗反應兩階段", "visual_intent": "由左到右呈現能量轉換" },
+    { "role": "metrics", "title": "關鍵數據", "gist": "整理題目提供的成果數字", "visual_intent": "三張數據卡並列" }
   ]
 }
 ```
 - `design` 可為 `null`（模型色盤未通過對比檢查時後端會剝除，渲染改用預設主題）。
   存在時 `palette` 五色與 `fonts` 供前端即時渲染色卡／字體預覽。
 - `mode`：`"presenter"`（講者型，大字少字）或 `"detailed"`（自讀型，完整文字）。
+- `source_prompt` 保存原始需求，確保逐頁生成與重新生成時不會丟失受眾、資料與限制。
+- `visual_intent` 描述每頁要呈現的視覺關係。
+- `media_assets` 是應用程式產生的安全素材索引；模型只能引用 `asset://<id>`，
+  不會看到上傳檔案的本機路徑。
 - `role` 取值同 `Slide.layout`（見下）。
 
 ### `Slide`
@@ -66,13 +78,28 @@ CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：�
   "attribution": "",
   "kicker": "",
   "chart": null,
+  "steps": [],
+  "events": [],
+  "metrics": [],
+  "diagram": null,
+  "image": null,
+  "sources": [],
   "notes": "開場帶出兩階段。"
 }
 ```
 - `layout` ∈ `title | title-content | two-col | section | big-fact | quote |
-  agenda | comparison | chart | closing`。
+  agenda | comparison | chart | cards | process | timeline | metrics | diagram |
+  image-focus | image-split |
+  closing`。
 - `bullets` 元素可為字串，或巢狀 `{"text": "...", "children": ["...", "..."]}`。
 - `chart` 存在時為 `{"labels": [...], "values": [...], "unit": "", "highlight": null}`。
+- `steps`、`events`、`metrics` 分別供流程、時間軸與指標卡頁型使用。
+- `diagram` 使用 `kind: "hub" | "hierarchy"`、2–6 個 nodes 與 1–8 條 edges。
+- `image` 為
+  `{"src":"asset://asset-01","prompt":"","alt":"...","caption":"","credit":"","fit":"contain"}`；
+  `image-focus`／`image-split` 必須提供。`prompt` 只有在圖片生成 adapter 已設定時使用。
+- `sources` 最多 3 筆，每筆包含短 `label` 與可選的 HTTP(S) `url`；
+  renderer 會在頁尾輸出可點擊引用。
 
 ### `Finding`
 ```json
@@ -99,19 +126,67 @@ CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：�
 
 | Method | Path | Body → 回應 |
 |---|---|---|
-| POST | `/api/generate` | `{prompt, mode?, theme?, interactive?: bool, qa?: bool, backend?, doc_type?: "odp", pages?: int}` → `{job_id}` |
+| POST | `/api/discovery/questions` | `{prompt, mode?, theme?, backend?, doc_type?: "odp", pages?, assets?: [{description, credit, data_url?}]}` → `DiscoveryPlan` |
+| POST | `/api/discovery/questions/stream` | 同上 → NDJSON `progress` / `result` / `error` 事件 |
+| POST | `/api/generate` | `{prompt, mode?, theme?, interactive?: bool, qa?: bool, backend?, doc_type?: "odp", pages?: int, assets?: AssetUpload[]}` → `{job_id}` |
+| GET | `/api/sessions` | 最近 session `{sessions: [{id, title, prompt, status, page_count, preview_url?, download_url?, ...}]}` |
 | GET | `/api/jobs/{id}/events` | SSE 事件流（見「SSE 事件」） |
 | POST | `/api/jobs/{id}/outline` | `{action: "approve"}` 或 `{action: "edit", outline: Outline}` → `{ok, status}` |
+| POST | `/api/jobs/{id}/cancel` | 無 body → `{ok, status: "cancelled"}`；停止尚未開始的後續階段 |
 | POST | `/api/jobs/{id}/slides/{n}/regenerate` | `{instruction?: str}` → `{ok, n, slide, preview_url}`（同步：新頁 + preview 直接回在回應內，**不**走 SSE） |
 | POST | `/api/jobs/{id}/units/{n}/regenerate` | 同上（`slides/{n}/regenerate` 的 F4 正名別名，同一 handler） |
 | GET | `/api/jobs/{id}/preview/{n}.png` | 第 n 頁 PNG（`image/png`） |
 | GET | `/api/jobs/{id}/download` | 最終 `.odp`（`Content-Disposition: attachment`） |
 | GET | `/api/jobs/{id}` | 狀態快照 `{status, slides_done, outline?, findings?, download_url?, error?}` |
 
+### POST `/api/discovery/questions`
+
+這是生成工作建立前的短回合，不會建立 job。模型會根據已知 prompt 與介面設定，
+只詢問尚未提供且最影響簡報品質的 2–5 個問題：
+
+```json
+{
+  "summary": "向系上老師報告畢業專題進度，聚焦架構與時程。",
+  "known_context": ["受眾是系上老師", "目標頁數為 8 頁"],
+  "questions": [
+    {
+      "id": "feedback_goal",
+      "question": "這次最希望老師提供哪一類回饋？",
+      "why": "決定簡報最後的行動請求。",
+      "options": ["確認架構可行性", "提供技術建議", "評估時程"]
+    }
+  ],
+  "completeness": 35
+}
+```
+
+前端把回答整理為可編輯 Brief，再把確認後的文字放回 `/api/generate.prompt`。
+`assets` 中的圖片只傳描述與來源；PDF 可附 `data_url`，後端抽取文字供訪談使用。
+圖片 bytes 僅在真正的 `/api/generate` 上傳。
+
+需要讓使用者看到等待狀態時，使用 `/api/discovery/questions/stream`。每一行都是
+一個完整 JSON 事件；`progress.data` 會提供 `stage`、`message`、`elapsed_ms` 與
+`request_id`，最後以 `result.data.plan` 回傳同一份 `DiscoveryPlan`。這些是可驗證的
+作業階段（送出模型、等待、驗證），不是模型的 chain-of-thought。
+
 ### POST `/api/generate`
 請求：
 ```json
-{ "prompt": "介紹光合作用的兩階段", "mode": "presenter", "theme": null, "interactive": false, "qa": false, "doc_type": "odp", "pages": 12 }
+{
+  "prompt": "介紹光合作用的兩階段",
+  "mode": "presenter",
+  "interactive": false,
+  "qa": false,
+  "doc_type": "odp",
+  "pages": 12,
+  "assets": [
+    {
+      "description": "研究論文",
+      "credit": "校內實驗室",
+      "data_url": "data:application/pdf;base64,..."
+    }
+  ]
+}
 ```
 回應 `200`：
 ```json
@@ -120,6 +195,18 @@ CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：�
 `job_id` 為伺服器產生的 uuid4 hex（32 字）。生成隨即在背景 asyncio task 執行，
 前端接著開 `GET /api/jobs/{id}/events` 訂閱進度。
 `mode` / `theme` 若給定會覆蓋 LLM 的選擇（`theme` 會同時剝除 AI 自選 design）。
+`assets` 最多 6 筆，只接受 8 MiB 以下的真實 PDF/PNG/JPEG。後端會驗證 magic
+bytes；PDF 最多 120 頁，會抽取最多 60,000 字作為模型資料，無文字層、損毀或有密碼
+的 PDF 會回 `422`。圖片會改用伺服器產生的 ID 並寫入該 job 的隔離目錄；模型輸出的
+任意本機路徑一律不接受。
+
+- `prompt`：去除頭尾空白後必須非空，最長 8,000 字元。
+- `mode`：只接受 `presenter`／`detailed`；`theme` 只接受七個內建主題；`backend` 只接受
+  `deepseek`／`ollama`／`custom`。未知值回 `422`，不會留到背景工作才失敗。
+
+每個 job 會把可恢復的 session metadata 原子寫入自己的隔離目錄；服務重啟後會載入
+既有 session。重啟時仍未完成的工作會標記為 `error`／`restore`，已完成的預覽與 ODP
+仍可由首頁開啟或下載。預設保存位置可用 `ODFORGE_SESSIONS_DIR` 覆寫。
 
 - `doc_type`（預設 `"odp"`）：目前**只**支援簡報（`odp`）。傳入其他值（如 `ods`／`odt`）
   回 `422`，`detail` 為人可讀的中文字串（含「目前僅支援簡報(odp)」與「即將支援」字樣）。
@@ -134,13 +221,20 @@ CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：�
 
 回應 `200`：`{"ok": true, "status": "awaiting_approval"}`（收下後 runner 隨即續跑）。
 狀態不在 `awaiting_approval` 時回 `409`；`edit` 缺 `outline` 或 Outline 不合法回 `422`。
+等待核可超過 30 分鐘會結束為 `error`，釋放工作名額。
+
+### POST `/api/jobs/{id}/cancel`
+將尚未結束的工作標記為 `cancelled`、喚醒互動核可等待並取消背景 runner。已經送到外部
+LLM 的單次請求無法追回，但取消後不再啟動後續生成、渲染與預覽階段。已完成、失敗或
+已取消的工作回 `409`。
 
 ### POST `/api/jobs/{id}/slides/{n}/regenerate`
 只重生第 n 頁（以該頁 role/title/gist 組成單頁 sub-outline，把 `instruction`
 併入 gist 後重跑 stage 2），其餘頁不動；接著重渲染並刷新該頁 preview。
 這是**同步**操作（與初次生成不同）：SSE 串流的生命週期在 `complete` 已結束，故結果
 直接回在 HTTP 回應內，前端由發出此請求的元件自行更新該頁。
-請求：`{"instruction": "改用更大膽的視覺，字更少"}`（`instruction` 可省略）。
+請求：`{"instruction": "改用更大膽的視覺，字更少"}`（`instruction` 可省略，最長 2,000
+字元）。同一工作同時只允許一個重生，全服務最多同時兩個；超額回 `409`／`429`。
 回應 `200`：
 ```json
 {
@@ -185,6 +279,7 @@ RFC 5987 `filename*` 送出）。檔案尚未算圖回 `404`。
 - `404`：job 不存在，或 preview 頁碼超出範圍。job id 只作為記憶體 dict 的鍵，
   絕不併進檔案路徑，故不存在即 404，不會有路徑穿越。
 - `409`：狀態不符（outline 未在等待核可、regenerate 時 job 未完成）。
+- `429`：同時執行中的生成工作（最多 4）或重生操作（最多 2）已達上限。
 - `422`：請求 body 不合法（如 edit 的 outline 不通過 pydantic 驗證）。
 
 ---
@@ -354,7 +449,9 @@ data: {"n":1,"slide":{…}}
 - **CORS**：明確 Origin 白名單、且 `allow_credentials=False`；絕不用 `*`＋credentials。
   預設只放行本機開發來源，可用 `ODFORGE_CORS_ORIGINS` 覆寫。此 API 無認證、會花用
   使用者真實 LLM 金鑰，故白名單是擋下任意網站跨源驅動的關鍵（綁定 127.0.0.1 無法取代
-  它，因請求來自使用者自己的瀏覽器）。
+  它，因請求來自使用者自己的瀏覽器）。萬用、opaque 或格式不完整的 origin 會 fail closed。
+- **工作治理**：最多 4 個生成工作、2 個重生操作；互動核可 30 分鐘逾時。完成／失敗／
+  取消的工作保留 24 小時，建立新工作時清除過期產物，記憶體最多保留 100 個工作。
 - **路徑白名單**：`job_id` 由伺服器以 `uuid4().hex` 產生，**絕不**把呼叫端輸入寫進檔案
   路徑；它只當記憶體 dict 的鍵使用，查無即 `404`。
 - 每個 job 的產物落在伺服器自建的 `%TEMP%/odforge-jobs/{id}/` 之下（`preview/`、

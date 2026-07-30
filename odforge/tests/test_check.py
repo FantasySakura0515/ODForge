@@ -7,7 +7,6 @@ text or ``error:`` strings.
 """
 
 import subprocess
-import tempfile
 import zipfile
 from pathlib import Path
 

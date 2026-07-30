@@ -29,6 +29,7 @@ test("submitting 且尚無 units:顯示等待卡(階段時間軸 + 取消鈕),�
   );
   expect(screen.getByText(/構思大綱/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /取消/ })).toBeInTheDocument();
+  expect(container.querySelector(".waitclock")?.getAttribute("aria-live")).toBe("off");
   expect(container.querySelector(".grid")).toBeNull();
 });
 
@@ -60,6 +61,8 @@ test("有真實 previewUrl + jobId → 渲染 img", () => {
   const img = container.querySelector("img");
   expect(img).not.toBeNull();
   expect(img?.getAttribute("src")).toBe("/api/jobs/j1/preview/1.png");
+  expect(img?.getAttribute("loading")).toBe("lazy");
+  expect(img?.getAttribute("decoding")).toBe("async");
 });
 
 test("mock previewUrl → 佔位而非 img", () => {

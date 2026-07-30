@@ -1,10 +1,9 @@
 import zipfile
-from pathlib import Path
 
 import lxml.etree as etree
 import pytest
 
-from odforge.ir import TextDoc, TableBlock, ListBlock, TocBlock, HeadingBlock, ParagraphBlock
+from odforge.ir import TextDoc, TableBlock
 from odforge.render.odt import render_odt
 from odforge.render import render
 
@@ -63,7 +62,9 @@ def test_render_dispatch(tmp_path, sample_text_doc):
 
 
 def test_render_dispatch_unknown_type(tmp_path):
-    class Fake: type = "banana"
+    class Fake:
+        type = "banana"
+
     with pytest.raises(ValueError, match="banana"):
         render(Fake(), tmp_path / "x.odt")
 

@@ -23,3 +23,7 @@ odforge/**/__pycache__/
 odforge/*.egg-info/
 上傳區/
 .~lock.*#
+
+# Agent/tooling scratch (binary decks, preview PNGs, skill scratch files)
+.jez/
+.impeccable.md

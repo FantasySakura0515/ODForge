@@ -13,6 +13,8 @@ test("四道閘各帶白話 title tooltip", () => {
   expect(container.querySelector('[data-gate="xml"]')?.getAttribute("title")).toMatch(/XML 可解析/);
   expect(container.querySelector('[data-gate="libreoffice"]')?.getAttribute("title")).toMatch(/真轉 PDF/);
   expect(container.querySelector('[data-gate="design"]')?.getAttribute("title")).toMatch(/第四道閘/);
+  expect(container.querySelector('[data-gate="zip"]')?.getAttribute("aria-label")).toMatch(/已通過/);
+  expect(container.querySelector('[data-gate="design"]')?.getAttribute("aria-label")).toMatch(/進行中/);
 });
 
 test("FindingRow 呈現頁碼 · issue · severity 徽章 · fix_hint", () => {

@@ -6,7 +6,7 @@
 
 [English](README.en.md) | 繁體中文
 
-![tests](https://img.shields.io/badge/tests-113%20passed-brightgreen) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![format](https://img.shields.io/badge/output-native%20ODF-orange)
+![tests](https://img.shields.io/badge/tests-500%2B%20passed-brightgreen) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![format](https://img.shields.io/badge/output-native%20ODF-orange)
 
 ```powershell
 odforge new "幫我做一份資料結構第三章:樹與二元樹的教學簡報" -o tree.odp
@@ -53,7 +53,7 @@ AI 時代的文件工具幾乎全部輸出 PPTX / DOCX——主流開源 AI 簡�
 
 ## 快速開始
 
-需求:Python 3.10+、[LibreOffice](https://www.libreoffice.org/)(第三道驗證閘使用;未安裝時其餘功能仍可運作)。
+需求:Python 3.11+、[LibreOffice](https://www.libreoffice.org/)(第三道驗證閘使用;未安裝時其餘功能仍可運作)。
 
 ```powershell
 git clone https://github.com/FantasySakura0515/ODForge.git
@@ -138,7 +138,7 @@ odforge/src/odforge/
 ├── package.py      # ODF zip 打包(mimetype 規則 + manifest)
 ├── validate.py     # 三道驗證閘
 ├── check.py        # 檢測報告 + docx↔odt 結構比對
-├── cli.py          # odforge new / check
+├── cli.py          # odforge new / check / serve
 └── mcp_server.py   # MCP 工具(收 IR、不收 prompt、不需金鑰)
 ```
 
@@ -146,7 +146,7 @@ odforge/src/odforge/
 
 ```powershell
 cd odforge
-.\.venv\Scripts\python.exe -m pytest -q    # 113 passed
+.\.venv\Scripts\python.exe -m pytest -q    # 402 passed
 ```
 
 全程 TDD:每個模組先寫失敗測試再實作;渲染器測試直接用 zipfile + lxml 驗證 XML,與實作庫解耦。

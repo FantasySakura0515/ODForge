@@ -7,7 +7,6 @@ from odforge.validate import (
     validate_odf,
     find_soffice,
     run_soffice_convert,
-    ValidationReport,
 )
 from odforge.render.odt import render_odt
 from odforge.render.odp import render_odp
@@ -60,7 +59,8 @@ def test_mimetype_not_first_fails(tmp_path):
     bad = tmp_path / "bad.odt"
     with zipfile.ZipFile(bad, "w") as z:
         z.writestr("content.xml", "<a/>")
-        zi = zipfile.ZipInfo("mimetype"); zi.compress_type = zipfile.ZIP_STORED
+        zi = zipfile.ZipInfo("mimetype")
+        zi.compress_type = zipfile.ZIP_STORED
         z.writestr(zi, "application/vnd.oasis.opendocument.text")
         z.writestr("META-INF/manifest.xml", "<m/>")
     r = validate_odf(bad)
@@ -69,7 +69,8 @@ def test_mimetype_not_first_fails(tmp_path):
 def test_wrong_mimetype_for_extension_fails(tmp_path):
     bad = tmp_path / "bad.odp"
     with zipfile.ZipFile(bad, "w") as z:
-        zi = zipfile.ZipInfo("mimetype"); zi.compress_type = zipfile.ZIP_STORED
+        zi = zipfile.ZipInfo("mimetype")
+        zi.compress_type = zipfile.ZIP_STORED
         z.writestr(zi, "application/vnd.oasis.opendocument.text")  # odt mimetype in .odp
         z.writestr("content.xml", "<a/>")
         z.writestr("META-INF/manifest.xml", "<m/>")
@@ -78,7 +79,8 @@ def test_wrong_mimetype_for_extension_fails(tmp_path):
 def test_malformed_xml_fails(tmp_path):
     bad = tmp_path / "bad.odt"
     with zipfile.ZipFile(bad, "w") as z:
-        zi = zipfile.ZipInfo("mimetype"); zi.compress_type = zipfile.ZIP_STORED
+        zi = zipfile.ZipInfo("mimetype")
+        zi.compress_type = zipfile.ZIP_STORED
         z.writestr(zi, "application/vnd.oasis.opendocument.text")
         z.writestr("content.xml", "<open><unclosed>")
         z.writestr("META-INF/manifest.xml",
@@ -93,7 +95,8 @@ def test_manifest_missing_part_fails(tmp_path):
                 '<manifest:file-entry manifest:full-path="ghost.xml" manifest:media-type="text/xml"/>'
                 '</manifest:manifest>')
     with zipfile.ZipFile(bad, "w") as z:
-        zi = zipfile.ZipInfo("mimetype"); zi.compress_type = zipfile.ZIP_STORED
+        zi = zipfile.ZipInfo("mimetype")
+        zi.compress_type = zipfile.ZIP_STORED
         z.writestr(zi, "application/vnd.oasis.opendocument.text")
         z.writestr("content.xml", "<a/>")
         z.writestr("META-INF/manifest.xml", manifest)
@@ -102,7 +105,8 @@ def test_manifest_missing_part_fails(tmp_path):
 def test_empty_content_xml_fails(tmp_path):
     bad = tmp_path / "bad.odt"
     with zipfile.ZipFile(bad, "w") as z:
-        zi = zipfile.ZipInfo("mimetype"); zi.compress_type = zipfile.ZIP_STORED
+        zi = zipfile.ZipInfo("mimetype")
+        zi.compress_type = zipfile.ZIP_STORED
         z.writestr(zi, "application/vnd.oasis.opendocument.text")
         z.writestr("content.xml", "")
         z.writestr("META-INF/manifest.xml",
@@ -115,6 +119,38 @@ def test_not_a_zip_fails(tmp_path):
     bad.write_text("not a zip", encoding="utf-8")
     r = validate_odf(bad)
     assert not r.ok and not r.gates["structure"][0]
+
+
+def test_oversized_xml_member_fails_without_unbounded_read(tmp_path, monkeypatch):
+    from odforge.package import ODT_MIMETYPE, write_odf_package
+
+    out = tmp_path / "oversized.odt"
+    write_odf_package(
+        out,
+        ODT_MIMETYPE,
+        {"content.xml": "<root>" + ("x" * 128) + "</root>"},
+    )
+    monkeypatch.setattr(validate, "MAX_XML_MEMBER", 64)
+
+    report = validate_odf(out)
+
+    assert not report.gates["xml"][0]
+    assert "safety limits" in report.gates["xml"][1]
+
+
+def test_soffice_is_skipped_when_archive_preflight_fails(tmp_path, monkeypatch):
+    bad = tmp_path / "bad.odt"
+    bad.write_text("not a zip", encoding="utf-8")
+    monkeypatch.setattr(
+        validate,
+        "run_soffice_convert",
+        lambda *args, **kwargs: pytest.fail("soffice must not receive rejected input"),
+    )
+
+    report = validate_odf(bad, with_soffice=True)
+
+    assert not report.gates["soffice"][0]
+    assert "skipped" in report.gates["soffice"][1]
 
 @pytest.mark.skipif(find_soffice() is None, reason="LibreOffice not installed")
 def test_soffice_gate_on_valid_file(tmp_path, sample_presentation):

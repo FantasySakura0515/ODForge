@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 
 const STEPS = [
-  "① AI 構思大綱與美術方向",
-  "② 逐頁填充內容",
-  "③ 引擎渲染與驗證",
+  "① 構思大綱",
+  "② 產生投影片",
+  "③ 渲染與驗證",
 ];
 
 /**
@@ -34,11 +34,11 @@ export function WaitingCard({ onCancel, activeStep = 0 }: { onCancel: () => void
           </li>
         ))}
       </ol>
-      <div className="waitclock" aria-label="已等待時間">
+      <div className="waitclock" aria-label="已等待時間" aria-live="off">
         <span className="waitspin" aria-hidden="true" />
         <b>{mm}:{ss}</b>
       </div>
-      <p className="waitcalm">AI 正在管內容,引擎待會管格式——大綱通常需要 30–60 秒</p>
+      <p className="waitcalm">正在生成大綱，通常需要 30–60 秒。</p>
       <button type="button" className="waitcancel" onClick={onCancel}>
         取消
       </button>

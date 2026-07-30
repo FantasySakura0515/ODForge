@@ -20,7 +20,7 @@ from odforge import critic
 from odforge.critic import (
     ClaudeVisionBackend,
     Finding,
-    OllamaVisionBackend,
+    OpenAICompatVisionBackend,
     critique,
 )
 from odforge.ir import Presentation, Slide
@@ -327,7 +327,7 @@ def test_get_vision_backend_claude_requires_key(monkeypatch):
 def test_ollama_backend_targets_localhost(monkeypatch):
     _install_fake_openai(monkeypatch, json.dumps({"findings": []}))
     backend = critic.get_vision_backend("ollama")
-    assert isinstance(backend, OllamaVisionBackend)
+    assert isinstance(backend, OpenAICompatVisionBackend)
     assert "11434" in backend.base_url
     assert backend.model == "qwen2.5vl"  # default when env unset
 
@@ -337,6 +337,91 @@ def test_ollama_vision_model_env_override(monkeypatch):
     monkeypatch.setenv("ODFORGE_OLLAMA_VISION_MODEL", "llava:13b")
     backend = critic.get_vision_backend("ollama")
     assert backend.model == "llava:13b"
+
+
+# ---------------------------------------------------------------------------
+# ④ custom backend — the OpenAI-compatible vision critic, mirroring llm.py's
+#    ``custom`` text backend so one provider entry in .env serves both halves.
+# ---------------------------------------------------------------------------
+
+
+def _set_custom_env(monkeypatch, **overrides):
+    """Point the custom *text* backend at a fake provider; clear vision overrides."""
+    monkeypatch.setenv("ODFORGE_CUSTOM_BASE_URL", "https://provider.example/v1")
+    monkeypatch.setenv("ODFORGE_CUSTOM_API_KEY", "text-key")
+    for name in (
+        "ODFORGE_CUSTOM_VISION_BASE_URL",
+        "ODFORGE_CUSTOM_VISION_API_KEY",
+        "ODFORGE_CUSTOM_VISION_MODEL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in overrides.items():
+        monkeypatch.setenv(name, value)
+
+
+def test_custom_reuses_the_text_backend_endpoint(monkeypatch):
+    # One provider in .env: the vision critic inherits base URL + key from the
+    # text backend, so only the vision-capable model name must be named.
+    _set_custom_env(monkeypatch, ODFORGE_CUSTOM_VISION_MODEL="qwen3-vl-plus")
+    client = _install_fake_openai(monkeypatch, json.dumps({"findings": []}))
+    backend = critic.get_vision_backend("custom")
+    assert isinstance(backend, OpenAICompatVisionBackend)
+    assert backend.base_url == "https://provider.example/v1"
+    assert backend.model == "qwen3-vl-plus"
+    assert client.api_key == "text-key"
+
+
+def test_custom_vision_endpoint_overrides_win(monkeypatch):
+    # A separate vision deployment (different host/key) is still addressable.
+    _set_custom_env(
+        monkeypatch,
+        ODFORGE_CUSTOM_VISION_MODEL="vl-model",
+        ODFORGE_CUSTOM_VISION_BASE_URL="https://vision.example/v1",
+        ODFORGE_CUSTOM_VISION_API_KEY="vision-key",
+    )
+    client = _install_fake_openai(monkeypatch, json.dumps({"findings": []}))
+    backend = critic.get_vision_backend("custom")
+    assert backend.base_url == "https://vision.example/v1"
+    assert client.api_key == "vision-key"
+
+
+def test_custom_requires_vision_model(monkeypatch):
+    # No silent default: a text model name would 400 on images, so say so early.
+    _set_custom_env(monkeypatch)
+    with pytest.raises(RuntimeError, match="ODFORGE_CUSTOM_VISION_MODEL"):
+        critic.get_vision_backend("custom")
+
+
+def test_custom_requires_base_url(monkeypatch):
+    monkeypatch.delenv("ODFORGE_CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("ODFORGE_CUSTOM_VISION_BASE_URL", raising=False)
+    monkeypatch.setenv("ODFORGE_CUSTOM_VISION_MODEL", "vl-model")
+    with pytest.raises(RuntimeError, match="ODFORGE_CUSTOM_BASE_URL"):
+        critic.get_vision_backend("custom")
+
+
+def test_custom_parses_findings_through_critique(monkeypatch, tmp_path):
+    # End-to-end through the registry: critique(backend="custom") -> Findings.
+    _set_custom_env(monkeypatch, ODFORGE_CUSTOM_VISION_MODEL="qwen3-vl-plus")
+    _install_fake_openai(monkeypatch, json.dumps({"findings": _TWO_FINDINGS}))
+    findings = critique(_make_pngs(tmp_path, 3), _ir(), backend="custom")
+    assert [f.slide_no for f in findings] == [2, 5]
+
+
+def test_custom_forces_the_tool_call(monkeypatch, tmp_path):
+    # The provider must be pinned to the structured-output tool; a model that
+    # rejects a forced tool_choice (e.g. qwen-vl-max) is not usable here.
+    _set_custom_env(monkeypatch, ODFORGE_CUSTOM_VISION_MODEL="qwen3-vl-plus")
+    client = _install_fake_openai(monkeypatch, json.dumps({"findings": []}))
+    critique(_make_pngs(tmp_path, 2), _ir(), backend="custom")
+    (call,) = client.completions.calls
+    assert call["tool_choice"]["function"]["name"] == critic.TOOL_NAME
+    assert call["model"] == "qwen3-vl-plus"
+
+
+def test_custom_is_listed_in_the_unknown_backend_error(monkeypatch):
+    with pytest.raises(ValueError, match="custom"):
+        critic.get_vision_backend("banana")
 
 
 # ===========================================================================
@@ -388,7 +473,11 @@ def _install_loop_mocks(monkeypatch, critique_rounds, repair_record):
     monkeypatch.setattr(
         critic, "render_pages", lambda odf, td, dpi=150: [Path(td) / "page-01.png"]
     )
-    monkeypatch.setattr(critic, "critique", lambda pngs, ir, backend=None: next(rounds))
+    monkeypatch.setattr(
+        critic,
+        "critique",
+        lambda pngs, ir, backend=None, grounding="": next(rounds),
+    )
 
     def fake_generate_slides(sub_outline, backend=None):
         repair_record.append(sub_outline)
@@ -437,6 +526,47 @@ def test_repair_regenerates_only_flagged_slides(tmp_path, monkeypatch):
 
     assert report.final_ok is True
     assert report.rounds == 2
+
+
+def test_visual_qa_can_upgrade_generic_bullets_to_cards():
+    ir = _ir_n(3)
+    outline = _outline_n(3).model_copy(
+        update={"source_prompt": "為醫院主管整理流程改善方案"}
+    )
+    finding = Finding(
+        slide_no=2,
+        issue="留白失衡，版型單調",
+        severity="error",
+        fix_hint="將三個平行觀點改成卡片",
+    )
+    sub = critic._sub_outline_for_errors(
+        ir,
+        [2],
+        {2: [finding]},
+        outline,
+    )
+    assert sub.pages[0].role == "cards"
+    assert "cards" in sub.pages[0].visual_intent
+    assert sub.source_prompt == "為醫院主管整理流程改善方案"
+
+
+def test_visual_qa_can_upgrade_relationship_page_to_diagram():
+    ir = _ir_n(3)
+    outline = _outline_n(3)
+    finding = Finding(
+        slide_no=2,
+        issue="視覺敘事不足",
+        severity="error",
+        fix_hint="把系統架構關係改成關係圖",
+    )
+    sub = critic._sub_outline_for_errors(
+        ir,
+        [2],
+        {2: [finding]},
+        outline,
+    )
+    assert sub.pages[0].role == "diagram"
+    assert "diagram" in sub.pages[0].visual_intent
 
 
 # ---- ② second round returns 0 findings -> stop at round 2, final_ok=True ---
@@ -601,3 +731,300 @@ def test_qareport_records_findings_by_round(tmp_path, monkeypatch):
     assert sum(1 for f in first if f.severity == "error") == 1
     assert sum(1 for f in first if f.severity == "warn") == 1
     assert report.findings_by_round[1] == []
+
+
+# ===========================================================================
+# Adjudication: a claim the emitted ODF refutes must not fail the gate or burn
+# a repair round. The loop renders for real here (only the rasteriser and the
+# vision call are faked) so the adjudicator has a genuine package to measure.
+# ===========================================================================
+
+from odforge.render import render as _real_render  # noqa: E402
+
+
+def _cards_ir() -> Presentation:
+    return Presentation(
+        title="卡片",
+        theme="academic",
+        slides=[
+            Slide(
+                layout="cards",
+                title="三個重點",
+                bullets=["跨平台相容", "長期可讀", "零授權成本"],
+            )
+        ],
+    )
+
+
+def _install_real_render_mocks(monkeypatch, critique_rounds, repair_record):
+    rounds = iter(critique_rounds)
+    monkeypatch.setattr(critic, "render", _real_render)
+    monkeypatch.setattr(
+        critic, "render_pages", lambda odf, td, dpi=150: [Path(td) / "page-01.png"]
+    )
+    monkeypatch.setattr(
+        critic,
+        "critique",
+        lambda pngs, ir, backend=None, grounding="": next(rounds),
+    )
+
+    def fake_generate_slides(sub_outline, backend=None):
+        repair_record.append(sub_outline)
+        return Presentation(
+            title="修訂",
+            slides=[
+                Slide(layout=p.role, title="修好了", bullets=["甲", "乙", "丙"])
+                for p in sub_outline.pages
+            ],
+        )
+
+    monkeypatch.setattr(critic, "generate_slides", fake_generate_slides)
+
+
+
+def test_an_error_drives_a_repair_when_rendering_for_real(tmp_path, monkeypatch):
+    repairs: list = []
+    real = Finding(
+        slide_no=1, issue="留白過多，重心失衡", severity="error", fix_hint="收緊版面"
+    )
+    _install_real_render_mocks(
+        monkeypatch, critique_rounds=[[real], []], repair_record=repairs
+    )
+
+    report = critic.run_qa_loop(_cards_ir(), tmp_path / "out.odp", max_rounds=2)
+
+    assert len(repairs) == 1, "an error the critic reported must be acted on"
+    assert report.final_ok is True
+
+
+
+
+def test_the_qa_loop_hands_the_page_facts_to_the_critic(tmp_path, monkeypatch):
+    """The critic must receive the rendered facts, not just the images.
+
+    Without them it is estimating geometry and colour from pixels, which is how
+    it came to report three 6.80cm cards as 「高度不一致」 and 12.52:1 text as
+    「對比不足」 — and how it missed three pages of text buried under opaque
+    shapes entirely.
+    """
+    seen: list[str] = []
+
+    def capture(pngs, ir, backend=None, grounding=""):
+        seen.append(grounding)
+        return []
+
+    monkeypatch.setattr(critic, "render", _real_render)
+    monkeypatch.setattr(
+        critic, "render_pages", lambda odf, td, dpi=150: [Path(td) / "page-01.png"]
+    )
+    monkeypatch.setattr(critic, "critique", capture)
+
+    critic.run_qa_loop(_cards_ir(), tmp_path / "out.odp", max_rounds=1)
+
+    assert len(seen) == 1
+    assert "paint=" in seen[0], "paint order must reach the critic"
+    assert "跨平台相容" in seen[0], "the page's own text must reach the critic"
+
+
+def test_the_critic_request_carries_the_grounding(monkeypatch, tmp_path):
+    client = _install_fake_openai(monkeypatch, json.dumps({"findings": []}))
+    critique(
+        _make_pngs(tmp_path, 2),
+        _ir(),
+        backend="ollama",
+        grounding="色塊 paint=3 x=1.50 y=5.35",
+    )
+    (call,) = client.completions.calls
+    user = next(m["content"] for m in call["messages"] if m["role"] == "user")
+    text = next(b["text"] for b in user if b["type"] == "text")
+    assert "paint=3" in text
+
+
+def test_generation_history_still_never_reaches_the_critic(monkeypatch, tmp_path):
+    # Page facts yes; how the page came to be, no. The critic must not be
+    # anchored by the prompt or outline that produced the deck.
+    client = _install_fake_openai(monkeypatch, json.dumps({"findings": []}))
+    critique(_make_pngs(tmp_path, 3), _ir(), backend="ollama")
+    (call,) = client.completions.calls
+    user = next(m["content"] for m in call["messages"] if m["role"] == "user")
+    text = next(b["text"] for b in user if b["type"] == "text")
+    assert "光合作用" not in text  # ir.title
+    assert "3 頁" in text
+
+
+# ===========================================================================
+# codex backend — the local Codex CLI driven as a subprocess.
+#
+# Unlike the HTTP backends this one drives OpenAI's own client: `codex exec`
+# takes --image and --output-schema, so the critic's contract (all pages in one
+# request, structured findings) holds without us handling OAuth at all. The CLI
+# owns the login, the refresh and the endpoint.
+# ===========================================================================
+
+import subprocess  # noqa: E402
+
+
+class _FakeCodexRun:
+    """Stands in for ``subprocess.run``: records argv, writes the output file."""
+
+    def __init__(self, payload: str = '{"findings": []}', returncode: int = 0):
+        self.payload = payload
+        self.returncode = returncode
+        self.calls: list = []
+
+    def __call__(self, argv, **kwargs):
+        # Snapshot the schema now: the CLI's working directory is a temp dir the
+        # backend deletes as soon as it returns.
+        schema = Path(argv[argv.index("--output-schema") + 1])
+        self.calls.append((argv, kwargs, schema.read_text(encoding="utf-8")))
+        out = Path(argv[argv.index("-o") + 1])
+        out.write_text(self.payload, encoding="utf-8")
+        return SimpleNamespace(returncode=self.returncode, stdout="", stderr="")
+
+
+def _codex_backend(runner, model="gpt-5.5"):
+    return critic.CodexCliVisionBackend(
+        model=model, executable="codex", runner=runner
+    )
+
+
+def test_codex_sends_every_page_as_an_image(tmp_path):
+    runner = _FakeCodexRun()
+    pngs = _make_pngs(tmp_path, 4)
+    _codex_backend(runner).critique(pngs, _ir())
+    (argv, _, _schema), = runner.calls
+    assert argv[:2] == ["codex", "exec"]
+    assert sum(1 for a in argv if a == "--image") == 4
+    for png in pngs:
+        assert str(png) in argv
+
+
+def test_codex_parses_findings(tmp_path):
+    runner = _FakeCodexRun(json.dumps({"findings": _TWO_FINDINGS}, ensure_ascii=False))
+    findings = _codex_backend(runner).critique(_make_pngs(tmp_path, 2), _ir())
+    assert [f.slide_no for f in findings] == [2, 5]
+
+
+def test_codex_writes_a_strict_schema(tmp_path):
+    # OpenAI structured output rejects a schema without additionalProperties:false
+    # on every object — pydantic's own schema does not carry it.
+    runner = _FakeCodexRun()
+    _codex_backend(runner).critique(_make_pngs(tmp_path, 1), _ir())
+    (_argv, _kwargs, captured), = runner.calls
+    schema = json.loads(captured)
+
+    def every_object(node):
+        if isinstance(node, dict):
+            if "properties" in node:
+                assert node.get("additionalProperties") is False
+                assert set(node["required"]) == set(node["properties"])
+            for v in node.values():
+                every_object(v)
+        elif isinstance(node, list):
+            for v in node:
+                every_object(v)
+
+    every_object(schema)
+
+
+def test_codex_runs_read_only_and_never_waits_on_stdin(tmp_path):
+    runner = _FakeCodexRun()
+    _codex_backend(runner).critique(_make_pngs(tmp_path, 1), _ir())
+    (argv, kwargs, _schema), = runner.calls
+    assert "--sandbox" in argv and argv[argv.index("--sandbox") + 1] == "read-only"
+    assert "--skip-git-repo-check" in argv
+    assert kwargs.get("stdin") is subprocess.DEVNULL, "an open stdin hangs the CLI"
+    # text=True alone decodes with the system locale; the CLI emits UTF-8, which
+    # blows up mid-capture on a cp950 console.
+    assert kwargs.get("encoding") == "utf-8"
+    assert kwargs.get("errors") == "replace"
+
+
+def test_codex_passes_the_model_and_the_grounding(tmp_path):
+    runner = _FakeCodexRun()
+    _codex_backend(runner, model="gpt-5.6").critique(
+        _make_pngs(tmp_path, 1), _ir(), "版面資料:色塊 x=1.00"
+    )
+    (argv, _, _schema), = runner.calls
+    assert argv[argv.index("-m") + 1] == "gpt-5.6"
+    prompt = argv[-1]
+    assert "色塊 x=1.00" in prompt
+    assert "文字溢出" in prompt, "the checklist travels in the prompt, not a system role"
+
+
+def test_codex_failure_degrades_to_no_findings(tmp_path):
+    runner = _FakeCodexRun(payload="not json at all", returncode=1)
+    assert _codex_backend(runner).critique(_make_pngs(tmp_path, 1), _ir()) == []
+
+
+def test_codex_missing_output_degrades_to_no_findings(tmp_path):
+    def runner(argv, **kwargs):
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    assert _codex_backend(runner).critique(_make_pngs(tmp_path, 1), _ir()) == []
+
+
+def test_codex_timeout_degrades_to_no_findings(tmp_path):
+    def runner(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, 1)
+
+    assert _codex_backend(runner).critique(_make_pngs(tmp_path, 1), _ir()) == []
+
+
+# ---- factory: availability and the public-exposure refusal ----------------
+
+
+def test_codex_factory_requires_the_cli(monkeypatch):
+    monkeypatch.setattr(critic.shutil, "which", lambda name: None)
+    with pytest.raises(RuntimeError, match="codex"):
+        critic.get_vision_backend("codex")
+
+
+def test_codex_factory_requires_a_login(monkeypatch, tmp_path):
+    monkeypatch.setattr(critic.shutil, "which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr(critic, "_codex_auth_path", lambda: tmp_path / "absent.json")
+    with pytest.raises(RuntimeError, match="codex login"):
+        critic.get_vision_backend("codex")
+
+
+def test_codex_refuses_when_the_server_is_publicly_bound(monkeypatch, tmp_path):
+    """OpenAI's own guidance: do not expose Codex execution publicly.
+
+    ODForge's server has no authentication, so on a non-loopback bind this
+    backend would spend the operator's ChatGPT subscription for any visitor.
+    """
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(critic.shutil, "which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr(critic, "_codex_auth_path", lambda: auth)
+    monkeypatch.setenv("ODFORGE_PUBLIC_BIND", "1")
+    with pytest.raises(RuntimeError, match="本機"):
+        critic.get_vision_backend("codex")
+
+
+def test_codex_factory_passes_the_resolved_executable(monkeypatch, tmp_path):
+    """Windows installs the CLI as ``codex.CMD``; the bare name will not execute."""
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}", encoding="utf-8")
+    resolved = "C:/Users/x/AppData/Roaming/npm/codex.CMD"
+    monkeypatch.setattr(critic.shutil, "which", lambda name: resolved)
+    monkeypatch.setattr(critic, "_codex_auth_path", lambda: auth)
+    monkeypatch.delenv("ODFORGE_PUBLIC_BIND", raising=False)
+    backend = critic.get_vision_backend("codex")
+    assert backend.executable.endswith("codex.CMD")
+
+
+def test_codex_factory_builds_when_local_and_logged_in(monkeypatch, tmp_path):
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(critic.shutil, "which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr(critic, "_codex_auth_path", lambda: auth)
+    monkeypatch.delenv("ODFORGE_PUBLIC_BIND", raising=False)
+    monkeypatch.setenv("ODFORGE_CODEX_MODEL", "gpt-5.5")
+    backend = critic.get_vision_backend("codex")
+    assert isinstance(backend, critic.CodexCliVisionBackend)
+    assert backend.model == "gpt-5.5"
+
+
+def test_codex_is_listed_as_an_available_backend():
+    assert "codex" in critic.VISION_BACKENDS

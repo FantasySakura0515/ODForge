@@ -6,8 +6,15 @@ export type Phase = "empty" | "outline" | "await" | "generating" | "qa" | "compl
 
 export interface PaletteHex { bg: string; surface: string; text: string; muted: string; accent: string; }
 export interface DesignSpec { palette: PaletteHex; fonts: { display: string; body: string }; }
-export interface OutlineRow { role: string; title: string; gist: string; }
-export interface Outline { design: DesignSpec | null; mode: "detailed" | "presenter"; pages: OutlineRow[]; }
+export interface OutlineRow { role: string; title: string; gist: string; visual_intent?: string; }
+export interface Outline {
+  design: DesignSpec | null;
+  mode: "detailed" | "presenter";
+  pages: OutlineRow[];
+  source_prompt?: string;
+  media_assets?: { id: string; description: string; credit?: string }[];
+  image_generation_available?: boolean;
+}
 export interface Unit { n: number; role: string; title: string; ir?: unknown; previewUrl?: string; status: UnitStatus; regenPrev?: UnitStatus; }
 export interface Finding { slide_no: number; issue: string; severity: "error" | "warn"; fix_hint: string; }
 

@@ -10,7 +10,6 @@ tmp_path output file.
 
 import zipfile
 
-import pytest
 from typer.testing import CliRunner
 
 from odforge.cli import app
@@ -552,6 +551,13 @@ def test_backend_passthrough(tmp_path, monkeypatch, sample_presentation):
         ["new", "p", "-o", "out.odp", "--one-shot", "--backend", "ollama", "--no-soffice"],
     )
     assert seen["backend"] == "ollama"
+
+
+def test_serve_rejects_remote_bind_without_explicit_acknowledgement():
+    result = runner.invoke(app, ["serve", "--host", "0.0.0.0"])
+
+    assert result.exit_code != 0
+    assert "--allow-remote" in result.output
 
 
 def test_new_ods_success(tmp_path, monkeypatch, sample_spreadsheet):

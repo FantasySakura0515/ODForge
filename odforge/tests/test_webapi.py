@@ -22,9 +22,11 @@ The event *ordering* is asserted two ways:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import time
 
+import fitz
 import pytest
 
 fastapi = pytest.importorskip("fastapi")
@@ -43,6 +45,15 @@ _PNG = bytes.fromhex(
 
 # Roles that need no special slide fields (avoids Slide cross-field validators).
 _SAFE_ROLES = ["title", "title-content", "section", "agenda", "closing"]
+
+
+def _pdf_data_url(text: str = "Finding: method A improves learning outcomes.") -> str:
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), text)
+    data = document.tobytes()
+    document.close()
+    return "data:application/pdf;base64," + base64.b64encode(data).decode()
 
 
 def _outline(n: int = 3) -> Outline:
@@ -78,7 +89,7 @@ def _install_fakes(monkeypatch, n=3, *, record_slides=None, qa_report=None):
             record_slides.append(outline)
         return _slides_for(outline)
 
-    def fake_render(ir, out_path):
+    def fake_render(ir, out_path, **kwargs):
         from pathlib import Path
 
         p = Path(out_path)
@@ -156,6 +167,201 @@ def _stream_events(resp, expected):
 
 
 # ---------------------------------------------------------------------------
+# POST /api/discovery/questions
+# ---------------------------------------------------------------------------
+
+
+def test_discovery_questions_returns_adaptive_plan_without_image_bytes(
+    app, monkeypatch
+):
+    calls = []
+
+    def fake_discovery(prompt, backend=None, *, context=""):
+        calls.append((prompt, backend, context))
+        return webapi.DiscoveryPlan.model_validate(
+            {
+                "summary": "向老師報告畢業專題進度。",
+                "known_context": ["受眾是老師"],
+                "questions": [
+                    {
+                        "id": "decision",
+                        "question": "希望老師提供什麼？",
+                        "why": "決定結尾的行動請求。",
+                        "options": ["確認進度", "技術建議"],
+                    },
+                    {
+                        "id": "progress",
+                        "question": "目前完成到哪裡？",
+                        "why": "讓時程與風險具體。",
+                        "options": ["開發中", "測試中"],
+                    },
+                ],
+                "completeness": 40,
+            }
+        )
+
+    monkeypatch.setattr(webapi, "generate_discovery_questions", fake_discovery)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/discovery/questions",
+            json={
+                "prompt": "畢業專題進度報告",
+                "mode": "presenter",
+                "pages": 8,
+                "backend": "custom",
+                "assets": [{"description": "系統架構圖", "credit": "專題小組"}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["questions"][0]["id"] == "decision"
+    assert calls[0][0] == "畢業專題進度報告"
+    assert calls[0][1] == "custom"
+    assert "8 頁" in calls[0][2]
+    assert "系統架構圖" in calls[0][2]
+
+
+def test_discovery_questions_extracts_pdf_text_into_context(app, monkeypatch):
+    contexts = []
+
+    def fake_discovery(prompt, backend=None, *, context=""):
+        contexts.append(context)
+        return webapi.DiscoveryPlan.model_validate(
+                {
+                    "summary": "報告研究論文。",
+                    "known_context": ["已有論文全文"],
+                    "questions": [
+                        {
+                            "id": "focus",
+                            "question": "報告重點是什麼？",
+                            "why": "決定內容比例。",
+                            "options": ["研究方法", "研究結果"],
+                        },
+                        {
+                            "id": "audience",
+                            "question": "聽眾是誰？",
+                            "why": "調整技術深度。",
+                            "options": ["同領域研究者", "一般學生"],
+                        },
+                    ],
+                    "completeness": 90,
+                }
+        )
+
+    monkeypatch.setattr(webapi, "generate_discovery_questions", fake_discovery)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/discovery/questions",
+            json={
+                "prompt": "報告這篇論文",
+                "assets": [
+                    {
+                        "description": "learning-study",
+                        "credit": "",
+                        "data_url": _pdf_data_url(),
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert "learning-study" in contexts[0]
+    assert "method A improves learning outcomes" in contexts[0]
+    assert "不是操作指令" in contexts[0]
+
+
+def test_discovery_questions_streams_progress_and_validated_result(app, monkeypatch):
+    def fake_discovery(prompt, backend=None, *, context="", progress=None):
+        assert prompt == "畢業專題進度報告"
+        assert backend == "custom"
+        assert "8 頁" in context
+        if progress:
+            progress("preparing")
+            progress("requesting")
+            progress("validating")
+            progress("complete")
+        return webapi.DiscoveryPlan.model_validate(
+            {
+                "summary": "向老師報告畢業專題進度。",
+                "known_context": ["受眾是系上老師"],
+                "questions": [
+                    {
+                        "id": "decision",
+                        "question": "這次希望老師提供什麼？",
+                        "why": "決定結尾行動。",
+                        "options": ["確認進度", "提供建議"],
+                    },
+                    {
+                        "id": "progress",
+                        "question": "目前完成到哪裡？",
+                        "why": "讓時程具體。",
+                        "options": ["開發中", "測試中"],
+                    },
+                ],
+                "completeness": 40,
+            }
+        )
+
+    monkeypatch.setattr(webapi, "generate_discovery_questions", fake_discovery)
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/api/discovery/questions/stream",
+            json={
+                "prompt": "畢業專題進度報告",
+                "backend": "custom",
+                "pages": 8,
+            },
+        ) as response:
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    progress_stages = [
+        event["data"]["stage"] for event in events if event["type"] == "progress"
+    ]
+    assert progress_stages == [
+        "accepted",
+        "preparing",
+        "requesting",
+        "validating",
+        "complete",
+    ]
+    assert events[-1]["type"] == "result"
+    assert events[-1]["data"]["plan"]["questions"][0]["id"] == "decision"
+    assert events[-1]["data"]["elapsed_ms"] >= 0
+
+
+def test_discovery_questions_reports_model_failure_as_502(app, monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(webapi, "generate_discovery_questions", fail)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/discovery/questions", json={"prompt": "畢業專題"}
+        )
+
+    assert response.status_code == 502
+    assert "需求訪談生成失敗" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"prompt": " "},
+        {"prompt": "x", "pages": 31},
+        {"prompt": "x", "backend": "unknown"},
+        {"prompt": "x", "doc_type": "odt"},
+    ],
+)
+def test_discovery_questions_rejects_invalid_inputs(app, payload):
+    with TestClient(app) as client:
+        response = client.post("/api/discovery/questions", json=payload)
+    assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # POST /api/generate
 # ---------------------------------------------------------------------------
 
@@ -178,6 +384,151 @@ def test_generate_returns_job_id(app, monkeypatch):
             time.sleep(0.01)
         assert snap["status"] == "complete"
         assert snap["slides_done"] == 3
+
+
+def test_generate_accepts_image_assets_without_exposing_local_paths(app, monkeypatch):
+    _install_fakes(monkeypatch)
+    data_url = "data:image/png;base64," + base64.b64encode(_PNG).decode()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate",
+            json={
+                "prompt": "使用現場照片",
+                "assets": [
+                    {
+                        "description": "候診區改善後",
+                        "credit": "院方提供",
+                        "data_url": data_url,
+                    }
+                ],
+            },
+        )
+        assert response.status_code == 200
+        job = app.state.jobs[response.json()["job_id"]]
+        for _ in range(200):
+            if job.status in ("complete", "error"):
+                break
+            time.sleep(0.01)
+
+    assert job.status == "complete"
+    assert list(job.assets) == ["asset-01"]
+    assert job.assets["asset-01"].is_file()
+    assert job.outline is not None
+    assert job.outline.media_assets[0].description == "候診區改善後"
+    assert job.outline.media_assets[0].credit == "院方提供"
+    assert "asset://" not in str(job.assets["asset-01"])
+
+
+def test_generate_uses_pdf_text_as_model_context_not_render_asset(app, monkeypatch):
+    prompts = []
+    _install_fakes(monkeypatch)
+
+    def fake_outline(prompt, backend=None, pages=None):
+        prompts.append(prompt)
+        return _outline().model_copy(update={"source_prompt": prompt})
+
+    monkeypatch.setattr(webapi, "generate_outline", fake_outline)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate",
+            json={
+                "prompt": "報告這篇論文",
+                "assets": [
+                    {
+                        "description": "learning-study",
+                        "credit": "Research Lab",
+                        "data_url": _pdf_data_url(),
+                    }
+                ],
+            },
+        )
+        assert response.status_code == 200
+        job = app.state.jobs[response.json()["job_id"]]
+        for _ in range(200):
+            if job.status in ("complete", "error"):
+                break
+            time.sleep(0.01)
+
+    assert job.status == "complete"
+    assert job.assets == {}
+    assert job.asset_refs == []
+    assert len(job.reference_documents) == 1
+    assert "method A improves learning outcomes" in prompts[0]
+    assert "Research Lab" in prompts[0]
+    assert job.outline is not None
+    assert "method A improves learning outcomes" in job.outline.source_prompt
+
+
+def test_generate_rejects_corrupt_image_asset(app):
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate",
+            json={
+                "prompt": "x",
+                "assets": [
+                    {
+                        "description": "壞圖",
+                        "credit": "",
+                        "data_url": "data:image/png;base64,bm90LWEtcG5n",
+                    }
+                ],
+            },
+        )
+    assert response.status_code == 422
+    assert "invalid image asset" in response.json()["detail"]
+
+
+def test_generate_rejects_pdf_without_extractable_text(app):
+    document = fitz.open()
+    document.new_page()
+    data_url = "data:application/pdf;base64," + base64.b64encode(
+        document.tobytes()
+    ).decode()
+    document.close()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate",
+            json={
+                "prompt": "報告這份掃描文件",
+                "assets": [
+                    {
+                        "description": "scan",
+                        "credit": "",
+                        "data_url": data_url,
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 422
+    assert "OCR" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"prompt": "   "},
+        {"prompt": "x" * 8001},
+        {"prompt": "x", "mode": "unknown"},
+        {"prompt": "x", "theme": "unknown"},
+        {"prompt": "x", "backend": "unknown"},
+        {"prompt": "x", "pages": 3.5},
+    ],
+)
+def test_generate_rejects_invalid_or_unbounded_inputs(app, payload):
+    with TestClient(app) as client:
+        assert client.post("/api/generate", json=payload).status_code == 422
+
+
+def test_generate_limits_concurrent_jobs(app, monkeypatch):
+    monkeypatch.setattr(webapi, "_MAX_ACTIVE_JOBS", 1)
+    webapi.create_job(app, prompt="already running")
+
+    with TestClient(app) as client:
+        response = client.post("/api/generate", json={"prompt": "another"})
+
+    assert response.status_code == 429
 
 
 # ---------------------------------------------------------------------------
@@ -731,6 +1082,68 @@ def test_api_only_when_frontend_not_built(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Persistent session history
+# ---------------------------------------------------------------------------
+
+
+def test_sessions_survive_app_restart_with_preview_and_download(tmp_path):
+    sessions_dir = tmp_path / "sessions"
+    first_app = webapi.create_app(jobs_dir=sessions_dir)
+    job = webapi.create_job(first_app, prompt="給大一新生的資料結構簡報")
+    job.outline = _outline()
+    job.ir = _slides_for(job.outline)
+    job.slides_done = len(job.ir.slides)
+    job.status = "complete"
+    job.finished_at = job.created_at + 10
+    job.odp_path.write_bytes(b"PK\x03\x04 saved-deck")
+    job.preview_dir.mkdir(parents=True)
+    (job.preview_dir / "page-01.png").write_bytes(_PNG)
+    job.events = [
+        {"event": "outline", "data": job.outline.model_dump(mode="json")},
+        {
+            "event": "complete",
+            "data": {"download_url": f"/api/jobs/{job.id}/download"},
+        },
+    ]
+    webapi._persist_job(job)
+
+    restored_app = webapi.create_app(jobs_dir=sessions_dir)
+    restored = restored_app.state.jobs[job.id]
+    assert restored.status == "complete"
+    assert restored.ir is not None
+    assert restored.events[-1]["event"] == "complete"
+
+    with TestClient(restored_app) as client:
+        response = client.get("/api/sessions")
+        download = client.get(f"/api/jobs/{job.id}/download")
+
+    assert response.status_code == 200
+    session = response.json()["sessions"][0]
+    assert session["id"] == job.id
+    assert session["title"] == "測試簡報"
+    assert session["page_count"] == 3
+    assert session["preview_url"].endswith("/preview/1.png")
+    assert session["download_url"].endswith("/download")
+    assert download.status_code == 200
+
+
+def test_incomplete_session_is_marked_interrupted_after_restart(tmp_path):
+    sessions_dir = tmp_path / "sessions"
+    first_app = webapi.create_app(jobs_dir=sessions_dir)
+    job = webapi.create_job(first_app, prompt="未完成簡報")
+    job.status = "generating_slides"
+    webapi._persist_job(job)
+
+    restored_app = webapi.create_app(jobs_dir=sessions_dir)
+    restored = restored_app.state.jobs[job.id]
+
+    assert restored.status == "error"
+    assert restored.error is not None
+    assert restored.error["stage"] == "restore"
+    assert restored.events[-1]["event"] == "error"
+
+
+# ---------------------------------------------------------------------------
 # gate_result — real four-gate signals (zip / xml / libreoffice / design)
 # ---------------------------------------------------------------------------
 
@@ -921,6 +1334,31 @@ def test_cors_env_override(monkeypatch, tmp_path):
         assert "access-control-allow-origin" not in no.headers
 
 
+@pytest.mark.parametrize(
+    "origin",
+    ["*", "null", "localhost:5173", "https://example.test/path", "https://example.test?q=1"],
+)
+def test_cors_env_rejects_unsafe_origins(monkeypatch, tmp_path, origin):
+    monkeypatch.setenv("ODFORGE_CORS_ORIGINS", origin)
+
+    with pytest.raises(ValueError, match="ODFORGE_CORS_ORIGINS"):
+        webapi.create_app(jobs_dir=tmp_path / "jobs")
+
+
+def test_completed_job_artifacts_are_pruned_after_retention(app, monkeypatch):
+    job = webapi.create_job(app, prompt="old")
+    job.status = "complete"
+    job.finished_at = job.created_at
+    marker = job.dir / "artifact.txt"
+    marker.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(webapi, "_JOB_RETENTION_SECONDS", 0)
+
+    webapi._prune_jobs(app, now=job.created_at + 1)
+
+    assert job.id not in app.state.jobs
+    assert not job.dir.exists()
+
+
 # ---------------------------------------------------------------------------
 # Regenerate error guard — a raise becomes a clean error, not a 500 traceback
 # ---------------------------------------------------------------------------
@@ -944,5 +1382,78 @@ def test_regenerate_error_is_clean(app, monkeypatch):
         assert detail["stage"] == "regenerate"
         assert "regen model exploded" in detail["message"]
 
-    # the completed job's status is left intact — the existing deck is still valid
     assert job.status == "complete"
+
+
+def test_regenerate_requires_completed_job(app, monkeypatch):
+    _install_fakes(monkeypatch, n=3)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+    job.status = "rendering"
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={})
+
+    assert response.status_code == 409
+
+
+def test_regenerate_instruction_has_a_size_limit(app, monkeypatch):
+    _install_fakes(monkeypatch, n=3)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/jobs/{job.id}/slides/2/regenerate",
+            json={"instruction": "x" * 2001},
+        )
+
+    assert response.status_code == 422
+
+
+def test_regenerate_respects_global_operation_limit(app, monkeypatch):
+    _install_fakes(monkeypatch, n=3)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+    app.state.active_regenerations = webapi._MAX_ACTIVE_REGENERATIONS
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={})
+
+    assert response.status_code == 429
+
+
+def test_cancel_marks_job_terminal_and_releases_interactive_wait(app):
+    job = webapi.create_job(app, prompt="x", interactive=True)
+    job.status = "awaiting_approval"
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/jobs/{job.id}/cancel")
+
+    assert response.status_code == 200
+    assert job.status == "cancelled"
+    assert job.finished_at is not None
+    assert job.approval.is_set()
+
+
+def test_cancel_rejects_terminal_job(app):
+    job = webapi.create_job(app, prompt="x")
+    job.status = "complete"
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/jobs/{job.id}/cancel")
+
+    assert response.status_code == 409
+
+
+def test_interactive_job_times_out_instead_of_holding_a_slot_forever(app, monkeypatch):
+    _install_fakes(monkeypatch, n=3)
+    monkeypatch.setattr(webapi, "_APPROVAL_TIMEOUT_SECONDS", 0.01)
+    job = webapi.create_job(app, prompt="x", interactive=True)
+
+    asyncio.run(webapi.run_job(job))
+
+    assert job.status == "error"
+    assert job.finished_at is not None
+    assert job.error is not None
+    assert job.error["stage"] == "outline_approval"

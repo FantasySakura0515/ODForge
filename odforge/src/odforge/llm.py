@@ -18,7 +18,7 @@ from typing import Callable, Dict, Optional, Protocol, Type, Union, runtime_chec
 
 import json_repair
 from openai import OpenAI
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from odforge.ir import (
     BulletItem,
@@ -107,7 +107,8 @@ title、agenda、section、title-content、two-col、comparison、big-fact、quo
 - 用 section 分節,把內容切成幾個段落區塊。
 - 適時穿插 big-fact(關鍵數據)、quote(引言)、chart(圖表)來調節敘事節奏。
 - 同一種 role 不得連續出現 ≥ 3 頁,避免版面單調。
-- 最後一頁一定是 closing 收尾。
+- 最後一頁一定是 closing 收尾;若需求含決策、風險或下一步,closing 的 gist
+  必須明確寫出決策請求與具體行動,不得只寫「謝謝」或空泛口號。
 - chart 只有在「使用者的需求裡有真實數據」時才可出現;沒有數據就不要放 chart 頁(不要編造數字)。
 
 【mode:講述型態】
@@ -140,7 +141,9 @@ SLIDES_SYSTEM_PROMPT = """\
   那是給引擎看的,不是給讀者看的。
 
 【各版型填寫要點】
-- title / section / closing:標題精煉;closing 以 title 欄寫收尾語。
+- title / section:標題精煉。
+- closing:title 寫結論或決策請求;bullets 放 2 到 4 個具體風險、責任或下一步。
+  使用者要求的內容必須出現在投影片可見欄位,不得只藏在 notes。
 - agenda:bullets 逐條對應大綱各分節(section)的標題,順序一致。
 - title-content:bullets 逐條列重點,必要時用巢狀 children 補一層次要細節。
 - two-col:left / right 兩欄各放各自的重點。
@@ -156,6 +159,133 @@ SLIDES_SYSTEM_PROMPT = """\
 請依大綱逐頁填出完整、精簡、可直接上台的投影片內容。"""
 
 
+OUTLINE_VISUAL_GUIDANCE = """
+
+【視覺敘事規則】
+- 每頁除了 gist，也要填 visual_intent，具體描述觀眾應該看見的關係，
+  例如「四階段由左到右推進」或「三個關鍵指標並列比較」，不要只寫「簡潔」。
+- 遇到步驟、方法或工作流，使用 process；遇到時間演進，使用 timeline；
+  遇到兩到四個 KPI 或成果數字，使用 metrics；遇到兩到四個平行觀點、
+  支柱或功能，使用 cards。
+- 遇到系統架構、因果關係、中心與周邊或上下層級，使用 diagram。
+- 不要把本來應該是圖解的內容塞進 title-content。除封面、章節與結尾外，
+  title-content 不應壟斷整份簡報；語意適合時優先使用視覺頁型。
+- 版型服務敘事，不要為了湊版型捏造數字、日期或來源。
+"""
+
+SLIDES_VISUAL_GUIDANCE = """
+
+【內容與視覺元件規則】
+- 原始需求是事實、受眾與語氣的主要依據；outline 的 gist 只是頁面摘要，
+  不得用 gist 取代或遺忘原始需求。
+- presenter 的字數限制是上限，不是要求內容空泛。每頁要有可講述的觀點、
+  因果或證據；notes 補充講者需要的脈絡。
+- process：steps 放 2–5 個步驟，每個 step 使用 title 與 detail。
+- timeline：events 放 2–5 個事件，每個 event 使用 label、title、detail。
+- metrics：metrics 放 2–4 個指標，每個 metric 使用 value、label、detail。
+- cards：bullets 放 2–4 個平行且可獨立閱讀的觀點。
+- diagram：diagram.kind 使用 hub 或 hierarchy；nodes 放 2–6 個節點，
+  edges 使用 source、target 與可選 label，所有 id 必須存在且唯一。
+- sources：只有原始需求確實提供資料來源時才填，最多 3 筆；
+  label 要短，url 必須是真實的 http(s) 網址。不得捏造引用。
+- 不得用「圖解示意」、「放圖片」、「待補」等佔位文字假裝已完成視覺內容。
+- 原始需求沒有提供的精確統計數字、日期、引言或來源，不要自行捏造。
+- 原始需求沒有提供的技術棧、程式框架、資料庫、雲端服務、產品名稱或版本，
+  一律不得自行補上。資訊不足時使用「前端介面」「API 服務」「資料庫」等通用名稱。
+- 送出前自查所有英文技術名與品牌名：若原始需求沒有逐字提供，就改成通用名稱。
+"""
+
+# Image layouts are intentionally described in a clean, machine-stable suffix:
+# some legacy prompt text above is kept byte-for-byte for compatibility.
+OUTLINE_VISUAL_GUIDANCE += """
+
+- 有可用圖片素材，而且圖片本身承載主要證據或情境時，優先規劃
+  image-focus；圖片與三到四個結論並列時使用 image-split。
+- 不要為了裝飾而安排圖片頁；visual_intent 必須說明圖片要證明什麼。
+"""
+
+SLIDES_VISUAL_GUIDANCE += """
+
+- image-focus / image-split：必須填 image。
+- 若「可用圖片素材」列出 asset id，image.src 只能填 asset://<id>，
+  並依描述選擇真正相關的素材，不得虛構 id。
+- 若圖片生成可用且沒有合適素材，可留空 src 並填具體的 image.prompt。
+- image.alt 必填；caption 與 credit 要精簡且不可捏造。
+- image-split 的 bullets 放 2–4 個由圖片支持的結論。
+"""
+
+# Keep the established prompt intact while extending its source-grounding and
+# visual-planning contract.
+OUTLINE_SYSTEM_PROMPT += OUTLINE_VISUAL_GUIDANCE
+SLIDES_SYSTEM_PROMPT += SLIDES_VISUAL_GUIDANCE
+
+
+DISCOVERY_TOOL_NAME = "emit_discovery_questions"
+
+DISCOVERY_SYSTEM_PROMPT = """\
+你是 ODForge 的「需求編輯」。使用者通常只會提供一句模糊的簡報需求；你的工作不是
+立刻寫簡報，而是找出最會影響成品質量、目前卻缺少的資訊。
+
+【任務】
+- 先用一句繁體中文 summary 重述你已經理解的需求。
+- known_context 只列出使用者已明確提供的事實，不得自行補完。
+- 提出 2 到 5 個高資訊量問題；一般情況以 3 到 5 題為佳。
+- 優先釐清：受眾要做的決策、核心訊息、具體內容／證據、目前進度、時程、
+  風險、可用圖片或數據。依題目動態選擇，不要每次照同一份問卷。
+- 提案型需求若尚未說明「希望聽眾做什麼決定」，必須優先詢問決策目標。
+- 若需求明確要求說明「系統架構」，但沒有提供實際技術棧、模組或資料流，
+  必須詢問其中一項具體架構資訊，不得只問架構完成到哪個階段。
+- 問題要彼此獨立且不重疊；送出前先自查，不得用兩題換句話詢問同一件事。
+- 一題只問一個決策變數，不得把產業與階段、受眾與輪次等兩件事綁在同一題。
+- question 只放直接、簡短的問句；原因與解釋全部放在 why。
+- 先問內容、事實與證據，再問表達方式。除非使用者明確要求，或內容資訊已完整，
+  否則不要浪費問題詢問視覺風格、配色或版型偏好。
+- 不要詢問 prompt 或已有設定中已經回答的資訊。
+- 每題提供 2 到 4 個互斥、可快速選擇的 options；不要提供「其他」，
+  介面會另外提供自由輸入。
+- options 必須直接回答該題，不得發明使用者未提供的金額、日期、比例、效能數字、
+  公司名稱或技術成果。需要數字時可問「已有核定範圍／有初估／尚未確認」。
+- 若需求已相當完整，只問仍會改變內容策略的缺口，不得為湊題數詢問低價值偏好。
+- 問題必須讓一般使用者看得懂，不使用簡報或模型術語。
+- question 與 why 都不要使用 Call to Action、pipeline、framework 等英文術語。
+- id 使用簡短 ASCII snake_case，所有內容使用繁體中文。
+- completeness 是目前需求完整度的保守估計，0 到 100。
+
+只透過 emit_discovery_questions 工具輸出，不要輸出一般文字。"""
+
+
+class DiscoveryQuestion(BaseModel):
+    """One high-information question asked before presentation generation."""
+
+    id: str = Field(min_length=1, max_length=48, pattern=r"^[a-z][a-z0-9_]*$")
+    question: str = Field(min_length=1, max_length=160)
+    why: str = Field(min_length=1, max_length=160)
+    options: list[str] = Field(min_length=2, max_length=4)
+
+    @field_validator("options")
+    @classmethod
+    def options_are_direct_choices(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for value in values:
+            option = value.strip()
+            if not option or option.startswith(("其他", "其它")):
+                continue
+            if option not in cleaned:
+                cleaned.append(option)
+        if len(cleaned) < 2:
+            raise ValueError("questions need at least two distinct direct options")
+        return cleaned
+
+
+class DiscoveryPlan(BaseModel):
+    """Structured pre-generation interview produced from a short prompt."""
+
+    summary: str = Field(min_length=1, max_length=500)
+    known_context: list[str] = Field(default_factory=list, max_length=6)
+    questions: list[DiscoveryQuestion] = Field(min_length=2, max_length=5)
+    completeness: int = Field(ge=0, le=100)
+
+
 @runtime_checkable
 class LLMBackend(Protocol):
     """A source that turns a prompt into a validated Document IR."""
@@ -169,6 +299,14 @@ class LLMBackend(Protocol):
         ...
 
     def generate_slides(self, outline: Outline) -> Presentation:  # pragma: no cover
+        ...
+
+    def discover_questions(
+        self,
+        prompt: str,
+        context: str = "",
+        progress: Optional[Callable[[str], None]] = None,
+    ) -> DiscoveryPlan:  # pragma: no cover
         ...
 
 
@@ -229,6 +367,14 @@ def _outline_parses_without_design(data: dict) -> bool:
 def _render_outline_for_prompt(outline: Outline) -> str:
     """Serialize an outline into a page-numbered brief for the stage-2 prompt."""
     lines: list[str] = []
+    if outline.source_prompt.strip():
+        lines.extend(
+            [
+                "【原始需求／資料】",
+                outline.source_prompt.strip(),
+                "【頁面藍圖】",
+            ]
+        )
     if outline.mode == "presenter":
         lines.append("【講述型態】presenter(講者型):每條 bullet ≤ 16 字、每頁 ≤ 4 條。")
     else:
@@ -244,11 +390,30 @@ def _render_outline_for_prompt(outline: Outline) -> str:
     else:
         lines.append("【美術方向】未指定(引擎將套用預設主題)。")
     lines.append("【頁面大綱】請「逐頁」填內容;張數與每頁版型(layout)必須與下列完全一致:")
+    if outline.media_assets:
+        lines.append("【可用圖片素材】只能用下列 asset id：")
+        for asset in outline.media_assets:
+            credit = f"；來源：{asset.credit}" if asset.credit else ""
+            lines.append(
+                f"  - asset://{asset.id}：{asset.description}{credit}"
+            )
+    else:
+        lines.append("【可用圖片素材】無")
+    lines.append(
+        "【圖片生成】"
+        + (
+            "可用，可在 image.prompt 描述需求"
+            if outline.image_generation_available
+            else "不可用"
+        )
+    )
     for i, page in enumerate(outline.pages, start=1):
         lines.append(
             f"  第 {i} 頁 | 版型(layout)={page.role} | 標題={page.title} | "
             f"這頁要點(gist):{page.gist}"
         )
+        if page.visual_intent:
+            lines.append(f"           視覺意圖：{page.visual_intent}")
     return "\n".join(lines)
 
 
@@ -358,10 +523,101 @@ def _degrade_slide(slide, theme: Theme) -> None:
 class OpenAICompatBackend:
     """Backend for any OpenAI-compatible chat-completions endpoint."""
 
-    def __init__(self, base_url: str, api_key: str, model: str):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        *,
+        discovery_model: str | None = None,
+        outline_model: str | None = None,
+        slides_model: str | None = None,
+        extra_body: dict | None = None,
+    ):
         self.base_url = base_url
         self.model = model
+        self.outline_model = outline_model or model
+        self.discovery_model = discovery_model or self.outline_model
+        self.slides_model = slides_model or model
+        self.extra_body = dict(extra_body or {})
         self._client = OpenAI(base_url=base_url, api_key=api_key)
+
+    def discover_questions(
+        self,
+        prompt: str,
+        context: str = "",
+        progress: Optional[Callable[[str], None]] = None,
+    ) -> DiscoveryPlan:
+        """Generate a short, adaptive interview before outline generation."""
+
+        def report(stage: str) -> None:
+            if progress is None:
+                return
+            try:
+                progress(stage)
+            except Exception:
+                # Progress is observability only. A disconnected browser must
+                # not invalidate an otherwise healthy model response.
+                pass
+
+        report("preparing")
+        schema = DiscoveryPlan.model_json_schema()
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": DISCOVERY_TOOL_NAME,
+                    "description": "輸出需求摘要、已知資訊與高價值追問",
+                    "parameters": schema,
+                },
+            }
+        ]
+        tool_choice = {
+            "type": "function",
+            "function": {"name": DISCOVERY_TOOL_NAME},
+        }
+        base_content = (
+            f"【使用者原始需求】\n{prompt.strip()}\n\n"
+            f"【介面已有設定】\n{context.strip() or '無'}"
+        )
+        error_summary: Optional[str] = None
+        last_exc: Optional[Exception] = None
+        for _attempt in range(2):
+            user_content = _with_error_feedback(base_content, error_summary)
+            report("requesting" if _attempt == 0 else "retrying")
+            resp = self._client.chat.completions.create(
+                model=self.discovery_model,
+                messages=[
+                    {"role": "system", "content": DISCOVERY_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                tools=tools,
+                tool_choice=tool_choice,
+                max_tokens=int(
+                    os.environ.get("ODFORGE_DISCOVERY_MAX_TOKENS", "2048")
+                ),
+                **({"extra_body": self.extra_body} if self.extra_body else {}),
+            )
+            report("validating")
+            tool_calls = resp.choices[0].message.tool_calls
+            if not tool_calls:
+                error_summary = (
+                    "模型未呼叫 emit_discovery_questions，請務必透過該工具輸出。"
+                )
+                last_exc = RuntimeError(
+                    "model did not return a discovery tool call"
+                )
+                continue
+            try:
+                data = _loads_tool_args(tool_calls[0].function.arguments)
+                plan = DiscoveryPlan.model_validate(data)
+                report("complete")
+                return plan
+            except (json.JSONDecodeError, TypeError, ValidationError) as exc:
+                error_summary = str(exc)
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc
 
     def generate_ir(self, prompt: str, doc_type: str) -> Document:
         ir_cls = DOC_TYPES.get(doc_type)
@@ -403,6 +659,7 @@ class OpenAICompatBackend:
                 tools=tools,
                 tool_choice=tool_choice,
                 max_tokens=int(os.environ.get("ODFORGE_MAX_TOKENS", "8192")),
+                **({"extra_body": self.extra_body} if self.extra_body else {}),
             )
 
             tool_calls = resp.choices[0].message.tool_calls
@@ -493,11 +750,12 @@ class OpenAICompatBackend:
             messages.append({"role": "user", "content": user_content})
 
             resp = self._client.chat.completions.create(
-                model=self.model,
+                model=self.outline_model,
                 messages=messages,
                 tools=tools,
                 tool_choice=tool_choice,
                 max_tokens=int(os.environ.get("ODFORGE_MAX_TOKENS", "8192")),
+                **({"extra_body": self.extra_body} if self.extra_body else {}),
             )
 
             tool_calls = resp.choices[0].message.tool_calls
@@ -515,7 +773,9 @@ class OpenAICompatBackend:
                 continue
 
             try:
-                return Outline.model_validate(data)
+                return Outline.model_validate(data).model_copy(
+                    update={"source_prompt": prompt}
+                )
             except ValidationError as exc:
                 last_exc = exc
                 error_summary = str(exc)
@@ -526,7 +786,9 @@ class OpenAICompatBackend:
                         # accept the rest — never crash on a bad palette.
                         stripped = dict(data)
                         stripped.pop("design", None)
-                        return Outline.model_validate(stripped)
+                        return Outline.model_validate(stripped).model_copy(
+                            update={"source_prompt": prompt}
+                        )
                     # First design failure: feed the error back, retry once.
                     continue
                 # Pages are structurally invalid: retry-once-then-raise.
@@ -549,13 +811,14 @@ class OpenAICompatBackend:
         otherwise ``(None, exc)`` whose ``str(exc)`` is fed back as the retry hint.
         """
         resp = self._client.chat.completions.create(
-            model=self.model,
+            model=self.slides_model,
             messages=messages,
             tools=tools,
             tool_choice=tool_choice,
             # Stage-2 fills every page, so it defaults higher than the one-shot
             # generate_ir/generate_outline paths (8192). Env override still wins.
             max_tokens=int(os.environ.get("ODFORGE_MAX_TOKENS", "16384")),
+            **({"extra_body": self.extra_body} if self.extra_body else {}),
         )
 
         tool_calls = resp.choices[0].message.tool_calls
@@ -673,16 +936,51 @@ class OpenAICompatBackend:
 # Backend registry + facade
 # ---------------------------------------------------------------------------
 
+
+def _custom_extra_body() -> dict | None:
+    """Parse optional provider-specific OpenAI-compatible request fields."""
+
+    raw = os.environ.get("ODFORGE_CUSTOM_EXTRA_BODY", "").strip()
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "ODFORGE_CUSTOM_EXTRA_BODY must be a valid JSON object"
+        ) from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(
+            "ODFORGE_CUSTOM_EXTRA_BODY must be a JSON object"
+        )
+    return value
+
+
 BACKENDS: Dict[str, Callable[[], LLMBackend]] = {
     "deepseek": lambda: OpenAICompatBackend(
         "https://api.deepseek.com",
         _require_env("DEEPSEEK_API_KEY"),
         os.environ.get("ODFORGE_MODEL", "deepseek-chat"),
+        discovery_model=os.environ.get("ODFORGE_DISCOVERY_MODEL"),
+        outline_model=os.environ.get("ODFORGE_OUTLINE_MODEL"),
+        slides_model=os.environ.get("ODFORGE_SLIDES_MODEL"),
     ),
     "ollama": lambda: OpenAICompatBackend(
         "http://localhost:11434/v1",
         "ollama",
         os.environ.get("ODFORGE_OLLAMA_MODEL", "qwen2.5"),
+        discovery_model=os.environ.get("ODFORGE_OLLAMA_DISCOVERY_MODEL"),
+        outline_model=os.environ.get("ODFORGE_OLLAMA_OUTLINE_MODEL"),
+        slides_model=os.environ.get("ODFORGE_OLLAMA_SLIDES_MODEL"),
+    ),
+    "custom": lambda: OpenAICompatBackend(
+        _require_env("ODFORGE_CUSTOM_BASE_URL"),
+        os.environ.get("ODFORGE_CUSTOM_API_KEY", "not-needed"),
+        _require_env("ODFORGE_CUSTOM_MODEL"),
+        discovery_model=os.environ.get("ODFORGE_CUSTOM_DISCOVERY_MODEL"),
+        outline_model=os.environ.get("ODFORGE_CUSTOM_OUTLINE_MODEL"),
+        slides_model=os.environ.get("ODFORGE_CUSTOM_SLIDES_MODEL"),
+        extra_body=_custom_extra_body(),
     ),
 }
 
@@ -708,6 +1006,20 @@ def generate_ir(
 ) -> Document:
     """Facade: resolve a backend and generate a validated Document IR."""
     return get_backend(backend).generate_ir(prompt, doc_type)
+
+
+def generate_discovery_questions(
+    prompt: str,
+    backend: Optional[str] = None,
+    *,
+    context: str = "",
+    progress: Optional[Callable[[str], None]] = None,
+) -> DiscoveryPlan:
+    """Facade: ask only the missing, high-value questions for a short prompt."""
+    resolved = get_backend(backend)
+    if progress is None:
+        return resolved.discover_questions(prompt, context=context)
+    return resolved.discover_questions(prompt, context=context, progress=progress)
 
 
 def generate_outline(

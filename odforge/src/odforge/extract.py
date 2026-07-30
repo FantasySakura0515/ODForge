@@ -54,8 +54,14 @@ from odforge.ir import (
     contrast_ratio,
 )
 from odforge.themes import THEMES
-from odforge.xmlsafe import SAFE_PARSER as _SAFE_XML_PARSER
+from odforge.xmlsafe import SAFE_PARSER as _SAFE_XML_PARSER  # noqa: F401
 from odforge.xmlsafe import safe_fromstring
+from odforge.zipguard import (
+    ArchiveLimitError,
+    MAX_XML_MEMBER,
+    inspect_archive,
+    read_xml_member,
+)
 
 # The preset the extractor backfills from when a field can't be confidently
 # determined or fails contrast. Academic is the project default art direction.
@@ -127,12 +133,22 @@ def _read_roots(template_path: Path) -> dict[str, etree._Element]:
 
     roots: dict[str, etree._Element] = {}
     with zf:
-        names = set(zf.namelist())
+        try:
+            infos = inspect_archive(zf)
+        except ArchiveLimitError as exc:
+            raise TemplateExtractionError(
+                f"template exceeds archive safety limits: {path} ({exc})"
+            ) from exc
+        names = {info.filename for info in infos}
         for part in _PARTS:
             if part not in names:
                 continue
             try:
-                data = zf.read(part)
+                data = read_xml_member(zf, part, max_bytes=MAX_XML_MEMBER)
+            except ArchiveLimitError as exc:
+                raise TemplateExtractionError(
+                    f"template exceeds archive safety limits: {path} ({exc})"
+                ) from exc
             except (KeyError, zipfile.BadZipFile):
                 continue
             try:

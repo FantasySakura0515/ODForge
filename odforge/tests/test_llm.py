@@ -12,7 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from odforge import llm
-from odforge.ir import BulletItem, Outline, PageRole, Presentation
+from odforge.ir import BulletItem, MediaAssetRef, Outline, PageRole, Presentation
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +84,26 @@ _VALID_PRESENTATION = {
 # invalid: slide missing required "layout"
 _INVALID_PRESENTATION = {"title": "壞的簡報", "slides": [{"title": "無版面"}]}
 
+_VALID_DISCOVERY = {
+    "summary": "向系上老師報告畢業專題進度，聚焦架構與時程。",
+    "known_context": ["受眾是系上老師", "內容包含系統架構與時程"],
+    "questions": [
+        {
+            "id": "decision",
+            "question": "這次希望老師提供什麼？",
+            "why": "決定簡報最後要收束到哪個行動。",
+            "options": ["確認進度", "提供技術建議", "核准下一階段"],
+        },
+        {
+            "id": "progress",
+            "question": "目前完成到哪個階段？",
+            "why": "才能把時程與風險說具體。",
+            "options": ["規劃完成", "核心功能開發中", "進入測試"],
+        },
+    ],
+    "completeness": 42,
+}
+
 
 def _backend(monkeypatch, responses):
     _install_fake_openai(monkeypatch, responses)
@@ -101,6 +121,99 @@ def test_generate_ir_presentation_roundtrip(monkeypatch):
     assert isinstance(result, Presentation)
     assert result.title == "光合作用入門"
     assert len(result.slides) == 2
+
+
+def test_discovery_questions_use_outline_model_and_structured_schema(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_VALID_DISCOVERY))]
+    )
+    backend = llm.OpenAICompatBackend(
+        "https://example.test",
+        "tok",
+        "base",
+        outline_model="planner",
+        extra_body={"enable_thinking": False},
+    )
+
+    result = backend.discover_questions(
+        "畢業專題進度報告", context="模式：講者型；目標頁數：8 頁"
+    )
+
+    assert result.completeness == 42
+    assert result.questions[0].id == "decision"
+    call = client.completions.calls[0]
+    assert call["model"] == "planner"
+    assert call["tool_choice"]["function"]["name"] == llm.DISCOVERY_TOOL_NAME
+    assert (
+        call["tools"][0]["function"]["parameters"]
+        == llm.DiscoveryPlan.model_json_schema()
+    )
+    assert call["extra_body"] == {"enable_thinking": False}
+    user = " ".join(
+        message["content"]
+        for message in call["messages"]
+        if message["role"] == "user"
+    )
+    assert "畢業專題進度報告" in user
+    assert "8 頁" in user
+
+
+def test_discovery_questions_can_use_dedicated_model_and_report_progress(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_VALID_DISCOVERY))]
+    )
+    stages = []
+    backend = llm.OpenAICompatBackend(
+        "https://example.test",
+        "tok",
+        "base",
+        discovery_model="fast-reader",
+        outline_model="planner",
+    )
+
+    backend.discover_questions("畢業專題", progress=stages.append)
+
+    assert client.completions.calls[0]["model"] == "fast-reader"
+    assert stages == ["preparing", "requesting", "validating", "complete"]
+
+
+def test_discovery_invalid_payload_retries_with_feedback(monkeypatch):
+    invalid = {**_VALID_DISCOVERY, "questions": []}
+    client = _install_fake_openai(
+        monkeypatch,
+        [
+            _make_response(json.dumps(invalid)),
+            _make_response(json.dumps(_VALID_DISCOVERY)),
+        ],
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+
+    result = backend.discover_questions("x")
+
+    assert len(result.questions) == 2
+    assert len(client.completions.calls) == 2
+    retry_text = " ".join(
+        message["content"]
+        for message in client.completions.calls[1]["messages"]
+    )
+    assert "questions" in retry_text
+
+
+def test_discovery_question_removes_other_and_duplicate_options():
+    question = llm.DiscoveryQuestion(
+        id="topic",
+        question="專題屬於哪個領域？",
+        why="用來安排內容。",
+        options=["Web 應用", "其他領域", "Web 應用", "資料分析"],
+    )
+    assert question.options == ["Web 應用", "資料分析"]
+
+
+def test_prompts_forbid_invented_technology_stack_and_probe_architecture_gap():
+    assert "技術棧" in llm.SLIDES_SYSTEM_PROMPT
+    assert "所有英文技術名與品牌名" in llm.SLIDES_SYSTEM_PROMPT
+    assert "系統架構" in llm.DISCOVERY_SYSTEM_PROMPT
+    assert "實際技術棧" in llm.DISCOVERY_SYSTEM_PROMPT
 
 
 def test_type_field_injected(monkeypatch):
@@ -361,6 +474,7 @@ def test_generate_outline_valid_roundtrip(monkeypatch):
     assert result.design is not None
     assert result.design.scale == "display"
     assert [p.role for p in result.pages] == ["title", "agenda", "section", "closing"]
+    assert result.source_prompt == "做一份光合作用簡報"
 
 
 # ② design contrast failure → retry once (call count 2); second failure →
@@ -720,7 +834,7 @@ def test_generate_slides_both_over_budget_degrades(monkeypatch):
 
 
 def test_generate_slides_degrade_drops_children_first(monkeypatch):
-    client = _install_fake_openai(
+    _install_fake_openai(
         monkeypatch,
         [
             _make_response(json.dumps(_CHILD_HEAVY_DECK)),
@@ -931,3 +1045,96 @@ def test_generate_slides_worst_case_three_calls(monkeypatch):
     # call 2's user turn carries the structural feedback, call 3's the budget one
     assert "版型" in _user_text(client.completions.calls[1]["messages"])
     assert "超載" in _user_text(client.completions.calls[2]["messages"])
+
+
+def test_stage2_prompt_keeps_source_and_visual_intent(monkeypatch):
+    outline = _SLIDES_OUTLINE.model_copy(
+        update={
+            "source_prompt": "受眾是醫院主管，重點是降低等候時間。",
+            "pages": [
+                _SLIDES_OUTLINE.pages[0],
+                _SLIDES_OUTLINE.pages[1].model_copy(
+                    update={"visual_intent": "用兩個階段呈現前後因果"}
+                ),
+            ],
+        }
+    )
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_FITTING_DECK))]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    backend.generate_slides(outline)
+    user_text = _user_text(client.completions.calls[0]["messages"])
+    assert "醫院主管" in user_text
+    assert "降低等候時間" in user_text
+    assert "用兩個階段呈現前後因果" in user_text
+
+
+def test_stage2_prompt_lists_only_app_owned_image_ids(monkeypatch):
+    outline = _SLIDES_OUTLINE.model_copy(
+        update={
+            "media_assets": [
+                MediaAssetRef(
+                    id="asset-01",
+                    description="改善後的候診區",
+                    credit="院方提供",
+                )
+            ],
+            "image_generation_available": True,
+        }
+    )
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_FITTING_DECK))]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
+    backend.generate_slides(outline)
+    user_text = _user_text(client.completions.calls[0]["messages"])
+    assert "asset://asset-01" in user_text
+    assert "改善後的候診區" in user_text
+    assert "院方提供" in user_text
+    assert "圖片生成】可用" in user_text
+
+
+def test_outline_and_slides_can_use_different_models(monkeypatch):
+    outline_payload = {
+        "mode": "presenter",
+        "pages": [{"role": "title", "title": "封面", "gist": "破題"}],
+    }
+    deck_payload = {
+        "title": "測試",
+        "slides": [{"layout": "title", "title": "封面", "notes": "開場"}],
+    }
+    client = _install_fake_openai(
+        monkeypatch,
+        [
+            _make_response(json.dumps(outline_payload)),
+            _make_response(json.dumps(deck_payload)),
+        ],
+    )
+    backend = llm.OpenAICompatBackend(
+        "https://example.test",
+        "tok",
+        "fallback",
+        outline_model="planner",
+        slides_model="writer",
+        extra_body={"enable_thinking": False},
+    )
+    outline = backend.generate_outline("題目")
+    backend.generate_slides(outline)
+    assert [call["model"] for call in client.completions.calls] == [
+        "planner",
+        "writer",
+    ]
+    assert all(
+        call["extra_body"] == {"enable_thinking": False}
+        for call in client.completions.calls
+    )
+
+
+def test_custom_extra_body_requires_json_object(monkeypatch):
+    monkeypatch.setenv("ODFORGE_CUSTOM_EXTRA_BODY", '{"enable_thinking":false}')
+    assert llm._custom_extra_body() == {"enable_thinking": False}
+
+    monkeypatch.setenv("ODFORGE_CUSTOM_EXTRA_BODY", "[]")
+    with pytest.raises(RuntimeError, match="JSON object"):
+        llm._custom_extra_body()

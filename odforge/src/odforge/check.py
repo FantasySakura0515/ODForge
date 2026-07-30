@@ -26,6 +26,12 @@ from lxml import etree
 
 from .validate import find_soffice, run_soffice_convert, validate_odf
 from .xmlsafe import safe_fromstring
+from .zipguard import (
+    ArchiveLimitError,
+    MAX_XML_MEMBER,
+    inspect_archive,
+    read_xml_member,
+)
 
 # ---------------------------------------------------------------------------
 # Namespaces
@@ -93,10 +99,11 @@ def _read_part(path: Path, name: str) -> bytes | None:
     """Return the bytes of zip member ``name``, or ``None`` if absent."""
     try:
         with zipfile.ZipFile(path) as z:
-            if name not in z.namelist():
+            infos = inspect_archive(z)
+            if name not in {info.filename for info in infos}:
                 return None
-            return z.read(name)
-    except (zipfile.BadZipFile, OSError):
+            return read_xml_member(z, name, max_bytes=MAX_XML_MEMBER)
+    except (ArchiveLimitError, zipfile.BadZipFile, OSError):
         return None
 
 
@@ -157,9 +164,9 @@ def _part_listing(path: Path) -> list[str]:
         with zipfile.ZipFile(path) as z:
             return [
                 f"- {info.filename} ({info.file_size} bytes)"
-                for info in z.infolist()
+                for info in inspect_archive(z)
             ]
-    except (zipfile.BadZipFile, OSError) as exc:
+    except (ArchiveLimitError, zipfile.BadZipFile, OSError) as exc:
         return [f"- (無法列出部件:{exc})"]
 
 

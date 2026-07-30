@@ -1,11 +1,24 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
-import { postGenerate, postOutlineAction } from "./state/api";
+import {
+  getSessions,
+  postCancel,
+  postDiscoveryQuestions,
+  postGenerate,
+  postOutlineAction,
+} from "./state/api";
 
 vi.mock("./state/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./state/api")>();
-  return { ...actual, postGenerate: vi.fn(), postOutlineAction: vi.fn() };
+  return {
+    ...actual,
+    getSessions: vi.fn(),
+    postCancel: vi.fn(),
+    postDiscoveryQuestions: vi.fn(),
+    postGenerate: vi.fn(),
+    postOutlineAction: vi.fn(),
+  };
 });
 
 // Minimal EventSource stand-in so App tests can drive the SSE stream by hand.
@@ -32,18 +45,76 @@ class FakeEventSource {
 beforeEach(() => {
   vi.stubGlobal("matchMedia", (q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} }));
   FakeEventSource.instances = [];
+  vi.mocked(postCancel).mockResolvedValue(undefined);
+  vi.mocked(getSessions).mockResolvedValue([]);
+  vi.mocked(postDiscoveryQuestions).mockResolvedValue({
+    summary: "需求已足夠。",
+    known_context: [],
+    questions: [],
+    completeness: 100,
+  });
 });
 
 afterEach(() => {
   vi.mocked(postGenerate).mockReset();
+  vi.mocked(postDiscoveryQuestions).mockReset();
+  vi.mocked(postCancel).mockReset();
   vi.mocked(postOutlineAction).mockReset();
+  vi.mocked(getSessions).mockReset();
+});
+
+function openComposer() {
+  const button = screen.queryByRole("button", { name: /新增簡報/ });
+  if (button) fireEvent.click(button);
+}
+
+async function submitThroughDiscovery(prompt: string) {
+  openComposer();
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), {
+    target: { value: prompt },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "繼續" }));
+  fireEvent.click(await screen.findByRole("button", { name: "生成大綱" }));
+}
+
+test("首頁顯示新增入口與過去 session", async () => {
+  window.history.replaceState({}, "", "/");
+  vi.mocked(getSessions).mockResolvedValue([
+    {
+      id: "abc123",
+      title: "資料結構教學",
+      prompt: "給大一新生的資料結構簡報",
+      status: "complete",
+      created_at: 1_700_000_000,
+      updated_at: 1_700_000_100,
+      page_count: 12,
+      preview_url: "/api/jobs/abc123/preview/1.png",
+      download_url: "/api/jobs/abc123/download",
+    },
+  ]);
+
+  render(<App />);
+
+  expect(await screen.findByText("資料結構教學")).toBeInTheDocument();
+  expect(screen.getByText("12")).toBeInTheDocument();
+  expect(document.querySelector(".session-main")).toHaveAttribute(
+    "href",
+    "?job=abc123",
+  );
+  expect(screen.getByRole("link", { name: "下載 資料結構教學" })).toHaveAttribute(
+    "href",
+    "/api/jobs/abc123/download",
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: /新增簡報/ }));
+  expect(screen.getByRole("textbox", { name: /主題/ })).toBeInTheDocument();
+  expect(new URLSearchParams(window.location.search).get("new")).toBe("1");
 });
 
 test("?mock 模式:mock 流跑到完成,格式閘依序點亮、設計閘顯示未啟用、下載鈕誠實 disabled", async () => {
   window.history.replaceState({}, "", "/?mock=1&mockStep=5");
   const { container } = render(<App />);
-  fireEvent.change(screen.getByRole("textbox"), { target: { value: "樹與二元樹" } });
-  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+  await submitThroughDiscovery("樹與二元樹");
 
   await waitFor(() => expect(screen.getAllByText("樹與二元樹").length).toBeGreaterThan(0));
   // 完成訊號:頂欄「再鍛一份」出現(mock 產物非真檔,不再以假下載連結當完成證據)。
@@ -54,6 +125,92 @@ test("?mock 模式:mock 流跑到完成,格式閘依序點亮、設計閘顯示�
   // 誠實的 gate 真值:zip/xml/libreoffice 通過,design 因 demo 未開 QA 而 skipped(非偽造全綠)
   await waitFor(() => expect(container.querySelectorAll('[data-gate][data-status="pass"]')).toHaveLength(3));
   expect(container.querySelector('[data-gate="design"]')?.getAttribute("data-status")).toBe("skipped");
+});
+
+test("AI 訪談流程：短需求→動態問題→可編輯 Brief→才建立生成工作", async () => {
+  window.history.replaceState({}, "", "/");
+  vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+  vi.mocked(postDiscoveryQuestions).mockResolvedValue({
+    summary: "向系上老師報告畢業專題進度。",
+    known_context: ["受眾是系上老師"],
+    questions: [
+      {
+        id: "decision",
+        question: "希望老師提供什麼？",
+        why: "決定結尾的行動請求。",
+        options: ["確認進度", "技術建議"],
+      },
+      {
+        id: "progress",
+        question: "目前完成到哪裡？",
+        why: "讓架構與時程具體。",
+        options: ["開發中", "測試中"],
+      },
+    ],
+    completeness: 38,
+  });
+  vi.mocked(postGenerate).mockResolvedValue({ job_id: "brief-job" });
+
+  render(<App />);
+  openComposer();
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), {
+    target: { value: "畢業專題進度報告，重點是架構與時程" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "繼續" }));
+
+  await waitFor(() => expect(screen.getByText("希望老師提供什麼？")).toBeInTheDocument());
+  expect(postDiscoveryQuestions).toHaveBeenCalledWith(
+    expect.objectContaining({ prompt: "畢業專題進度報告，重點是架構與時程" }),
+    expect.objectContaining({
+      signal: expect.any(AbortSignal),
+      onProgress: expect.any(Function),
+    }),
+  );
+  expect(postGenerate).not.toHaveBeenCalled();
+
+  fireEvent.click(screen.getByRole("button", { name: "技術建議" }));
+  fireEvent.click(screen.getByRole("button", { name: "下一題" }));
+  fireEvent.click(screen.getByRole("button", { name: "開發中" }));
+  fireEvent.click(screen.getByRole("button", { name: "整理需求" }));
+
+  const brief = await screen.findByRole("textbox", { name: "生成規格" }) as HTMLTextAreaElement;
+  expect(brief.value).toContain("回答：技術建議");
+  fireEvent.click(screen.getByRole("button", { name: "生成大綱" }));
+
+  await waitFor(() => expect(postGenerate).toHaveBeenCalledOnce());
+  expect(vi.mocked(postGenerate).mock.calls[0][0].prompt).toContain("回答：開發中");
+});
+
+test("AI 讀題串流會即時更新工作軌跡，取消時中止請求", async () => {
+  window.history.replaceState({}, "", "/");
+  let signal: AbortSignal | undefined;
+  vi.mocked(postDiscoveryQuestions).mockImplementation(async (_body, options) => {
+    signal = options?.signal;
+    options?.onProgress?.({
+      request_id: "trace-1",
+      stage: "requesting",
+      message: "正在產生關鍵問題",
+      elapsed_ms: 2400,
+    });
+    return await new Promise<never>(() => undefined);
+  });
+
+  render(<App />);
+  openComposer();
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), {
+    target: { value: "畢業專題進度報告" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "繼續" }));
+
+  expect(await screen.findByText("正在產生關鍵問題")).toBeInTheDocument();
+  expect(screen.getByText("產生追問").closest("li")).toHaveAttribute(
+    "data-status",
+    "active",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "取消" }));
+
+  expect(signal?.aborted).toBe(true);
+  expect(screen.getByRole("textbox", { name: /主題/ })).toHaveValue("畢業專題進度報告");
 });
 
 test("?mock 模式頂欄常駐「展示模式」chip", () => {
@@ -67,8 +224,7 @@ test("非 mock 模式且後端連不上:顯示「無法連上後端」、不出�
   vi.mocked(postGenerate).mockRejectedValue(new Error("network down"));
 
   render(<App />);
-  fireEvent.change(screen.getByRole("textbox"), { target: { value: "樹與二元樹" } });
-  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+  await submitThroughDiscovery("樹與二元樹");
 
   // 連線錯誤訊息出現(人話前綴在 narrator + ErrorPanel 標題皆會出現)
   await waitFor(() => expect(screen.getAllByText(/無法連上後端/).length).toBeGreaterThan(0));
@@ -77,7 +233,7 @@ test("非 mock 模式且後端連不上:顯示「無法連上後端」、不出�
   expect(screen.queryByRole("link", { name: /下載/ })).toBeNull();
   // PromptBar 回來,可重試
   expect(screen.getByRole("textbox")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /鍛造/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "繼續" })).toBeInTheDocument();
   // 頂欄「後端未連線」chip
   expect(screen.getByText("後端未連線")).toBeInTheDocument();
   // 展示模式 chip 不該出現(非 mock)
@@ -97,8 +253,7 @@ test("生成中頂欄顯示真實 prompt(帶 title 全文),非佔位字", async 
   vi.mocked(postGenerate).mockResolvedValue({ job_id: "j1" });
 
   render(<App />);
-  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "資結第三章教學" } });
-  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+  await submitThroughDiscovery("資結第三章教學");
 
   await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
   FakeEventSource.instances[0].emit("outline", {
@@ -106,7 +261,7 @@ test("生成中頂欄顯示真實 prompt(帶 title 全文),非佔位字", async 
   });
 
   // PromptBar 收起(生成中),頂欄 promptline 顯示原 prompt 且 title 給全文。
-  await waitFor(() => expect(screen.queryByRole("button", { name: /鍛造/ })).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("button", { name: "繼續" })).toBeNull());
   const line = document.querySelector(".promptline");
   expect(line?.textContent).toContain("資結第三章教學");
   expect(line?.getAttribute("title")).toBe("資結第三章教學");
@@ -118,8 +273,7 @@ test("完成後「再鍛一份」重置回 empty:PromptBar 回來、輸入框保
   vi.mocked(postGenerate).mockResolvedValue({ job_id: "j1" });
 
   render(<App />);
-  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "我的講稿" } });
-  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+  await submitThroughDiscovery("我的講稿");
 
   await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
   const es = FakeEventSource.instances[0];
@@ -142,8 +296,7 @@ test("錯誤後輸入框保留原 prompt(受控)", async () => {
   vi.mocked(postGenerate).mockRejectedValue(new Error("network down"));
 
   render(<App />);
-  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "請保留這句" } });
-  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+  await submitThroughDiscovery("請保留這句");
 
   await waitFor(() => expect(screen.getAllByText(/無法連上後端/).length).toBeGreaterThan(0));
   const ta = screen.getByRole("textbox", { name: /主題/ }) as HTMLTextAreaElement;
@@ -156,11 +309,10 @@ test("等待卡:submitting 顯示、outline 到收起", async () => {
   vi.mocked(postGenerate).mockResolvedValue({ job_id: "j1" });
 
   render(<App />);
-  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "等待測試" } });
-  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+  await submitThroughDiscovery("等待測試");
 
   // 等待卡出現(submitting、尚無 outline)。
-  await waitFor(() => expect(screen.getByText(/逐頁填充內容/)).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText(/產生投影片/)).toBeInTheDocument());
   await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
 
   // outline 到 → 等待卡收起,縮圖牆出現。
@@ -168,7 +320,7 @@ test("等待卡:submitting 顯示、outline 到收起", async () => {
     design: null, mode: "presenter", pages: [{ role: "title", title: "封面", gist: "g" }],
   });
   await waitFor(() => expect(document.querySelectorAll(".cell").length).toBeGreaterThan(0));
-  expect(screen.queryByText(/逐頁填充內容/)).toBeNull();
+  expect(screen.queryByText(/產生投影片/)).toBeNull();
 });
 
 test("等待卡取消鈕:關閉 SSE、重置回 empty、prompt 保留", async () => {
@@ -177,8 +329,7 @@ test("等待卡取消鈕:關閉 SSE、重置回 empty、prompt 保留", async ()
   vi.mocked(postGenerate).mockResolvedValue({ job_id: "j1" });
 
   render(<App />);
-  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "取消我" } });
-  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+  await submitThroughDiscovery("取消我");
 
   await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
   const cancel = await screen.findByRole("button", { name: /取消/ });
@@ -187,6 +338,7 @@ test("等待卡取消鈕:關閉 SSE、重置回 empty、prompt 保留", async ()
   const ta = (await screen.findByRole("textbox", { name: /主題/ })) as HTMLTextAreaElement;
   expect(ta.value).toBe("取消我");
   expect(FakeEventSource.instances[0].closed).toBe(true);
+  expect(postCancel).toHaveBeenCalledWith("j1");
 });
 
 test("主題切換鈕有可及名稱(淺色主題/深色主題)", () => {
@@ -197,7 +349,7 @@ test("主題切換鈕有可及名稱(淺色主題/深色主題)", () => {
 });
 
 test("空台(大綱未到)左欄收掉:cockpit data-outline=absent;大綱到後轉 present", async () => {
-  window.history.replaceState({}, "", "/");
+  window.history.replaceState({}, "", "/?new=1");
   vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
   vi.mocked(postGenerate).mockResolvedValue({ job_id: "j1" });
 
@@ -207,8 +359,7 @@ test("空台(大綱未到)左欄收掉:cockpit data-outline=absent;大綱到後�
   // 空台不擺「生成中…」假下載鈕。
   expect(screen.queryByText(/生成中…/)).toBeNull();
 
-  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "左欄測試" } });
-  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+  await submitThroughDiscovery("左欄測試");
   await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
   FakeEventSource.instances[0].emit("outline", {
     design: null, mode: "presenter", pages: [{ role: "title", title: "封面", gist: "g" }],
@@ -224,8 +375,7 @@ test("生成開始把 jobId 寫進 URL(?job=),供重整復原", async () => {
   vi.mocked(postGenerate).mockResolvedValue({ job_id: "abc123" });
 
   render(<App />);
-  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "寫入 URL" } });
-  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+  await submitThroughDiscovery("寫入 URL");
 
   await waitFor(() => expect(new URLSearchParams(window.location.search).get("job")).toBe("abc123"));
 });
@@ -235,7 +385,7 @@ test("?job= 重整復原:重播 outline→slide_done→complete,下載鈕可用"
   vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
 
   render(<App />);
-  // 直接訂閱重播,不需按鍛造。
+  // 直接訂閱重播，不需按生成。
   await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
   expect(FakeEventSource.instances[0].url).toBe("/api/jobs/resumeC/events");
 
@@ -276,10 +426,10 @@ test("?job= 但 job 不存在(傳輸錯誤/404):顯示過期文案並清掉 URL 
   // 尚未收到任何事件即傳輸失敗 → 視為過期。
   FakeEventSource.instances[0].fail();
 
-  await waitFor(() => expect(screen.getByText(/找不到這個任務/)).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText(/任務不存在或已過期/)).toBeInTheDocument());
   // URL 的 ?job= 已清掉,回到輸入畫面。
   expect(new URLSearchParams(window.location.search).get("job")).toBeNull();
-  expect(screen.getByRole("button", { name: /鍛造/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "繼續" })).toBeInTheDocument();
 });
 
 test("?job= 復原:自動重連中(readyState=CONNECTING)的暫時錯誤不誤判為過期", async () => {
@@ -292,7 +442,7 @@ test("?job= 復原:自動重連中(readyState=CONNECTING)的暫時錯誤不誤�
   FakeEventSource.instances[0].fail(0);
 
   // 不顯示過期文案,?job= 仍保留(繼續等重連)。
-  expect(screen.queryByText(/找不到這個任務/)).toBeNull();
+  expect(screen.queryByText(/任務不存在或已過期/)).toBeNull();
   expect(new URLSearchParams(window.location.search).get("job")).toBe("reconnecting");
 });
 
@@ -302,8 +452,7 @@ test("錯誤區「重試」以同樣參數重新送出上一次 generate", async
   vi.mocked(postGenerate).mockRejectedValue(new Error("network down"));
 
   render(<App />);
-  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "重試主題" } });
-  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+  await submitThroughDiscovery("重試主題");
 
   // 錯誤區出現白話標題與重試鈕。
   await waitFor(() => expect(screen.getByRole("button", { name: "重試" })).toBeInTheDocument());
@@ -322,8 +471,7 @@ test("點設計 QA 的 FindingRow → 開該頁 lightbox", async () => {
   vi.mocked(postGenerate).mockResolvedValue({ job_id: "jqa" });
 
   render(<App />);
-  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "QA 測試" } });
-  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+  await submitThroughDiscovery("QA 測試");
 
   await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
   const es = FakeEventSource.instances[0];
@@ -346,8 +494,7 @@ test("大綱刪 1 頁 → 確認成功 → units 隨編輯後大綱重同步,com
   vi.mocked(postOutlineAction).mockResolvedValue(undefined);
 
   const { container } = render(<App />);
-  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹與二元樹" } });
-  fireEvent.click(screen.getByRole("button", { name: /鍛造/ }));
+  await submitThroughDiscovery("樹與二元樹");
 
   await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
   const es = FakeEventSource.instances[0];

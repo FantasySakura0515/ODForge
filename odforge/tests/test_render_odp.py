@@ -1,13 +1,40 @@
+import dataclasses
 import re
+import zipfile
 
-from odforge.themes import LAYOUTS, THEMES, PAGE_W, PAGE_H, Frame, Theme
+import lxml.etree as etree
+import pytest
+
+from odforge.ir import (
+    DesignSpec,
+    FontPair,
+    Palette,
+    Presentation,
+    Slide,
+    contrast_ratio,
+)
+from odforge.package import ODP_MIMETYPE
+from odforge.media import AssetBlob
+from odforge.render import render
+from odforge.render.odp import (
+    _GraphicStyles,
+    _line_xml,
+    _rect_xml,
+    _section_fill,
+    build_content_xml,
+    build_styles_xml,
+    render_odp,
+)
+from odforge.themes import LAYOUTS, PAGE_H, PAGE_W, SCALES, THEMES, resolve_design
 
 
 def test_all_layouts_exist():
-    # v1's five plus Task 14.1's five new page-role layouts.
+    # Text-first layouts plus shape-rendered visual storytelling layouts.
     assert set(LAYOUTS) == {
         "title", "title-content", "two-col", "section", "big-fact",
         "quote", "agenda", "comparison", "chart", "closing",
+        "process", "timeline", "metrics", "cards", "diagram",
+        "image-focus", "image-split",
     }
 
 
@@ -33,8 +60,6 @@ def test_theme_colors_are_valid_hex():
 
 
 def test_frames_are_frozen():
-    import pytest, dataclasses
-
     with pytest.raises(dataclasses.FrozenInstanceError):
         LAYOUTS["title"][0].x = 0
 
@@ -47,22 +72,6 @@ def test_layout_roles_match_expectation():
 # ---------------------------------------------------------------------------
 # Task 4.2: .odp renderer tests
 # ---------------------------------------------------------------------------
-
-import zipfile
-import lxml.etree as etree
-import pytest
-from odforge.render.odp import (
-    render_odp,
-    build_content_xml,
-    build_styles_xml,
-    _rect_xml,
-    _line_xml,
-    _GraphicStyles,
-    _section_fill,
-)
-from odforge.render import render
-from odforge.ir import Presentation, Slide
-from odforge.package import ODP_MIMETYPE
 
 NS = {
     "office": "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
@@ -185,10 +194,6 @@ def test_unknown_theme_falls_back_to_academic(tmp_path):
 # ---------------------------------------------------------------------------
 # Task 12.2: tokenized Theme + SCALES + resolve_design
 # ---------------------------------------------------------------------------
-
-from odforge.themes import SCALES, resolve_design
-from odforge.ir import contrast_ratio, DesignSpec, Palette, FontPair
-
 
 def test_theme_has_full_token_set():
     """The resolved Theme carries the complete design token set."""
@@ -840,7 +845,7 @@ def test_big_fact_fact_style_uses_display_pt_and_accent():
 # Task 13.4: SVG decorations on title pages + rounded surface cards on two-col
 # ---------------------------------------------------------------------------
 
-from odforge.render.odp import _svg_decoration, _DECO_HREF  # noqa: E402
+from odforge.render.odp import _svg_decoration, _DECO_HREF, _wrap_width  # noqa: E402
 
 
 # ① The engine-generated decoration is deterministic, accent-coloured, small.
@@ -1147,6 +1152,36 @@ def test_closing_inverted_no_watermark_with_subtitle():
     assert "01" in "".join(pages[0].itertext())
 
 
+def test_closing_renders_action_bullets_as_surface_cards():
+    theme = THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="closing",
+                title="核准 90 天試行",
+                bullets=["確認試行範圍", "指定跨職類負責人", "每週檢視瓶頸"],
+            )
+        ],
+    )
+    croot = _content_root(p, theme)
+    page = croot.find(".//draw:page", NS)
+    text = "".join(page.itertext())
+    assert "確認試行範圍" in text
+    assert "指定跨職類負責人" in text
+    assert "每週檢視瓶頸" in text
+    for ordinal in ("01", "02", "03"):
+        assert ordinal in text
+
+    surface_cards = []
+    for rect in page.findall(".//draw:rect", NS):
+        style = _style_by_name(croot, rect.get(_q("draw", "style-name")))
+        props = style.find("style:graphic-properties", NS)
+        if props is not None and props.get(_q("draw", "fill-color")) == theme.surface:
+            surface_cards.append(rect)
+    assert len(surface_cards) == 3
+
+
 def test_section_ordinals_skip_closing_pages():
     theme = THEMES["academic"]
     p = Presentation(title="t", slides=[
@@ -1245,7 +1280,7 @@ def test_custom_designspec_renders_with_palette_colors(tmp_path):
 # the muted caption). Deterministic engine guarantees, not prompt advice.
 # ---------------------------------------------------------------------------
 
-from odforge.textmetrics import estimate_height_cm, fact_font_size_pt  # noqa: E402
+from odforge.textmetrics import PT_TO_CM, estimate_height_cm, fact_font_size_pt  # noqa: E402
 
 
 def _fact_size_pt(croot, fact_text):
@@ -1302,3 +1337,643 @@ def test_big_fact_extreme_fact_pushes_caption_clear():
     assert caption_y >= fact_bottom, (caption_y, fact_bottom)
     # And it genuinely moved off its static y (10cm) because the fact overran.
     assert caption_y > LAYOUTS["big-fact"][1].y
+
+
+# ---------------------------------------------------------------------------
+# Shape-rendered visual storytelling layouts
+# ---------------------------------------------------------------------------
+
+
+def _visual_cards(page):
+    return [
+        rect
+        for rect in page.findall(".//draw:rect", NS)
+        if rect.get(_q("draw", "corner-radius")) == "0.28cm"
+    ]
+
+
+def test_process_layout_renders_connected_numbered_cards():
+    theme = THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="process",
+                title="交付流程",
+                steps=[
+                    {"title": "盤點", "detail": "確認目標與限制"},
+                    {"title": "設計", "detail": "建立資訊架構"},
+                    {"title": "驗收", "detail": "依結果調整"},
+                ],
+            )
+        ],
+    )
+    page = _content_root(p, theme).find(".//draw:page", NS)
+    text = "".join(page.itertext())
+    assert all(word in text for word in ("盤點", "設計", "驗收", "1", "3"))
+    assert len(_visual_cards(page)) == 3
+    assert len(page.findall(".//draw:ellipse", NS)) == 3
+    assert len(page.findall(".//draw:line", NS)) == 1
+
+
+def test_timeline_layout_renders_nodes_stems_and_event_cards():
+    theme = THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="timeline",
+                title="產品演進",
+                events=[
+                    {"label": "Q1", "title": "研究", "detail": "確認問題"},
+                    {"label": "Q2", "title": "試辦", "detail": "蒐集回饋"},
+                    {"label": "Q3", "title": "上線", "detail": "全面推廣"},
+                ],
+            )
+        ],
+    )
+    page = _content_root(p, theme).find(".//draw:page", NS)
+    text = "".join(page.itertext())
+    assert all(word in text for word in ("Q1", "研究", "Q3", "上線"))
+    assert len(_visual_cards(page)) == 3
+    assert len(page.findall(".//draw:ellipse", NS)) == 3
+    assert len(page.findall(".//draw:line", NS)) == 4
+
+
+def test_metrics_layout_renders_large_value_cards():
+    theme = THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="metrics",
+                title="關鍵成果",
+                metrics=[
+                    {"value": "42%", "label": "轉換率", "detail": "較上期提升"},
+                    {"value": "3.2x", "label": "處理速度", "detail": "流程自動化"},
+                    {"value": "18h", "label": "節省工時", "detail": "每週平均"},
+                ],
+            )
+        ],
+    )
+    croot = _content_root(p, theme)
+    page = croot.find(".//draw:page", NS)
+    text = "".join(page.itertext())
+    assert all(word in text for word in ("42%", "3.2x", "18h"))
+    assert len(_visual_cards(page)) == 3
+    value_p = _text_p_with(page, "42%")
+    value_style = _style_by_name(
+        croot, value_p.get(_q("text", "style-name"))
+    ).find("style:text-properties", NS)
+    assert value_style.get(_q("style", "font-name")) == theme.font_display
+    assert value_style.get(_q("fo", "color")) == theme.accent
+
+
+def test_cards_layout_turns_parallel_ideas_into_grid():
+    theme = THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="cards",
+                title="四大支柱",
+                bullets=["策略清楚", "流程順暢", "資料可信", "持續改善"],
+            )
+        ],
+    )
+    page = _content_root(p, theme).find(".//draw:page", NS)
+    text = "".join(page.itertext())
+    assert all(word in text for word in ("策略清楚", "流程順暢", "持續改善"))
+    assert len(_visual_cards(page)) == 4
+    assert "01" in text and "04" in text
+
+
+def _card_heights(page):
+    return [
+        float(card.get(_q("svg", "height")).removesuffix("cm"))
+        for card in _visual_cards(page)
+    ]
+
+
+def _cards_page(bullets, theme=None):
+    theme = theme or THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[Slide(layout="cards", title="標題", bullets=bullets)],
+    )
+    return _content_root(p, theme).find(".//draw:page", NS)
+
+
+# A one-line card used to be drawn at a flat 6.8cm — twice the height of its
+# content — leaving the bottom 60% of the box empty. Cards are sized to what
+# they actually hold, and stay uniform across the row.
+def test_short_cards_are_sized_to_their_content_not_the_full_area():
+    page = _cards_page(["跨平台相容", "長期可讀", "零授權成本"])
+    heights = _card_heights(page)
+    assert len(heights) == 3
+    assert len(set(heights)) == 1, "cards in a row must stay equal height"
+    assert heights[0] < 4.5, f"one-line card should not sprawl: {heights[0]}cm"
+    assert heights[0] >= 3.0, f"card must still read as a container: {heights[0]}cm"
+
+
+def test_wrapping_card_titles_grow_the_card():
+    short = _card_heights(_cards_page(["策略", "流程", "資料"]))[0]
+    longer = _card_heights(
+        _cards_page(
+            [
+                "策略清楚並且能夠讓每一個部門都對齊同一份年度目標與衡量指標",
+                "流程",
+                "資料",
+            ]
+        )
+    )[0]
+    assert longer > short, "a title that wraps must not be clipped by a fixed box"
+
+
+def test_cards_with_children_get_room_for_them():
+    plain = _card_heights(_cards_page(["策略清楚", "流程順暢"]))[0]
+    nested = _card_heights(
+        _cards_page(
+            [
+                BulletItem(text="策略清楚", children=["季度校準", "指標公開"]),
+                BulletItem(text="流程順暢", children=["自動化"]),
+            ]
+        )
+    )[0]
+    assert nested > plain
+
+
+def test_card_title_frame_is_tall_enough_for_its_wrapped_text():
+    # The title box used to be a flat 1.65cm; a three-line CJK title overran it.
+    long_title = "策略清楚並且能夠讓每一個部門都對齊同一份年度目標與共同衡量指標"
+    page = _cards_page([long_title, "流程", "資料"])
+    card = _visual_cards(page)[0]
+    card_h = float(card.get(_q("svg", "height")).removesuffix("cm"))
+    card_y = float(card.get(_q("svg", "y")).removesuffix("cm"))
+    frames = [
+        f
+        for f in page.findall(".//draw:frame", NS)
+        if long_title in "".join(f.itertext())
+    ]
+    assert frames, "the wrapped title must still be rendered"
+    frame = frames[0]
+    top = float(frame.get(_q("svg", "y")).removesuffix("cm"))
+    height = float(frame.get(_q("svg", "height")).removesuffix("cm"))
+    width = float(frame.get(_q("svg", "width")).removesuffix("cm"))
+    needed = estimate_height_cm(long_title, min(THEMES["academic"].body_pt, 18), width, 1.2)
+    assert height >= needed - 0.01, f"title box {height}cm < wrapped text {needed}cm"
+    assert top + height <= card_y + card_h + 0.01, "title must stay inside its card"
+
+
+def test_diagram_layout_renders_nodes_edges_and_labels():
+    theme = THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="diagram",
+                title="服務架構",
+                diagram={
+                    "kind": "hub",
+                    "nodes": [
+                        {"id": "core", "title": "核心 API", "emphasis": True},
+                        {"id": "web", "title": "前端"},
+                        {"id": "data", "title": "資料層"},
+                        {"id": "ops", "title": "監控"},
+                    ],
+                    "edges": [
+                        {"source": "core", "target": "web", "label": "提供"},
+                        {"source": "core", "target": "data", "label": "讀寫"},
+                        {"source": "core", "target": "ops", "label": "回報"},
+                    ],
+                },
+            )
+        ],
+    )
+    page = _content_root(p, theme).find(".//draw:page", NS)
+    text = "".join(page.itertext())
+    assert all(word in text for word in ("核心 API", "前端", "資料層", "監控"))
+    assert all(word in text for word in ("提供", "讀寫", "回報"))
+    assert len(_visual_cards(page)) == 4
+    assert len(page.findall(".//draw:line", NS)) == 3
+
+
+def test_sources_render_as_clickable_footer_links():
+    theme = THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="title-content",
+                title="研究發現",
+                bullets=["重點"],
+                sources=[
+                    {
+                        "label": "World Bank 2025",
+                        "url": "https://example.com/report?a=1&b=2",
+                    },
+                    {"label": "內部訪談"},
+                ],
+            )
+        ],
+    )
+    page = _content_root(p, theme).find(".//draw:page", NS)
+    text = "".join(page.itertext())
+    assert "來源" in text
+    assert "World Bank 2025" in text
+    assert "內部訪談" in text
+    links = page.findall(".//text:a", NS)
+    assert len(links) == 1
+    assert links[0].get(_q("xlink", "href")) == "https://example.com/report?a=1&b=2"
+
+
+def test_content_titles_use_display_font():
+    theme = THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[Slide(layout="title-content", title="研究發現", bullets=["重點"])],
+    )
+    croot = _content_root(p, theme)
+    page = croot.find(".//draw:page", NS)
+    title_p = _text_p_with(page, "研究發現")
+    props = _style_by_name(
+        croot, title_p.get(_q("text", "style-name"))
+    ).find("style:text-properties", NS)
+    assert props.get(_q("style", "font-name")) == theme.font_display
+
+
+def test_image_focus_embeds_raster_as_native_package_part(tmp_path):
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d494844520000000100000001080600000"
+        "01f15c4890000000a49444154789c6360000002000154a24f3b0000000049454e44ae426082"
+    )
+    presentation = Presentation(
+        title="圖片簡報",
+        slides=[
+            Slide(
+                layout="image-focus",
+                title="現場證據",
+                image={
+                    "src": "asset://hero",
+                    "alt": "醫療團隊合作",
+                    "caption": "改善後的跨職類協作",
+                    "credit": "內部影像",
+                },
+            )
+        ],
+    )
+    out = tmp_path / "image.odp"
+    render_odp(presentation, out, assets={"hero": png})
+
+    with zipfile.ZipFile(out) as package:
+        picture_names = [
+            name for name in package.namelist() if name.startswith("Pictures/image-")
+        ]
+        assert len(picture_names) == 1
+        assert package.read(picture_names[0]) == png
+        content = package.read("content.xml").decode("utf-8")
+        manifest = package.read("META-INF/manifest.xml").decode("utf-8")
+    assert f'xlink:href="{picture_names[0]}"' in content
+    assert "改善後的跨職類協作 · 內部影像" in content
+    assert 'manifest:media-type="image/png"' in manifest
+
+
+def test_missing_image_asset_renders_honest_placeholder():
+    presentation = Presentation(
+        title="圖片簡報",
+        slides=[
+            Slide(
+                layout="image-split",
+                title="情境",
+                bullets=["觀察一", "觀察二"],
+                image={"src": "asset://missing", "alt": "候診區現場"},
+            )
+        ],
+    )
+    xml = build_content_xml(presentation, THEMES["academic"])
+    assert "圖片待補" in xml
+    assert "候診區現場" in xml
+
+
+def test_generated_image_is_materialized_once_for_repeat_renders(tmp_path):
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d494844520000000100000001080600000"
+        "01f15c4890000000a49444154789c6360000002000154a24f3b0000000049454e44ae426082"
+    )
+
+    class Provider:
+        calls = 0
+
+        def generate(self, prompt):
+            self.calls += 1
+            return AssetBlob(png, "image/png", ".png", 1, 1)
+
+    provider = Provider()
+    assets = {}
+    presentation = Presentation(
+        title="生成圖",
+        slides=[
+            Slide(
+                layout="image-focus",
+                title="概念",
+                image={"prompt": "editorial concept", "alt": "概念圖"},
+            )
+        ],
+    )
+    render_odp(
+        presentation,
+        tmp_path / "first.odp",
+        assets=assets,
+        image_provider=provider,
+    )
+    render_odp(
+        presentation,
+        tmp_path / "second.odp",
+        assets=assets,
+        image_provider=provider,
+    )
+    assert provider.calls == 1
+    assert presentation.slides[0].image.src.startswith("asset://generated-")
+    assert len(assets) == 1
+
+
+# ===========================================================================
+# Shape-rendered layouts must not stack text on top of text.
+#
+# timeline/process/cards each drew a fixed-height title box with the detail
+# pinned at a fixed offset below it. A title that wrapped to two lines overran
+# its box and printed straight through the detail beneath — 「資料結構與演算法」
+# landing on top of 「核心基礎」 in a live run. Each frame is sized to its own
+# measured text now, and the ones after it move down to make room.
+# ===========================================================================
+
+from odforge.ir import ProcessStep, TimelineEvent  # noqa: E402
+
+
+def _page_text_frames(page):
+    """(x, y, w, h, text) for every positioned text frame carrying words."""
+    out = []
+    for frame in page.findall(".//draw:frame", NS):
+        text = "".join(frame.itertext()).strip()
+        if not text:
+            continue
+        out.append(
+            (
+                float(frame.get(_q("svg", "x")).removesuffix("cm")),
+                float(frame.get(_q("svg", "y")).removesuffix("cm")),
+                float(frame.get(_q("svg", "width")).removesuffix("cm")),
+                float(frame.get(_q("svg", "height")).removesuffix("cm")),
+                text,
+            )
+        )
+    return out
+
+
+def _overflowing_text(root, page, tol: float = 0.05):
+    """Frames whose measured text is taller than the box drawn to hold it.
+
+    Box intersection is the wrong test for this defect: the timeline's title box
+    ended at ``card_y+1.90`` and its detail began at ``card_y+2.05``, so the two
+    boxes never touched — while a two-line title spilled straight out of the
+    first and printed over the second. What overlaps is the *ink*, so what has
+    to be measured is the text against the box that is supposed to contain it.
+    """
+    spills = []
+    for frame in page.findall(".//draw:frame", NS):
+        text = "".join(frame.itertext()).strip()
+        if not text or "\n" in text:
+            continue
+        paragraph = frame.find(".//text:p", NS)
+        if paragraph is None:
+            continue
+        props = _style_by_name(
+            root, paragraph.get(_q("text", "style-name"))
+        ).find("style:text-properties", NS)
+        if props is None or props.get(_q("fo", "font-size")) is None:
+            continue
+        size_pt = float(props.get(_q("fo", "font-size")).removesuffix("pt"))
+        para_props = _style_by_name(
+            root, paragraph.get(_q("text", "style-name"))
+        ).find("style:paragraph-properties", NS)
+        line_height = 1.35
+        if para_props is not None and para_props.get(_q("fo", "line-height")):
+            line_height = (
+                float(para_props.get(_q("fo", "line-height")).removesuffix("%")) / 100
+            )
+        # LibreOffice insets the box on both sides, so the text has less room
+        # than the frame is wide; measuring against the full width would let a
+        # box that actually wraps look like it fits.
+        width = _wrap_width(
+            float(frame.get(_q("svg", "width")).removesuffix("cm"))
+        )
+        height = float(frame.get(_q("svg", "height")).removesuffix("cm"))
+        needed = estimate_height_cm(text, size_pt, width, line_height)
+        # Only wrapping causes the damage. A one-line label in a deliberately
+        # tight box (a badge digit) centres harmlessly; a title that needs a
+        # second line is the one that prints into whatever sits below it.
+        one_line = size_pt * PT_TO_CM * line_height
+        if needed > one_line * 1.5 and needed > height + tol:
+            spills.append((text[:16], round(needed, 2), round(height, 2)))
+    return spills
+
+
+_WRAPPING_TITLE = "資料結構與演算法"
+
+
+def _timeline_root(theme=None):
+    theme = theme or THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="timeline",
+                title="學習路徑",
+                events=[
+                    TimelineEvent(label="大一", title="程式設計入門", detail="C 與 Python"),
+                    TimelineEvent(label="大二", title=_WRAPPING_TITLE, detail="核心基礎"),
+                    TimelineEvent(label="大三", title="專題與實習", detail="動手做"),
+                    TimelineEvent(label="大四", title="畢業專題", detail="成果發表"),
+                ],
+            )
+        ],
+    )
+    root = _content_root(p, theme)
+    return root, root.find(".//draw:page", NS)
+
+
+def _process_root(theme=None):
+    theme = theme or THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="process",
+                title="導入流程",
+                steps=[
+                    ProcessStep(title="盤點現況", detail="釐清痛點"),
+                    ProcessStep(title=_WRAPPING_TITLE, detail="核心基礎"),
+                    ProcessStep(title="評估成效", detail="用數字驗證"),
+                ],
+            )
+        ],
+    )
+    root = _content_root(p, theme)
+    return root, root.find(".//draw:page", NS)
+
+
+def test_timeline_wrapping_title_does_not_print_through_the_detail():
+    spills = _overflowing_text(*_timeline_root())
+    assert spills == [], f"text spilling out of its box: {spills}"
+
+
+def test_process_wrapping_title_does_not_print_through_the_detail():
+    spills = _overflowing_text(*_process_root())
+    assert spills == [], f"text spilling out of its box: {spills}"
+
+
+def test_cards_wrapping_title_does_not_print_through_the_children():
+    theme = THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="cards",
+                title="標題",
+                bullets=[
+                    BulletItem(text=_WRAPPING_TITLE + "與其應用", children=["季度校準"]),
+                    BulletItem(text="流程順暢", children=["自動化"]),
+                ],
+            )
+        ],
+    )
+    root = _content_root(p, theme)
+    spills = _overflowing_text(root, root.find(".//draw:page", NS))
+    assert spills == [], f"text spilling out of its box: {spills}"
+
+
+def test_timeline_cards_stay_equal_height():
+    _, page = _timeline_root()
+    heights = {card.get(_q("svg", "height")) for card in _visual_cards(page)}
+    assert len(heights) == 1, f"a timeline row must read even: {heights}"
+
+
+def test_process_cards_are_sized_to_their_content():
+    _, page = _process_root()
+    heights = _card_heights(page)
+    assert len(set(heights)) == 1, "process cards must stay equal height"
+    assert heights[0] < 6.5, f"a two-line step should not sprawl: {heights[0]}cm"
+
+
+# ===========================================================================
+# Diagram connectors must stay visible.
+#
+# Hub edges were drawn centre-to-centre and left it to the node cards to mask
+# the overshoot. The label then sat on the midpoint inside a fixed 2.8cm chip —
+# wider than the 1.9cm gap between two cards, so the chip covered every pixel of
+# line that was not already under a card. The rendered page showed three boxes
+# and three floating words with no connectors at all.
+# ===========================================================================
+
+_HUB = {
+    "kind": "hub",
+    "nodes": [
+        {"id": "core", "title": "核心 API", "emphasis": True},
+        {"id": "web", "title": "前端介面"},
+        {"id": "data", "title": "資料層"},
+        {"id": "ops", "title": "監控告警"},
+    ],
+    "edges": [
+        {"source": "core", "target": "web", "label": "提供"},
+        {"source": "core", "target": "data", "label": "讀寫"},
+        {"source": "core", "target": "ops", "label": "回報"},
+    ],
+}
+
+
+def _hub_page():
+    p = Presentation(
+        title="t",
+        slides=[Slide(layout="diagram", title="服務架構", diagram=_HUB)],
+    )
+    return _content_root(p, THEMES["academic"]).find(".//draw:page", NS)
+
+
+def _lines(page):
+    out = []
+    for line in page.findall(".//draw:line", NS):
+        out.append(
+            tuple(
+                float(line.get(_q("svg", k)).removesuffix("cm"))
+                for k in ("x1", "y1", "x2", "y2")
+            )
+        )
+    return out
+
+
+def _node_rects(page):
+    """The four node cards: filled rects big enough to hold a node title."""
+    return [
+        (
+            float(r.get(_q("svg", "x")).removesuffix("cm")),
+            float(r.get(_q("svg", "y")).removesuffix("cm")),
+            float(r.get(_q("svg", "width")).removesuffix("cm")),
+            float(r.get(_q("svg", "height")).removesuffix("cm")),
+        )
+        for r in page.findall(".//draw:rect", NS)
+        if float(r.get(_q("svg", "width")).removesuffix("cm")) >= 4.0
+        and float(r.get(_q("svg", "height")).removesuffix("cm")) >= 2.0
+    ]
+
+
+def _inside_any(px, py, rects, tol=0.02):
+    return any(
+        x - tol <= px <= x + w + tol and y - tol <= py <= y + h + tol
+        for x, y, w, h in rects
+    )
+
+
+def test_hub_edges_are_trimmed_to_the_node_boundaries():
+    page = _hub_page()
+    rects = _node_rects(page)
+    assert len(rects) == 4
+    for x1, y1, x2, y2 in _lines(page):
+        # A trimmed edge touches the card's edge; an untrimmed one runs to the
+        # centre, which is deep inside the card.
+        for px, py in ((x1, y1), (x2, y2)):
+            deep = any(
+                x + 0.2 < px < x + w - 0.2 and y + 0.2 < py < y + h - 0.2
+                for x, y, w, h in rects
+            )
+            assert not deep, f"edge endpoint ({px}, {py}) buried inside a node"
+
+
+def test_every_hub_edge_keeps_a_visible_run_of_line():
+    page = _hub_page()
+    rects = _node_rects(page)
+    # Label chips: small filled rects that are not node cards.
+    chips = [
+        (
+            float(r.get(_q("svg", "x")).removesuffix("cm")),
+            float(r.get(_q("svg", "y")).removesuffix("cm")),
+            float(r.get(_q("svg", "width")).removesuffix("cm")),
+            float(r.get(_q("svg", "height")).removesuffix("cm")),
+        )
+        for r in page.findall(".//draw:rect", NS)
+        if float(r.get(_q("svg", "height")).removesuffix("cm")) < 1.0
+        and float(r.get(_q("svg", "width")).removesuffix("cm")) >= 0.5
+    ]
+    for x1, y1, x2, y2 in _lines(page):
+        samples = 200
+        visible = 0
+        for i in range(samples + 1):
+            t = i / samples
+            px, py = x1 + (x2 - x1) * t, y1 + (y2 - y1) * t
+            if _inside_any(px, py, rects) or _inside_any(px, py, chips):
+                continue
+            visible += 1
+        length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+        shown = length * visible / (samples + 1)
+        assert shown >= 0.5, (
+            f"edge ({x1:.2f},{y1:.2f})->({x2:.2f},{y2:.2f}) only {shown:.2f}cm "
+            "of line is actually visible"
+        )

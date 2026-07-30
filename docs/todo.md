@@ -4,7 +4,7 @@
 
 ## 現況(2026-07-11)
 
-- **v1 MVP 已完成**:CLI + MCP、三渲染器、三道驗證閘、113 tests 綠燈、demo 與佐證備妥(報名 7/8 截止)。v1 原計畫移至文末「附錄:v1 計畫存檔」。
+- **v1 MVP 已完成**:CLI + MCP、三渲染器、三道驗證閘；目前 Python 測試已擴充至 402 項綠燈，demo 與佐證備妥(報名 7/8 截止)。v1 原計畫移至文末「附錄:v1 計畫存檔」。
 - **v2 後端 Phase 11–18 已完成**(勾選對照 git log;僅 Task 11.3 重產 demo 與各人工關卡截圖未補,見 19.0):兩段式生成、design tokens、五新版型、預算閘、QA 迴圈、樣式抽取、agent skill、Web API + SSE 全數落地。
 - **前端 F1 已交付併入 main**:cockpit shell + SSE + 下載,`odforge serve` 一鍵全棧(spec 與 F1 計畫在 `docs/superpowers/`)。
 - **2026-07-11 全面實測評審完成**(真 API 實測 + 獨立設計審查 + 自動掃描,Nielsen 19/40):介面三處說謊(假成功/假綠勾/假分頁)、後端已就緒的能力前端未接線 → 修正項目全數列入新增的 **Phase 18.5**,P0–P1 應在 Phase 19 之前完成。
@@ -428,7 +428,7 @@ generate_outline(prompt, backend=None) -> Outline
 | `complete` | `{download_url, qa_report?}` | 全部完成 |
 | `error` | `{message, stage}` | 任一階段失敗 |
 
-**實作要點:** job 存記憶體 dict + 檔案落在 `%TEMP%/odforge-jobs/{id}/`(路徑白名單,絕不接受呼叫端路徑);生成跑 `asyncio` background task;SSE 用 `sse-starlette`;CORS 全開(本機工具);`odforge serve --port 8000`。
+**實作要點:** job 存記憶體 dict + 檔案落在 `%TEMP%/odforge-jobs/{id}/`(路徑白名單,絕不接受呼叫端路徑);生成跑 `asyncio` background task;SSE 用 `sse-starlette`;CORS 採明確 localhost 白名單(覆寫也拒絕萬用 origin);`odforge serve --port 8000`。
 
 - [x] **Step 1: 失敗測試(monkeypatch 兩段生成函式,不打真 API、不需 soffice):①POST /generate → 200 + job_id;②SSE 收到 outline → slide_done×N → complete 順序;③interactive job 卡在 awaiting_approval,POST outline approve 後繼續;④download 檔案存在且 mimetype 對;⑤regenerate 只重跑該頁(mock 斷言)→ Step 2: FAIL → Step 3: 實作 → Step 4: PASS → Step 5: commit `feat: web api with sse progress`**
 - [x] **Step 2(交接):寫 `odforge/docs/webapi.md`——上表 + 每個事件的完整 JSON 範例(前端設計的依據),commit `docs: web api contract`**
@@ -507,7 +507,7 @@ generate_outline(prompt, backend=None) -> Outline
 
 # 附錄:v1 MVP 計畫存檔(已完成,勿再執行)
 
-> 以下為 2026-07 初的 v1 原計畫,全部 Phase 已完成(113 tests、CLI、MCP、三渲染器、三道閘)。保留供追溯。
+> 以下為 2026-07 初的 v1 原計畫,全部 Phase 已完成(當時 113 tests、CLI、MCP、三渲染器、三道閘)。保留供追溯。
 
 **Goal:** 打造 ODForge——自然語言 → 原生 ODF(.odt/.odp/.ods)的開發者工具,含 CLI 與 MCP server,48 小時內完成競賽 MVP。
 

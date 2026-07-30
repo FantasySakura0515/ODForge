@@ -94,6 +94,17 @@ def _em_width(text: str) -> float:
     return sum(_CJK_EM if _is_cjk(ch) else _ASCII_EM for ch in text)
 
 
+def text_width_cm(text: str, size_pt: int) -> float:
+    """Width (cm) ``text`` needs on a single line at ``size_pt``.
+
+    The companion to :func:`estimate_height_cm`, under the same em-width model
+    (CJK ≈ 1.0em, else ≈ 0.55em). Used where a box must be sized *to* its text
+    rather than the text wrapped into a fixed box — a diagram's edge-label chip,
+    for instance, which at a fixed width covered the whole connector it sat on.
+    """
+    return _em_width(text) * size_pt * PT_TO_CM
+
+
 def estimate_height_cm(
     text: str, size_pt: int, width_cm: float, line_height: float = _LINE_HEIGHT
 ) -> float:
@@ -212,8 +223,8 @@ def _frame_content_height(
     """
     role = frame.role
 
-    # chart-area draws data-proportional bars that always fit their box.
-    if role == "chart-area":
+    # Shape-rendered areas fit their content inside the assigned box.
+    if role in {"chart-area", "closing-actions"}:
         return None
 
     lines = _role_lines(slide, role)

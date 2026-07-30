@@ -7,7 +7,6 @@ fits its frames. The four scenarios mirror the Task 14.2 brief.
 
 from __future__ import annotations
 
-import math
 
 import pytest
 

@@ -48,16 +48,16 @@ test("StatusNarrator 報最新填充的一頁(最大 n),而非第一個 filling"
   expect(screen.queryByText(/第\s*2\s*頁/)).toBeNull();
 });
 
-test("StatusNarrator await 但已確認大綱時,報逐頁填充而非等待確認", () => {
+test("StatusNarrator await 但已確認大綱時，報逐頁生成而非等待確認", () => {
   render(<StatusNarrator phase="await" units={[{ n: 1, role: "title", title: "a", status: "skeleton" }]} fillingPending />);
-  expect(screen.getByText(/逐頁填充/)).toBeInTheDocument();
-  expect(screen.queryByText(/等待你確認/)).toBeNull();
+  expect(screen.getByText(/逐頁生成/)).toBeInTheDocument();
+  expect(screen.queryByText(/請確認大綱/)).toBeNull();
 });
 
-test("StatusNarrator outline 但已確認大綱時(編輯後 synthetic outline),報逐頁填充而非「已產生大綱與配色」", () => {
+test("StatusNarrator outline 但已確認大綱時，報逐頁生成而非完成大綱", () => {
   render(<StatusNarrator phase="outline" units={[{ n: 1, role: "title", title: "a", status: "skeleton" }]} fillingPending />);
-  expect(screen.getByText(/逐頁填充/)).toBeInTheDocument();
-  expect(screen.queryByText(/已產生大綱與配色/)).toBeNull();
+  expect(screen.getByText(/逐頁生成/)).toBeInTheDocument();
+  expect(screen.queryByText(/大綱與配色已完成/)).toBeNull();
 });
 
 test("GateRail active 閘的 ⟳ 帶 spin 類(轉檔中會旋轉)", () => {

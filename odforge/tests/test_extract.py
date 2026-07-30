@@ -237,6 +237,21 @@ def test_missing_file_raises(tmp_path):
         extract_design(tmp_path / "does-not-exist.odp")
 
 
+def test_oversized_template_xml_is_rejected_before_unbounded_read(tmp_path, monkeypatch):
+    import odforge.extract as extract_module
+
+    out = tmp_path / "oversized.odp"
+    write_odf_package(
+        out,
+        ODP_MIMETYPE,
+        {"styles.xml": "<root>" + ("x" * 128) + "</root>"},
+    )
+    monkeypatch.setattr(extract_module, "MAX_XML_MEMBER", 64)
+
+    with pytest.raises(TemplateExtractionError, match="safety limits"):
+        extract_design(out)
+
+
 # ---------------------------------------------------------------------------
 # Security: XXE / entity-expansion hardening. extract_design parses
 # attacker-controllable ODF files ("eat an existing template"), so its XML

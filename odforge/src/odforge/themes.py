@@ -127,8 +127,38 @@ LAYOUTS: dict[str, list[Frame]] = {
         Frame("chart-area", 1.5, 3.5, 15.5, 11, 18),
         Frame("insights", 17.6, 3.5, 8.9, 11, 13),
     ],
+    "process": [
+        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("process-area", 1.5, 3.5, 25, 10.5, 16),
+    ],
+    "timeline": [
+        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("timeline-area", 1.5, 3.4, 25, 10.6, 16),
+    ],
+    "metrics": [
+        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("metrics-area", 1.5, 3.5, 25, 10.5, 16),
+    ],
+    "cards": [
+        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("cards-area", 1.5, 3.5, 25, 10.5, 16),
+    ],
+    "diagram": [
+        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("diagram-area", 1.5, 3.5, 25, 10.3, 16),
+    ],
+    "image-focus": [
+        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("image-area", 1.5, 3.25, 25, 10.45, 16),
+    ],
+    "image-split": [
+        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("image-area", 1.5, 3.35, 13.4, 10.25, 16),
+        Frame("bullets", 16.0, 3.55, 10.5, 9.8, 17),
+    ],
     "closing": [
-        Frame("message", 2, 6, 24, 3, 28, bold=True, center=True),
+        Frame("message", 2, 3.6, 24, 3, 28, bold=True, center=True),
+        Frame("closing-actions", 2, 8.2, 24, 4, 16),
     ],
 }
 

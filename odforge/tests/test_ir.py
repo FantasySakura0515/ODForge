@@ -30,6 +30,58 @@ def test_import():
     assert odforge.__version__ == "0.1.0"
 
 
+def test_image_layout_requires_safe_image_spec():
+    slide = Presentation.model_validate(
+        {
+            "type": "presentation",
+            "title": "圖片",
+            "slides": [
+                {
+                    "layout": "image-split",
+                    "title": "現場",
+                    "bullets": ["觀察"],
+                    "image": {
+                        "src": "asset://hero",
+                        "alt": "現場照片",
+                        "fit": "contain",
+                    },
+                }
+            ],
+        }
+    ).slides[0]
+    assert slide.image is not None
+    assert slide.image.src == "asset://hero"
+
+    with pytest.raises(ValidationError, match="requires an ImageSpec"):
+        Presentation.model_validate(
+            {
+                "type": "presentation",
+                "title": "缺圖",
+                "slides": [{"layout": "image-focus", "title": "x"}],
+            }
+        )
+
+
+def test_image_spec_rejects_arbitrary_local_path():
+    with pytest.raises(ValidationError, match="image src"):
+        Presentation.model_validate(
+            {
+                "type": "presentation",
+                "title": "不安全",
+                "slides": [
+                    {
+                        "layout": "image-focus",
+                        "title": "x",
+                        "image": {
+                            "src": "C:/Users/private/photo.png",
+                            "alt": "x",
+                        },
+                    }
+                ],
+            }
+        )
+
+
 def test_parse_text_doc():
     ir = parse_ir({"type": "text", "title": "測試", "blocks": [
         {"kind": "heading", "level": 1, "text": "第一章"},
@@ -353,3 +405,106 @@ def test_page_role_shares_slide_layout_vocabulary():
     role_lit = PageRole.model_fields["role"].annotation
     layout_lit = Slide.model_fields["layout"].annotation
     assert role_lit == layout_lit
+
+
+def test_visual_layouts_validate_required_content():
+    process = Slide(
+        layout="process",
+        title="執行流程",
+        steps=[
+            {"title": "盤點", "detail": "確認目標與限制"},
+            {"title": "實作", "detail": "完成核心功能"},
+        ],
+    )
+    timeline = Slide(
+        layout="timeline",
+        title="發展歷程",
+        events=[
+            {"label": "Q1", "title": "啟動"},
+            {"label": "Q2", "title": "上線"},
+        ],
+    )
+    metrics = Slide(
+        layout="metrics",
+        title="成果",
+        metrics=[
+            {"value": "42%", "label": "轉換率"},
+            {"value": "3.2x", "label": "成長"},
+        ],
+    )
+    cards = Slide(layout="cards", title="四大支柱", bullets=["策略", "產品"])
+    assert len(process.steps) == 2
+    assert len(timeline.events) == 2
+    assert len(metrics.metrics) == 2
+    assert cards.bullets == ["策略", "產品"]
+
+
+@pytest.mark.parametrize(
+    ("layout", "payload"),
+    [
+        ("process", {"steps": [{"title": "只有一步"}]}),
+        ("timeline", {"events": [{"label": "Q1", "title": "只有一項"}]}),
+        ("metrics", {"metrics": [{"value": "1", "label": "只有一項"}]}),
+        ("cards", {"bullets": ["只有一項"]}),
+    ],
+)
+def test_visual_layouts_reject_too_little_content(layout, payload):
+    with pytest.raises(ValidationError, match=layout):
+        Slide(layout=layout, title="x", **payload)
+
+
+def test_diagram_and_sources_validate():
+    slide = Slide(
+        layout="diagram",
+        title="系統架構",
+        diagram={
+            "kind": "hub",
+            "nodes": [
+                {"id": "core", "title": "核心服務", "emphasis": True},
+                {"id": "web", "title": "前端"},
+                {"id": "data", "title": "資料層"},
+            ],
+            "edges": [
+                {"source": "core", "target": "web", "label": "提供 API"},
+                {"source": "core", "target": "data", "label": "讀寫"},
+            ],
+        },
+        sources=[
+            {"label": "系統設計文件", "url": "https://example.com/design"}
+        ],
+    )
+    assert slide.diagram is not None
+    assert slide.diagram.nodes[0].id == "core"
+    assert slide.sources[0].url == "https://example.com/design"
+
+
+@pytest.mark.parametrize(
+    "diagram",
+    [
+        {
+            "nodes": [{"id": "x", "title": "A"}, {"id": "x", "title": "B"}],
+            "edges": [{"source": "x", "target": "x"}],
+        },
+        {
+            "nodes": [{"id": "a", "title": "A"}, {"id": "b", "title": "B"}],
+            "edges": [{"source": "a", "target": "missing"}],
+        },
+        {
+            "nodes": [{"id": "a", "title": "A"}, {"id": "b", "title": "B"}],
+            "edges": [{"source": "a", "target": "a"}],
+        },
+    ],
+)
+def test_diagram_rejects_invalid_graph(diagram):
+    with pytest.raises(ValidationError, match="diagram"):
+        Slide(layout="diagram", title="x", diagram=diagram)
+
+
+def test_source_rejects_non_http_url():
+    with pytest.raises(ValidationError, match="http"):
+        Slide(
+            layout="title-content",
+            title="x",
+            bullets=["a"],
+            sources=[{"label": "本機檔案", "url": "file:///tmp/a"}],
+        )

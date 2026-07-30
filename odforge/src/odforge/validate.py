@@ -28,6 +28,15 @@ from lxml import etree
 
 from .package import ODP_MIMETYPE, ODS_MIMETYPE, ODT_MIMETYPE
 from .xmlsafe import safe_fromstring
+from .zipguard import (
+    ArchiveLimitError,
+    MAX_MANIFEST_MEMBER,
+    MAX_MIMETYPE_MEMBER,
+    MAX_XML_MEMBER,
+    inspect_archive,
+    read_member,
+    read_xml_member,
+)
 
 _MANIFEST_NS = "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"
 _MANIFEST_PATH = "META-INF/manifest.xml"
@@ -72,7 +81,10 @@ def _gate_structure(path: Path) -> tuple[bool, str]:
     if not zipfile.is_zipfile(path):
         return False, f"not a valid zip file: {path.name}"
     with zipfile.ZipFile(path) as z:
-        infos = z.infolist()
+        try:
+            infos = inspect_archive(z)
+        except ArchiveLimitError as exc:
+            return False, f"archive exceeds safety limits: {exc}"
         if not infos:
             return False, "empty zip archive"
 
@@ -82,7 +94,12 @@ def _gate_structure(path: Path) -> tuple[bool, str]:
         if first.compress_type != zipfile.ZIP_STORED:
             return False, "mimetype entry is not stored (ZIP_STORED)"
 
-        mimetype = z.read("mimetype").decode("utf-8", errors="replace").strip()
+        try:
+            mimetype = read_member(
+                z, "mimetype", max_bytes=MAX_MIMETYPE_MEMBER
+            ).decode("utf-8", errors="replace").strip()
+        except ArchiveLimitError as exc:
+            return False, f"archive exceeds safety limits: {exc}"
         expected = _EXT_MIMETYPE.get(path.suffix.lower())
         if expected is None:
             return False, f"unknown extension {path.suffix!r}"
@@ -95,7 +112,11 @@ def _gate_structure(path: Path) -> tuple[bool, str]:
 
         try:
             # Untrusted input: hardened parse (no external-entity resolution).
-            root = safe_fromstring(z.read(_MANIFEST_PATH))
+            root = safe_fromstring(
+                read_xml_member(z, _MANIFEST_PATH, max_bytes=MAX_MANIFEST_MEMBER)
+            )
+        except ArchiveLimitError as exc:
+            return False, f"archive exceeds safety limits: {exc}"
         except etree.XMLSyntaxError as exc:
             return False, f"manifest is not well-formed XML: {exc}"
 
@@ -122,10 +143,18 @@ def _gate_xml(path: Path) -> tuple[bool, str]:
         return False, f"not a valid zip file: {path.name}"
     bad = []
     with zipfile.ZipFile(path) as z:
-        for name in z.namelist():
+        try:
+            infos = inspect_archive(z)
+        except ArchiveLimitError as exc:
+            return False, f"archive exceeds safety limits: {exc}"
+        for info in infos:
+            name = info.filename
             if not name.lower().endswith(".xml"):
                 continue
-            data = z.read(name)
+            try:
+                data = read_xml_member(z, name, max_bytes=MAX_XML_MEMBER)
+            except ArchiveLimitError as exc:
+                return False, f"archive exceeds safety limits: {exc}"
             if not data.strip():
                 # Mandatory document parts must carry content; other empty
                 # placeholders (e.g. Configurations2/.../current.xml) are
@@ -226,7 +255,14 @@ def validate_odf(path: Path, *, with_soffice: bool = False) -> ValidationReport:
         except Exception as exc:  # noqa: BLE001 - gates must never raise
             gates[name] = (False, f"{name} gate raised {type(exc).__name__}: {exc}")
 
-    if with_soffice:
+    if with_soffice and not all(
+        gates[gate][0] for gate in ("structure", "xml")
+    ):
+        gates["soffice"] = (
+            False,
+            "skipped because structure or xml preflight failed",
+        )
+    elif with_soffice:
         soffice = find_soffice()
         if soffice is not None:
             try:

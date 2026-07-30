@@ -23,6 +23,7 @@ _BINARY_MEDIA_TYPES = {
     ".png": "image/png",
     ".svg": "image/svg+xml",
     ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
 }
 
 
