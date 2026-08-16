@@ -16,7 +16,12 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import fitz  # PyMuPDF
+# `pymupdf`, never the legacy `fitz` alias: importing `fitz` makes PyMuPDF print
+# a deprecation notice to **stdout**. For a stdio MCP server that is not cosmetic
+# — every byte on stdout is protocol, so one stray line corrupts the stream and
+# the host sees a broken server. (It also pollutes any CLI output piped to a
+# file.) The alias is kept so the rest of the module reads unchanged.
+import pymupdf as fitz
 
 from .validate import find_soffice, run_soffice_convert
 

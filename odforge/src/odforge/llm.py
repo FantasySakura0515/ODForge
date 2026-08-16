@@ -14,13 +14,24 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Callable, Dict, Optional, Protocol, Type, Union, runtime_checkable
+import re
+from typing import (
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    Type,
+    Union,
+    runtime_checkable,
+)
 
 import json_repair
 from openai import OpenAI
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from odforge.ir import (
+    LANGUAGES,
     BulletItem,
     Outline,
     Presentation,
@@ -220,6 +231,49 @@ OUTLINE_SYSTEM_PROMPT += OUTLINE_VISUAL_GUIDANCE
 SLIDES_SYSTEM_PROMPT += SLIDES_VISUAL_GUIDANCE
 
 
+# ---------------------------------------------------------------------------
+# Output language
+#
+# The three system prompts above all say「一律繁體中文」, and they stay that way
+# byte-for-byte: zh-TW is the default and by far the common case. A non-default
+# language is expressed as an OVERRIDE block appended after that rule, which
+# says outright that it supersedes it. Editing the original line per language
+# would fork three prompts into nine; an explicit, later, more specific
+# instruction is both shorter and what models actually follow.
+# ---------------------------------------------------------------------------
+
+_LANGUAGE_OVERRIDES: Dict[str, str] = {
+    "en": """
+
+【語言(覆寫上面的語言規則)】
+- 這一份文件的輸出語言是 English:所有讀者看得到的文字(title、subtitle、
+  bullets、left/right、fact、quote、attribution、kicker、圖表標籤、
+  notes)一律以英文撰寫,不得夾雜中文。
+- 需求以中文寫成時由你翻譯成自然、專業的英文;專有名詞沿用需求中的原文寫法。
+- 標點使用英文半形標點,句首大寫,標題採 Title Case 或 Sentence case 擇一並全份一致。
+""",
+    "bilingual": """
+
+【語言(覆寫上面的語言規則)】
+- 這一份文件採「中英對照」:每一則讀者看得到的文字先寫繁體中文,再以半形括號
+  補上英文,格式為「中文（English）」。
+- notes(講者備忘稿)只寫繁體中文,不必對照——備忘稿加倍長只會讓講者更難用。
+- 對照會讓每一行大約加長一倍:請主動把句子縮短,寧可少一條重點,
+  也不要讓一頁塞不下(超載的頁面會被系統自動刪減內容)。
+""",
+}
+
+
+def language_label(language: str) -> str:
+    """Human-readable name of an output language (falls back to the code)."""
+    return LANGUAGES.get(language, language)
+
+
+def system_prompt_for(base: str, language: str) -> str:
+    """``base`` with the output-language override appended (no-op for zh-TW)."""
+    return base + _LANGUAGE_OVERRIDES.get(language, "")
+
+
 DISCOVERY_TOOL_NAME = "emit_discovery_questions"
 
 DISCOVERY_SYSTEM_PROMPT = """\
@@ -230,8 +284,11 @@ DISCOVERY_SYSTEM_PROMPT = """\
 - 先用一句繁體中文 summary 重述你已經理解的需求。
 - known_context 只列出使用者已明確提供的事實，不得自行補完。
 - 提出 2 到 5 個高資訊量問題；一般情況以 3 到 5 題為佳。
-- 優先釐清：受眾要做的決策、核心訊息、具體內容／證據、目前進度、時程、
+- 優先釐清：受眾要做的決策、核心訊息、具體內容／證據、目前進度、
   風險、可用圖片或數據。依題目動態選擇，不要每次照同一份問卷。
+- 簡報是立刻生成的，交期不存在：絕對不要詢問這份簡報何時要用、截稿日、
+  可用製作時間或緊急程度，那些答案不會改變任何一頁內容。
+  (簡報「內容裡」要講的專案時程、里程碑或排程仍可詢問。)
 - 提案型需求若尚未說明「希望聽眾做什麼決定」，必須優先詢問決策目標。
 - 若需求明確要求說明「系統架構」，但沒有提供實際技術棧、模組或資料流，
   必須詢問其中一項具體架構資訊，不得只問架構完成到哪個階段。
@@ -254,6 +311,14 @@ DISCOVERY_SYSTEM_PROMPT = """\
 只透過 emit_discovery_questions 工具輸出，不要輸出一般文字。"""
 
 
+# The UI supplies its own free-text field, so a catch-all "other" option is
+# dead weight — but only when the option IS the catch-all: bare 其他/其它,
+# optionally trailed by punctuation or a parenthetical like 其他（請說明）.
+# A real answer that merely *starts* with 其他 ("其他部門主導") must survive,
+# or a valid plan can be rejected for having too few options.
+_CATCH_ALL_OPTION = re.compile(r"(?:其他|其它)(?:[\s（(【\[:：,，、。．].*)?$")
+
+
 class DiscoveryQuestion(BaseModel):
     """One high-information question asked before presentation generation."""
 
@@ -268,7 +333,7 @@ class DiscoveryQuestion(BaseModel):
         cleaned: list[str] = []
         for value in values:
             option = value.strip()
-            if not option or option.startswith(("其他", "其它")):
+            if not option or _CATCH_ALL_OPTION.fullmatch(option):
                 continue
             if option not in cleaned:
                 cleaned.append(option)
@@ -286,19 +351,100 @@ class DiscoveryPlan(BaseModel):
     completeness: int = Field(ge=0, le=100)
 
 
+# Generation is immediate, so this deck has no delivery date: asking when it is
+# needed, when it is due, or how urgent it is cannot change a single page — it
+# only spends one of the user's few answers. A timeline the deck must *describe*
+# (專案時程、里程碑、排程) is content and stays; so does how long the speaker has
+# on stage, which sets the page count. Hence subject + timing, not timing alone.
+_DELIVERY_SUBJECTS = ("簡報", "投影片", "這份", "成品", "檔案", "報告", "文件")
+_DELIVERY_TIMING = (
+    "何時",
+    "什麼時候",
+    "甚麼時候",
+    "哪一天",
+    "期限",
+    "截稿",
+    "截止",
+    "交期",
+    "交付",
+    "deadline",
+    "時間點",
+)
+
+# Bare 緊急 is not enough to condemn a question: emergency response (緊急應變、
+# 緊急救護) is a realistic deck *topic*, and "簡報要涵蓋哪些緊急應變流程？" is a
+# content question we must keep. Only urgency-about-the-deck phrasing — how
+# urgent the request itself is — marks a delivery question.
+_DELIVERY_URGENCY = ("緊急程度", "多緊急", "有多急", "急著要", "趕著要")
+
+# Subject + timing can still collide with content: "這份系統的交付時程規劃" and
+# "報告涵蓋的期間到何時" ask about the timeline the deck *describes*, not when
+# the deck is due. These markers flag material the slides must cover, so any
+# question carrying one is treated as a content question and kept.
+_CONTENT_MARKERS = (
+    "時程規劃",
+    "里程碑",
+    "排程",
+    "涵蓋",
+    "流程",
+    "應變",
+    "進度",
+    "階段",
+)
+
+
+def _asks_delivery_deadline(question: DiscoveryQuestion) -> bool:
+    """Is this a question about *this deck's* due date or urgency?"""
+    text = question.question
+    if any(marker in text for marker in _CONTENT_MARKERS):
+        return False
+    if any(phrase in text for phrase in _DELIVERY_URGENCY):
+        return True
+    return any(subject in text for subject in _DELIVERY_SUBJECTS) and any(
+        timing in text for timing in _DELIVERY_TIMING
+    )
+
+
+def _without_delivery_deadline_questions(plan: DiscoveryPlan) -> DiscoveryPlan:
+    """Drop delivery-deadline questions, keeping the plan valid.
+
+    Two questions is the schema's floor, but the floor is no reason to keep
+    every delivery question: drop as many as possible, then re-add dropped
+    ones in their original order only until the floor is met again. One
+    wasted question beats a failed interview — but never waste more than the
+    floor demands.
+    """
+    keep = [not _asks_delivery_deadline(q) for q in plan.questions]
+    missing = 2 - sum(keep)
+    for index, kept in enumerate(keep):
+        if missing <= 0:
+            break
+        if not kept:
+            keep[index] = True
+            missing -= 1
+    if all(keep):
+        return plan
+    questions = [q for q, kept in zip(plan.questions, keep, strict=True) if kept]
+    return plan.model_copy(update={"questions": questions})
+
+
 @runtime_checkable
 class LLMBackend(Protocol):
     """A source that turns a prompt into a validated Document IR."""
 
-    def generate_ir(self, prompt: str, doc_type: str) -> Document:  # pragma: no cover
+    def generate_ir(
+        self, prompt: str, doc_type: str, language: str = "zh-TW"
+    ) -> Document:  # pragma: no cover
         ...
 
     def generate_outline(
-        self, prompt: str, pages: int | None = None
+        self, prompt: str, pages: int | None = None, language: str = "zh-TW"
     ) -> Outline:  # pragma: no cover
         ...
 
-    def generate_slides(self, outline: Outline) -> Presentation:  # pragma: no cover
+    def generate_slides(
+        self, outline: Outline, dropped: Optional[List[DroppedContent]] = None
+    ) -> Presentation:  # pragma: no cover
         ...
 
     def discover_questions(
@@ -449,7 +595,7 @@ def _slides_structure_errors(pres: Presentation, outline: Outline) -> Optional[s
             f"投影片張數不符:大綱共 {len(expected)} 頁,但收到 {len(got)} 張——"
             "必須逐頁對齊,不得增刪。"
         )
-    for i, (slide, role) in enumerate(zip(got, expected), start=1):
+    for i, (slide, role) in enumerate(zip(got, expected, strict=False), start=1):
         if slide.layout != role:
             problems.append(
                 f"第 {i} 頁版型不符:大綱要求 layout「{role}」,但收到「{slide.layout}」。"
@@ -486,19 +632,40 @@ def _budget_feedback(
     return header + "\n" + "\n".join(lines)
 
 
-def _degrade_slide(slide, theme: Theme) -> None:
+class DroppedContent(BaseModel):
+    """Content the layout budget forced off a page, verbatim.
+
+    A note saying 「部分要點因版面限制省略」 tells the user that *something* was
+    lost without telling them *what* — which, for their purposes, is the same as
+    losing it silently. This carries the removed lines back to the caller so the
+    CLI can print them and the web console can show them, and so "information is
+    never lost without saying so" becomes a property that can be tested rather
+    than hoped for.
+    """
+
+    slide_no: int
+    title: str
+    items: List[str] = Field(default_factory=list)
+
+
+def _degrade_slide(slide, theme: Theme, slide_no: int = 0) -> Optional[DroppedContent]:
     """Truncate an over-budget slide's bullets in place until it fits.
 
-    Algorithm — repeat while :func:`check_budget` still complains:
+    Last resort only: the caller has already asked the model to rewrite the page
+    shorter (see ``_budget_feedback``), and this runs when that did not work. The
+    order of sacrifice goes from least to most costly:
+
       1. If any bullet is a ``BulletItem`` carrying children, drop the **last**
          child of the last such bullet (children are finer-grained than items).
       2. Otherwise, if more than one bullet remains, drop the last bullet.
       3. Otherwise stop (always keep at least one bullet).
-    If (and only if) anything was dropped, append an honesty note to ``notes``.
-    A slide that overruns on a non-bullet frame (e.g. a very long title) has no
-    bullets to shed — it is left as-is; budget never raises.
+
+    Everything removed is both returned to the caller and named in ``notes``, so
+    it survives into the .odp itself. A slide that overruns on a non-bullet frame
+    (e.g. a very long title) has no bullets to shed — it is left as-is, and the
+    budget never raises.
     """
-    dropped = False
+    removed: List[str] = []
     while check_budget(slide, theme):
         child_idx: Optional[int] = None
         for i in range(len(slide.bullets) - 1, -1, -1):
@@ -508,16 +675,22 @@ def _degrade_slide(slide, theme: Theme) -> None:
                 break
         if child_idx is not None:
             item = slide.bullets[child_idx]
-            item.children = list(item.children)[:-1]
-            dropped = True
+            children = list(item.children)
+            removed.append(children[-1])
+            item.children = children[:-1]
         elif len(slide.bullets) > 1:
-            slide.bullets = list(slide.bullets)[:-1]
-            dropped = True
+            bullets = list(slide.bullets)
+            last = bullets[-1]
+            removed.append(last if isinstance(last, str) else last.text)
+            slide.bullets = bullets[:-1]
         else:
             break
-    if dropped:
-        note = "(部分要點因版面限制省略)"
-        slide.notes = f"{slide.notes}\n{note}" if slide.notes else note
+    if not removed:
+        return None
+    removed.reverse()  # back into the order they appeared on the page
+    note = "(因版面限制省略:" + "、".join(removed) + ")"
+    slide.notes = f"{slide.notes}\n{note}" if slide.notes else note
+    return DroppedContent(slide_no=slide_no, title=slide.title, items=removed)
 
 
 class OpenAICompatBackend:
@@ -619,7 +792,9 @@ class OpenAICompatBackend:
         assert last_exc is not None
         raise last_exc
 
-    def generate_ir(self, prompt: str, doc_type: str) -> Document:
+    def generate_ir(
+        self, prompt: str, doc_type: str, language: str = "zh-TW"
+    ) -> Document:
         ir_cls = DOC_TYPES.get(doc_type)
         if ir_cls is None:
             raise ValueError(
@@ -642,8 +817,13 @@ class OpenAICompatBackend:
         # First attempt, then exactly one retry on failure.
         error_summary: Optional[str] = None
         last_exc: Optional[Exception] = None
-        for attempt in range(2):
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for _attempt in range(2):
+            messages = [
+                {
+                    "role": "system",
+                    "content": system_prompt_for(SYSTEM_PROMPT, language),
+                }
+            ]
             user_content = prompt
             if error_summary is not None:
                 user_content = (
@@ -697,7 +877,9 @@ class OpenAICompatBackend:
         assert last_exc is not None
         raise last_exc
 
-    def generate_outline(self, prompt: str, pages: int | None = None) -> Outline:
+    def generate_outline(
+        self, prompt: str, pages: int | None = None, language: str = "zh-TW"
+    ) -> Outline:
         """Stage-1 of the pipeline: design + page-role outline in one call.
 
         Forces a function call against ``Outline.model_json_schema()`` (same
@@ -714,7 +896,9 @@ class OpenAICompatBackend:
 
         ``pages`` (when given) folds a target page-count instruction into the
         user prompt (「目標頁數約 N 頁…」); it is a soft target, not a schema
-        constraint.
+        constraint. ``language`` picks the deck's output language and is
+        re-attached to the returned outline, so stage 2 inherits it without the
+        caller having to remember.
         """
         base_prompt = prompt
         if pages is not None:
@@ -739,7 +923,12 @@ class OpenAICompatBackend:
         last_exc: Optional[Exception] = None
         for attempt in range(2):
             is_last = attempt == 1
-            messages = [{"role": "system", "content": OUTLINE_SYSTEM_PROMPT}]
+            messages = [
+                {
+                    "role": "system",
+                    "content": system_prompt_for(OUTLINE_SYSTEM_PROMPT, language),
+                }
+            ]
             user_content = base_prompt
             if error_summary is not None:
                 user_content = (
@@ -774,7 +963,7 @@ class OpenAICompatBackend:
 
             try:
                 return Outline.model_validate(data).model_copy(
-                    update={"source_prompt": prompt}
+                    update={"source_prompt": prompt, "language": language}
                 )
             except ValidationError as exc:
                 last_exc = exc
@@ -787,7 +976,7 @@ class OpenAICompatBackend:
                         stripped = dict(data)
                         stripped.pop("design", None)
                         return Outline.model_validate(stripped).model_copy(
-                            update={"source_prompt": prompt}
+                            update={"source_prompt": prompt, "language": language}
                         )
                     # First design failure: feed the error back, retry once.
                     continue
@@ -850,7 +1039,9 @@ class OpenAICompatBackend:
             return None, RuntimeError(structural)
         return pres, None
 
-    def generate_slides(self, outline: Outline) -> Presentation:
+    def generate_slides(
+        self, outline: Outline, dropped: Optional[List[DroppedContent]] = None
+    ) -> Presentation:
         """Stage-2 of the pipeline: fill every outline page into a full deck.
 
         ONE LLM call fills all pages against ``Presentation.model_json_schema()``
@@ -868,7 +1059,11 @@ class OpenAICompatBackend:
           page is still over budget afterwards it is **auto-degraded**
           (:func:`_degrade_slide` truncates its bullets with an honesty note) —
           budget never raises.
+
+        The deck's output language rides along on ``outline.language`` (set by
+        stage 1 / the caller), so no call site has to pass it twice.
         """
+        slides_system = system_prompt_for(SLIDES_SYSTEM_PROMPT, outline.language)
         schema = Presentation.model_json_schema()
         tools = [
             {
@@ -889,7 +1084,7 @@ class OpenAICompatBackend:
         presentation: Optional[Presentation] = None
         for _attempt in range(2):
             messages = [
-                {"role": "system", "content": SLIDES_SYSTEM_PROMPT},
+                {"role": "system", "content": slides_system},
                 {
                     "role": "user",
                     "content": _with_error_feedback(base_user, error_summary),
@@ -912,7 +1107,7 @@ class OpenAICompatBackend:
             return presentation
 
         messages = [
-            {"role": "system", "content": SLIDES_SYSTEM_PROMPT},
+            {"role": "system", "content": slides_system},
             {
                 "role": "user",
                 "content": base_user
@@ -928,7 +1123,9 @@ class OpenAICompatBackend:
 
         theme = resolve_design(presentation)
         for n, _msgs in _budget_overloads(presentation, theme):
-            _degrade_slide(presentation.slides[n - 1], theme)
+            record = _degrade_slide(presentation.slides[n - 1], theme, slide_no=n)
+            if record is not None and dropped is not None:
+                dropped.append(record)
         return presentation
 
 
@@ -1002,10 +1199,13 @@ def get_backend(name: Optional[str] = None) -> LLMBackend:
 
 
 def generate_ir(
-    prompt: str, doc_type: str, backend: Optional[str] = None
+    prompt: str,
+    doc_type: str,
+    backend: Optional[str] = None,
+    language: str = "zh-TW",
 ) -> Document:
     """Facade: resolve a backend and generate a validated Document IR."""
-    return get_backend(backend).generate_ir(prompt, doc_type)
+    return get_backend(backend).generate_ir(prompt, doc_type, language)
 
 
 def generate_discovery_questions(
@@ -1015,22 +1215,48 @@ def generate_discovery_questions(
     context: str = "",
     progress: Optional[Callable[[str], None]] = None,
 ) -> DiscoveryPlan:
-    """Facade: ask only the missing, high-value questions for a short prompt."""
+    """Facade: ask only the missing, high-value questions for a short prompt.
+
+    Delivery-deadline questions are dropped on the way out (see
+    :func:`_without_delivery_deadline_questions`) — the prompt forbids them, this
+    is the net for when the model asks anyway.
+    """
     resolved = get_backend(backend)
     if progress is None:
-        return resolved.discover_questions(prompt, context=context)
-    return resolved.discover_questions(prompt, context=context, progress=progress)
+        plan = resolved.discover_questions(prompt, context=context)
+    else:
+        plan = resolved.discover_questions(
+            prompt, context=context, progress=progress
+        )
+    return _without_delivery_deadline_questions(plan)
 
 
 def generate_outline(
-    prompt: str, backend: Optional[str] = None, pages: int | None = None
+    prompt: str,
+    backend: Optional[str] = None,
+    pages: int | None = None,
+    language: str = "zh-TW",
 ) -> Outline:
-    """Facade: resolve a backend and generate a stage-1 design + outline."""
-    return get_backend(backend).generate_outline(prompt, pages=pages)
+    """Facade: resolve a backend and generate a stage-1 design + outline.
+
+    The chosen ``language`` is stamped onto the returned outline, so stage 2
+    (``generate_slides``) inherits it without a second parameter.
+    """
+    return get_backend(backend).generate_outline(
+        prompt, pages=pages, language=language
+    )
 
 
 def generate_slides(
-    outline: Outline, backend: Optional[str] = None
+    outline: Outline,
+    backend: Optional[str] = None,
+    dropped: Optional[List[DroppedContent]] = None,
 ) -> Presentation:
-    """Facade: resolve a backend and fill a stage-1 outline into a full deck."""
-    return get_backend(backend).generate_slides(outline)
+    """Facade: resolve a backend and fill a stage-1 outline into a full deck.
+
+    Pass a list as ``dropped`` to be told what the layout budget had to remove.
+    Callers that ignore it keep the old behaviour (the loss is still named in the
+    slide's speaker notes) — but every user-facing caller should pass one:
+    content vanishing with no visible trace is the failure this exists to prevent.
+    """
+    return get_backend(backend).generate_slides(outline, dropped)

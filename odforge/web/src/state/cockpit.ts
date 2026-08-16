@@ -1,10 +1,11 @@
-import type { CockpitAction, CockpitState, DocType, Unit } from "./types";
+import type { CockpitAction, CockpitState, DocType, Unit, UnitQa } from "./types";
 
 export function initialState(docType: DocType = "odp"): CockpitState {
   return {
     phase: "empty", docType, units: [],
     gates: { zip: "pending", xml: "pending", libreoffice: "pending", design: "pending" },
-    qaRounds: [], regenTick: 0,
+    gateNotes: {},
+    qaRounds: [], dropped: [], regenTick: 0,
   };
 }
 
@@ -39,23 +40,63 @@ export function cockpitReducer(state: CockpitState, event: CockpitAction): Cockp
     }
     case "preview_ready": {
       const { n, url } = event.data;
+      // url === null:這一頁算不出縮圖(例如重生時沒有 LibreOffice)。清掉舊圖,
+      // 不要讓上一版的畫面頂著新頁面的標題繼續掛在牆上。
+      if (url === null) {
+        return { ...state, units: withUnit(state.units, n, { previewUrl: undefined }) };
+      }
       return {
         ...state, phase: "generating",
         units: withUnit(state.units, n, { previewUrl: url, status: "preview" }),
       };
     }
-    case "gate_result":
-      return { ...state, gates: { ...state.gates, [event.data.gate]: event.data.status } };
+    case "gate_result": {
+      const { gate, status, note } = event.data;
+      return {
+        ...state,
+        gates: { ...state.gates, [gate]: status },
+        // 有帶原因就記著(沒帶就清掉舊的),讓 GateRail 說得出「為什麼」。
+        gateNotes: { ...state.gateNotes, [gate]: note },
+      };
+    }
+    case "content_degraded":
+      return { ...state, dropped: [...state.dropped, ...event.data.items] };
     case "qa_round": {
-      let units = state.units;
-      for (const f of event.data.findings) if (f.severity === "error") units = withUnit(units, f.slide_no, { status: "flagged" });
-      return { ...state, phase: "qa", units, qaRounds: [...state.qaRounds, event.data], gates: { ...state.gates, design: "active" } };
+      // 每一輪都是對「目前這份成品」的完整判定,所以整批重算,不在上一輪的結果
+      // 上疊加。第 1 輪標紅、第 2 輪修好的頁面必須真的變回乾淨——沿用舊集合會讓
+      // 已修復的頁面永遠掛著紅記號。
+      const worst = new Map<number, UnitQa>();
+      for (const f of event.data.findings) {
+        const level: UnitQa = f.severity === "error" ? "flagged" : "warned";
+        if (level === "flagged" || worst.get(f.slide_no) !== "flagged") {
+          worst.set(f.slide_no, level);
+        }
+      }
+      return {
+        ...state,
+        phase: "qa",
+        units: state.units.map((u) => ({ ...u, qa: worst.get(u.n) ?? "clear" })),
+        qaRounds: [...state.qaRounds, event.data],
+        gates: { ...state.gates, design: "active" },
+      };
     }
     case "complete":
       // gates 保持 gate_result 累積的真值,不再無條件塗綠。
+      // 生成維度收斂成 done;QA 維度原封不動 —— 「生成完了」不代表「品檢過了」,
+      // 舊版把兩者塞進同一欄位,於是 complete 一到就把 design-failed 的頁面
+      // 一起洗成 done,使用者再也看不到哪一頁有問題。
       return {
         ...state, phase: "complete", downloadUrl: event.data.download_url,
-        units: state.units.map((u) => ({ ...u, status: "done" })),
+        units: state.units.map((u) => ({ ...u, status: "done" as const })),
+      };
+    case "qa_invalidated":
+      // 成品換版了,上一輪品檢的對象已經不存在。unit.qa 與 qaRounds 一起清空——
+      // 只清 unit.qa 會留下一份 findings 列表,頁碼指向已經被換掉的內容,讀起來
+      // 像是「這一頁還有這些問題」。design 閘由 gate_result{unknown} 表達。
+      return {
+        ...state,
+        units: state.units.map((u) => ({ ...u, qa: undefined })),
+        qaRounds: [],
       };
     case "error":
       // gate 失敗由 gate_result{fail} 表達;error 只轉 phase 與存訊息,不猜測性動 gates。
@@ -68,13 +109,21 @@ export function cockpitReducer(state: CockpitState, event: CockpitAction): Cockp
       const { n, slide, preview_url } = event.data;
       const cur = state.units.find((u) => u.n === n);
       const tick = state.regenTick + 1;
-      const base = preview_url ?? cur?.previewUrl;
-      const previewUrl = base ? cacheBust(base, tick) : cur?.previewUrl;
+      // preview_url === null 代表這一輪算不出圖。以前這裡會退回 cur.previewUrl,
+      // 於是新內容配上一版的縮圖——看起來完全正常,而且是錯的。
+      const previewUrl = preview_url ? cacheBust(preview_url, tick) : undefined;
       const title = (slide as { title?: string } | null)?.title ?? cur?.title ?? "";
       const status = cur?.regenPrev === "done" ? "done" : "preview";
       return {
         ...state, regenTick: tick,
-        units: withUnit(state.units, n, { ir: slide, title, previewUrl, status, regenPrev: undefined }),
+        // 這一份成品已經不是被品檢過的那一份(後端同步把 job.qa_report 清掉、
+        // design 閘改成 unknown)。前端跟著整批作廢,才不會留下綠勾與舊 findings。
+        units: state.units.map((u) => (
+          u.n === n
+            ? { ...u, ir: slide, title, previewUrl, status, regenPrev: undefined, qa: undefined }
+            : { ...u, qa: undefined }
+        )),
+        qaRounds: [],
       };
     }
     case "regen_error": {

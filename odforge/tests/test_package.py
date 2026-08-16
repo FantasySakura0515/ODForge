@@ -1,6 +1,15 @@
 import zipfile
+
 import lxml.etree as etree
-from odforge.package import write_odf_package, build_manifest, ODP_MIMETYPE, ODT_MIMETYPE, ODS_MIMETYPE
+
+from odforge.package import (
+    ODP_MIMETYPE,
+    ODS_MIMETYPE,
+    ODT_MIMETYPE,
+    build_manifest,
+    write_odf_package,
+)
+
 
 def test_mimetype_is_first_and_stored(tmp_path):
     out = write_odf_package(tmp_path / "t.odp", ODP_MIMETYPE,
@@ -65,3 +74,18 @@ def test_binary_media_type_by_extension():
     assert 'manifest:full-path="Pictures/p.png" manifest:media-type="image/png"' in m
     assert 'manifest:full-path="Pictures/s.svg" manifest:media-type="image/svg+xml"' in m
     assert 'manifest:full-path="Pictures/j.jpg" manifest:media-type="image/jpeg"' in m
+
+
+def test_rewrite_replaces_atomically_never_leaves_a_truncated_zip(tmp_path):
+    # QA repair / 重生 rewrite the same path a download may be streaming; the
+    # old truncate-in-place write handed that reader a half-written archive.
+    # The write must land in a temp sibling and os.replace into place, so the
+    # destination is at every instant either the old zip or the new one.
+    out = tmp_path / "t.odp"
+    write_odf_package(out, ODP_MIMETYPE, {"content.xml": "<old/>"})
+    write_odf_package(out, ODP_MIMETYPE, {"content.xml": "<new/>"})
+    with zipfile.ZipFile(out) as z:
+        assert z.read("content.xml") == b"<new/>"
+        assert z.testzip() is None
+    # No .part temp residue after either write.
+    assert [p.name for p in tmp_path.iterdir()] == ["t.odp"]

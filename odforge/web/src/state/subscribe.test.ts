@@ -5,11 +5,13 @@ import type { SseEvent } from "./types";
 class FakeEventSource {
   listeners: Record<string, (e: { data: string }) => void> = {};
   onerror: ((e: unknown) => void) | null = null;
+  onopen: (() => void) | null = null;
   closed = false;
   constructor(public url: string) {}
   addEventListener(type: string, cb: (e: { data: string }) => void) { this.listeners[type] = cb; }
   close() { this.closed = true; }
   emit(type: string, data: unknown) { this.listeners[type]?.({ data: JSON.stringify(data) }); }
+  open() { this.onopen?.(); }
   fail() { this.onerror?.({}); }
 }
 
@@ -61,4 +63,16 @@ test("subscribeJob 傳輸層錯誤(如 404)回呼 onError", () => {
   subscribeJob("j1", () => {}, Ctor, onError);
   src.fail();
   expect(onError).toHaveBeenCalledTimes(1);
+});
+
+test("subscribeJob 連線每次(重)開啟都回呼 onOpen — 重連重播前重設節流器用", () => {
+  let src!: FakeEventSource;
+  const Ctor = fakeEventSourceCtor((source) => { src = source; });
+  const onOpen = vi.fn();
+  subscribeJob("j1", () => {}, Ctor, undefined, onOpen);
+  src.open();
+  expect(onOpen).toHaveBeenCalledTimes(1);
+  // 自動重連成功 → 同一實例再次 onopen。
+  src.open();
+  expect(onOpen).toHaveBeenCalledTimes(2);
 });

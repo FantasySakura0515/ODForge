@@ -158,7 +158,12 @@ LAYOUTS: dict[str, list[Frame]] = {
     ],
     "closing": [
         Frame("message", 2, 3.6, 24, 3, 28, bold=True, center=True),
-        Frame("closing-actions", 2, 8.2, 24, 4, 16),
+        # 5.8cm, not 4: the action cards are sized to their text, and four-across
+        # cards are narrow enough that a real action wraps to three or four lines.
+        # A closing page carries no footer furniture, so the room below is free —
+        # the row stays centred in this area, and capping it at 4cm was what made
+        # a long action clamp and print onto the inverted background.
+        Frame("closing-actions", 2, 8.2, 24, 5.8, 16),
     ],
 }
 
@@ -283,10 +288,104 @@ THEMES: dict[str, Theme] = {
         font_display="Noto Sans TC",
         font_body="Noto Sans TC",
     ),
+    # 學院紅 + 暖白: crimson on a warm near-white, serif display; 校慶/人文/評鑑。
+    "crimson": _preset(
+        bg="#FCF8F7",
+        surface="#F1E5E3",
+        text="#2A1D1C",
+        muted="#6B5651",
+        accent="#A3212F",
+        font_display="Noto Serif TC",
+        font_body="Noto Sans TC",
+    ),
+    # 石墨灰 + 冷藍: neutral graphite ground, calm blue accent; 工程/資安/夜間簡報。
+    "slate": _preset(
+        bg="#14181D",
+        surface="#212832",
+        text="#E8EDF4",
+        muted="#9CA9B8",
+        accent="#7FB2FF",
+        font_display="Noto Sans TC",
+        font_body="Noto Sans TC",
+    ),
+    # 墨金: near-black ground with a restrained gold; 頒獎/成果發表/典禮。
+    "gold": _preset(
+        bg="#12100C",
+        surface="#221E17",
+        text="#F3EEE2",
+        muted="#B5A88E",
+        accent="#D9A441",
+        font_display="Noto Serif TC",
+        font_body="Noto Sans TC",
+    ),
+    # 天青: cool white with a mid-blue accent; 教學/說明會的安全選擇。
+    "sky": _preset(
+        bg="#F7FAFD",
+        surface="#E6EEF7",
+        text="#152230",
+        muted="#526375",
+        accent="#0B6BA8",
+        font_display="Noto Sans TC",
+        font_body="Noto Sans TC",
+    ),
+    # 梅紫 + 米白: light plum ground, magenta-leaning accent; 藝文/設計提案。
+    "plum": _preset(
+        bg="#FBF7FB",
+        surface="#F0E6F2",
+        text="#291D2C",
+        muted="#655A6B",
+        accent="#8A2A86",
+        font_display="Noto Serif TC",
+        font_body="Noto Sans TC",
+    ),
+    # 陶土橘 + 米色: earthy clay on warm paper; 永續/地方創生/社區報告。
+    "clay": _preset(
+        bg="#FAF6F1",
+        surface="#EDE3D8",
+        text="#2C241C",
+        muted="#6B5C4C",
+        accent="#B4541F",
+        font_display="Noto Sans TC",
+        font_body="Noto Sans TC",
+    ),
+}
+
+# 內建主題的顯示名稱。前端的範本庫與 CLI 的 --theme 說明共用同一份,新增一組
+# 主題就是改 THEMES 與這裡兩處,不必再去追前端寫死的中文字串。
+THEME_LABELS: dict[str, str] = {
+    "academic": "學術藍",
+    "minimal": "暖灰橘",
+    "teal": "企業青",
+    "forest": "森林綠",
+    "navy": "海軍藍",
+    "dark": "深夜藍",
+    "violet": "午夜紫",
+    "crimson": "學院紅",
+    "slate": "石墨灰",
+    "gold": "墨金",
+    "sky": "天青",
+    "plum": "梅紫",
+    "clay": "陶土橘",
 }
 
 
-def resolve_design(p: "Presentation") -> Theme:
+def theme_scale(theme: Theme) -> str:
+    """Which :data:`SCALES` tier a resolved theme's point sizes came from.
+
+    Used when a built-in preset is presented as an editable template: the
+    template gallery hands back a ``DesignSpec``, and a spec needs the tier name
+    rather than the four resolved sizes. Falls back to ``"standard"`` for a Theme
+    whose sizes were not taken from a tier (only reachable via a hand-built
+    Theme in tests).
+    """
+    sizes = (theme.display_pt, theme.h1_pt, theme.body_pt, theme.caption_pt)
+    for name, tier in SCALES.items():
+        if sizes == tier:
+            return name
+    return "standard"
+
+
+def resolve_design(p: Presentation) -> Theme:
     """Resolve a presentation's visual tokens into the single :class:`Theme`
     the renderer consumes.
 

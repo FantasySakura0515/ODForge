@@ -101,6 +101,24 @@ test("成對到達的最後一頁:complete 終態 drain 排空佇列不受去重
   expect(ns(seen.slice(0, 3))).toEqual([1, 2, 3]);
 });
 
+test("reset(新連線開啟)清空去重與佇列:重播的同 n slide_done 能再次流進 reducer", () => {
+  const seen: SseEvent[] = [];
+  const t = createThrottledDispatch((e) => seen.push(e), { intervalMs: 100 });
+  // 首播:n1/n2 通過,別名丟棄。
+  t.push(sd(1)); t.push(ud(1));
+  t.push(sd(2)); t.push(ud(2));
+  vi.advanceTimersByTime(300);
+  expect(ns(seen)).toEqual([1, 2]);
+
+  // 斷線自動重連 → 後端從 cursor 0 重播。reset 前 seenUnitN 仍記著 1/2,
+  // 重播會被當別名重複吞掉 → 牆停在 skeleton。reset 後重播完整放行。
+  t.reset();
+  t.push(sd(1)); t.push(ud(1));
+  t.push(sd(2)); t.push(ud(2));
+  vi.advanceTimersByTime(300);
+  expect(ns(seen)).toEqual([1, 2, 1, 2]);
+});
+
 test("cancel 清掉待播佇列與計時器,之後不再 dispatch", () => {
   const seen: SseEvent[] = [];
   const t = createThrottledDispatch((e) => seen.push(e), { intervalMs: 100 });

@@ -28,11 +28,13 @@ genuinely unreadable / corrupt file raises (:class:`TemplateExtractionError`).
 
 **surface / muted derivation:** these two are hard to sample reliably, so they
 are *derived* to guarantee contrast holds regardless of the extracted bg/text:
-``surface`` is ``bg`` blended a hair toward ``text`` (it carries no contrast
-constraint — it only backs cards), and ``muted`` is ``text`` blended toward
-``bg`` by the largest amount that still clears the 3:1 muted bar (the "mutest"
-legible tone). If even that cannot be met, ``muted`` falls back to plain
-``text`` (which trivially clears 3:1).
+``surface`` is ``bg`` blended toward ``text`` by the largest "hair" that keeps
+text (4.5:1) and accent (3:1) legible on it — cards paint real text on surface,
+so it carries the same bars as bg — and ``muted`` is ``text`` blended toward
+``bg`` by the largest amount that still clears the 3:1 muted bar on both bg and
+surface (the "mutest" legible tone). If even that cannot be met, each falls
+back to its zero-blend anchor (``bg`` / ``text``), which passes by
+construction.
 """
 
 from __future__ import annotations
@@ -45,11 +47,11 @@ from typing import Optional
 import lxml.etree as etree
 
 from odforge.ir import (
+    _HEX_RE,
     FONT_WHITELIST,
     DesignSpec,
     FontPair,
     Palette,
-    _HEX_RE,
     _relative_luminance,
     contrast_ratio,
 )
@@ -57,8 +59,8 @@ from odforge.themes import THEMES
 from odforge.xmlsafe import SAFE_PARSER as _SAFE_XML_PARSER  # noqa: F401
 from odforge.xmlsafe import safe_fromstring
 from odforge.zipguard import (
-    ArchiveLimitError,
     MAX_XML_MEMBER,
+    ArchiveLimitError,
     inspect_archive,
     read_xml_member,
 )
@@ -332,25 +334,39 @@ def _pick_accent(counts: Counter, bg: str, text: str) -> str:
     return text
 
 
-def _derive_surface(bg: str, text: str) -> str:
-    """Derive ``surface`` as ``bg`` nudged a hair toward ``text``.
+def _derive_surface(bg: str, text: str, accent: str) -> str:
+    """Derive ``surface`` as ``bg`` nudged toward ``text`` — panel, still legible.
 
-    Surface only backs cards and carries no contrast constraint, so a slight
-    blend that reads as a distinct panel against the page is enough.
+    ``Palette`` now holds surface to the same bars as bg (text 4.5 / accent 3.0):
+    cards paint real text on it. Each blend step toward ``text`` costs contrast,
+    so take the largest "hair" that still clears both; at blend 0 surface == bg,
+    whose bars the pre-filtered text/accent already clear, so this always returns.
     """
-    return _blend(bg, text, 0.08)
+    for amount in (0.08, 0.06, 0.04, 0.02, 0.0):
+        candidate = _blend(bg, text, amount)
+        if (
+            contrast_ratio(text, candidate) >= _TEXT_MIN
+            and contrast_ratio(accent, candidate) >= _ACCENT_MIN
+        ):
+            return candidate
+    return bg  # unreachable (amount=0.0 == bg), kept for total-function clarity
 
 
-def _derive_muted(text: str, bg: str) -> str:
+def _derive_muted(text: str, bg: str, surface: str) -> str:
     """Derive ``muted`` as ``text`` blended toward ``bg`` — the mutest legible tone.
 
     Tries progressively smaller blends toward the bg and returns the *most*
-    muted one (largest blend) that still clears the 3:1 muted bar; at blend 0 the
-    colour is ``text`` itself, which trivially clears it, so this always returns.
+    muted one (largest blend) that clears the 3:1 muted bar on **both** backdrops
+    it is drawn over — the page and the card surface (the binding one, since
+    surface sits between bg and text). At blend 0 the colour is ``text`` itself,
+    which clears both by construction, so this always returns.
     """
     for amount in (0.5, 0.45, 0.4, 0.35, 0.3, 0.25, 0.2, 0.1, 0.0):
         candidate = _blend(text, bg, amount)
-        if contrast_ratio(candidate, bg) >= _MUTED_MIN:
+        if (
+            contrast_ratio(candidate, bg) >= _MUTED_MIN
+            and contrast_ratio(candidate, surface) >= _MUTED_MIN
+        ):
             return candidate
     return text  # unreachable (amount=0.0 == text), kept for total-function clarity
 
@@ -368,8 +384,8 @@ def _build_palette(roots: list[etree._Element]) -> Palette:
     counts = _colour_counts(roots)
     text = _pick_text(counts, bg)
     accent = _pick_accent(counts, bg, text)
-    surface = _derive_surface(bg, text)
-    muted = _derive_muted(text, bg)
+    surface = _derive_surface(bg, text, accent)
+    muted = _derive_muted(text, bg, surface)
     try:
         return Palette(bg=bg, surface=surface, text=text, muted=muted, accent=accent)
     except ValueError:
@@ -403,7 +419,7 @@ def _split_family(family: Optional[str]) -> list[str]:
     """Split an ``svg:font-family`` CSS-style list into individual names."""
     if not family:
         return []
-    return [tok for tok in family.split(",")]
+    return list(family.split(","))
 
 
 def _extract_fonts(roots: list[etree._Element]) -> FontPair:

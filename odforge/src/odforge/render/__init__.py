@@ -37,4 +37,4 @@ def render(ir, out_path: Path, **kwargs) -> Path:
     return renderer(ir, Path(out_path))
 
 
-__all__ = ["render", "render_odt", "render_odp", "render_ods", "DISPATCH"]
+__all__ = ["DISPATCH", "render", "render_odp", "render_ods", "render_odt"]

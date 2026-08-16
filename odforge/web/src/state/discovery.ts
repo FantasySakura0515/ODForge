@@ -2,19 +2,6 @@ import type { DiscoveryPlan } from "./api";
 
 export type DiscoveryAnswers = Record<string, string>;
 
-export function discoveryCompleteness(
-  plan: DiscoveryPlan,
-  answers: DiscoveryAnswers,
-): number {
-  const answered = plan.questions.filter((question) => answers[question.id]?.trim()).length;
-  if (!plan.questions.length) return plan.completeness;
-  const remaining = 100 - plan.completeness;
-  return Math.min(
-    100,
-    Math.round(plan.completeness + remaining * (answered / plan.questions.length)),
-  );
-}
-
 export function buildRefinedPrompt(
   originalPrompt: string,
   plan: DiscoveryPlan,

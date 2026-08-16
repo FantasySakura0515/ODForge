@@ -14,7 +14,6 @@ from dotenv import load_dotenv
 
 from odforge.llm import DiscoveryPlan, generate_discovery_questions
 
-
 CASES = [
     {
         "id": "graduation_vague",

@@ -27,3 +27,8 @@ odforge/*.egg-info/
 # Agent/tooling scratch (binary decks, preview PNGs, skill scratch files)
 .jez/
 .impeccable.md
+
+# Agent scratch that keeps reappearing at the repo root as untracked noise —
+# ignored by name so `git status` stays a signal about the project.
+odforge/preview-*.png
+.claude/worktrees/

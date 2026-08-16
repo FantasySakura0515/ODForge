@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from odfdo import Document, Header, List, ListItem, Paragraph, Style, TOC, Table
+from odfdo import TOC, Document, Header, List, ListItem, Paragraph, Style, Table
 
 from odforge.ir import (
     HeadingBlock,
@@ -80,7 +80,7 @@ def _register_styles(doc: Document) -> None:
     doc.insert_style(body)
 
     # Heading 1-3: deep blue, bold, decreasing size, CJK font.
-    for level, (name, size) in _HEADING_STYLES.items():
+    for _level, (name, size) in _HEADING_STYLES.items():
         heading = Style(
             family="paragraph",
             name=name,

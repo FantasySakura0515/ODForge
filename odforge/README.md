@@ -25,7 +25,8 @@ ODForge 把「內容」與「格式」拆成兩個互不干擾的階段：
   親手寫出符合 OpenDocument 規範的 XML。格式不經過 LLM，因此不會有「幻覺樣式」
   或壞掉的檔案結構。
 
-每一份產出都會通過**三道驗證閘**：
+每一份產出都會通過**四道品質閘**（前兩道是阻斷閘，後兩道如實回報結果，
+定義見 [`docs/gates.md`](docs/gates.md)）：
 
 1. **zip 結構**：`mimetype` 為首且未壓縮、副檔名相符、`manifest.xml` 所列部件齊全。
 2. **XML 正確性**：每個 `.xml` 部件皆為 well-formed。
@@ -44,7 +45,13 @@ python -m venv .venv
 pip install -e .
 ```
 
-（開發時安裝測試相依：`pip install -e .[dev]`。）
+只用 CLI／MCP 時上面就夠了。要跑 **Web 介面**（`odforge serve`）需要 web 相依：
+
+```powershell
+pip install -e ".[web]"
+```
+
+（開發時安裝測試相依：`pip install -e ".[dev]"`；三者可合併為 `pip install -e ".[dev,web]"`。）
 
 ## CLI 使用方式
 
@@ -67,7 +74,14 @@ odforge new "寫一份專案結案報告的大綱" -o report.odt
 odforge new "建立一張三項商品的銷售統計表，含小計公式" -o sales.ods
 ```
 
-- `--theme academic | minimal | dark`：簡報主題（僅對 `.odp` 有效）。
+- `--theme`：內建主題（僅對 `.odp` 有效），十三選一：`academic`、`minimal`、`dark`、
+  `teal`、`forest`、`navy`、`violet`、`crimson`、`slate`、`gold`、`sky`、`plum`、`clay`。
+  省略則尊重 LLM 自己定的美術方向。
+- `--language zh-TW | en | bilingual`：輸出語言，預設繁體中文。
+- `--byline "單位 · 講者 · 日期"`：封面署名（僅對 `.odp` 有效），原樣印上，不經 AI 改寫。
+- `--logo PATH` / `--logo-placement cover | cover-closing | all`：封面校徽與它出現的頁面，
+  預設封面與結尾頁。
+- `--from-template PATH`：吃現有 `.otp`/`.odp` 公版，抽出樣式並鎖定設計，LLM 只寫內容。
 - `--backend deepseek | ollama | custom`：選擇 LLM 後端。
 - `--image PATH`：加入 PNG/JPEG 素材，可重複指定；模型只會看到伺服器產生的
   `asset://id` 與描述，不會取得本機路徑。
@@ -123,9 +137,33 @@ Web 介面不會把需求直接送去生成。按下「繼續」後，discovery 
 大綱與逐頁生成。讀題期間會以 NDJSON 顯示實際工作階段與耗時，但不會暴露或捏造
 模型的私密推理。
 
-輸出設定可附加最多 6 個參考文件（PDF、PNG 或 JPEG，每個 8 MiB）。PDF 會先抽取
-文字，供需求訪談與大綱／逐頁內容使用；PNG/JPEG 則保留為可插入簡報的圖片素材。
-無文字層的掃描 PDF 會要求先執行 OCR。
+需求框下方是「參考文件」與「客製化」兩塊常駐區塊，不收在任何抽屜裡。參考文件最多
+6 個（PDF、PNG 或 JPEG，每個 8 MiB、合計 16 MiB）：PDF 會先抽取文字，供需求訪談與
+大綱／逐頁內容使用；PNG/JPEG 則保留為可插入簡報的圖片素材。無文字層的掃描 PDF 會
+要求先執行 OCR。
+
+客製化欄位全部可留白（留白＝交給 AI 判斷）：內容密度（上台報告／閱讀文件）、頁數、
+簡報場合、講述時間、聽眾對象、語氣風格、輸出語言與視覺主題。前四項與聽眾、語氣會附加
+在需求尾端，訪談與大綱兩段都讀得到；視覺主題若指定，整份會鎖定該範本的配色，不再由
+模型自訂 DesignSpec。
+
+輸出語言有繁體中文（預設）、English 與中英對照三種。訪談問題一律以繁體中文提問——
+要換的是簡報的語言，不是跟你對話的語言。中英對照會讓每一行大約加長一倍，模型被要求
+主動縮短句子，超載的頁面仍由版面預算閘處理。
+
+「封面署名與校徽」是使用者自己的內容，不經過 AI 改寫：署名原樣置中印在封面標題下方，
+校徽（PNG／JPEG，2 MiB 以內）預設出現在封面與結尾頁，也可改成只放封面或每頁角落。
+深色的分節／結尾頁會替校徽鋪一塊底色板，避免深色標誌沉進深色背景。校徽不會被列入
+模型可用的圖片素材——它是版面家具，不該被排進某一頁的內容裡。
+
+設計品質檢查（第四道閘）沒有開關：只要伺服器設定了可用的視覺來源就一定執行；沒有
+設定或探測失敗時，介面會直接說明這一輪只跑前三道格式驗證，不會給出跑不成的承諾。
+
+首頁除了工作紀錄，還有「範本庫」：13 套內建美術方向（九套淺底、四套暗底）與你自己存
+的範本並列，各附一張用該配色畫出來的迷你封面。新增自訂範本有兩條路——手動調色（五色
+＋字體配對＋字級密度，對比不足會當場指出是哪一組、差多少，過不了不給存），或直接匯入
+學校／公司的公版 `.otp`／`.odp`／`.ott`／`.odt`，系統會抽出它的配色與字體存成範本。
+自訂範本儲存在 sessions 目錄下的 `templates.json`，換瀏覽器或清快取都還在。
 
 首頁會列出最近的生成 session，包含狀態、頁數、首張預覽與下載入口。session metadata
 與產物預設保存在使用者的 local application-data 目錄；可用
@@ -134,7 +172,7 @@ Web 介面不會把需求直接送去生成。按下「繼續」後，discovery 
 
 ```powershell
 # 視窗一：API（production build 存在時也會一併提供前端）
-.\.venv312\Scripts\odforge.exe serve
+.\.venv\Scripts\odforge.exe serve
 
 # 視窗二：前端開發模式
 cd web
@@ -155,25 +193,58 @@ odforge check report.odt
 odforge check some.docx -o diff.md
 ```
 
-## MCP server
+## MCP server：把品質保證接給任何 AI 工具
 
-ODForge 也以 MCP server 形式，把它的**確定性渲染引擎**開放給 AI 助理使用。
-此時助理自己撰寫 Document IR 並呼叫工具（`forge_text_document`、
-`forge_presentation`、`forge_spreadsheet`、`inspect_odf`），ODForge 純粹負責
-渲染與驗證——不送出任何提示、也不需要 API 金鑰。
+ODForge 也是一個 MCP server。**任何支援 MCP 的 AI 工具都能直接用它產出並驗證
+ODF，不需要修改任何一行程式碼。**
 
-在 MCP 客戶端設定中註冊（把 `<path-to-repo>` 換成你 clone 的實際路徑）：
+### 一分鐘接上
+
+```powershell
+pip install odforge
+```
+
+然後在 MCP 客戶端設定裡加一段（Claude Code、Claude Desktop、Cursor、Cline
+都吃同一份格式）：
 
 ```json
 {
   "mcpServers": {
     "odforge": {
-      "command": "<path-to-repo>/odforge/.venv/Scripts/python.exe",
-      "args": ["-m", "odforge.mcp_server"]
+      "command": "odforge-mcp"
     }
   }
 }
 ```
+
+沒有金鑰要設、沒有路徑要填。`pip install` 之後 `odforge-mcp` 就在 PATH 上。
+
+> 從原始碼跑（未安裝）時用：
+> `"command": "<repo>/odforge/.venv/Scripts/python.exe", "args": ["-m", "odforge.mcp_server"]`
+
+### 分工
+
+呼叫端的 AI 負責**內容**（自己寫 Document IR），ODForge 負責**格式與保證**：
+
+| 工具 | 做什麼 |
+|------|--------|
+| `forge_text_document` / `forge_presentation` / `forge_spreadsheet` | 渲染成原生 ODF，並跑三道格式閘（zip / XML / LibreOffice 實際開檔）＋版面預算檢查 |
+| `inspect_odf` | 驗證**任何**既有 ODF 檔——不必是 ODForge 產的 |
+| `preview_odf` | 逐頁轉成 PNG，讓 agent 自己看、自己修（第四道閘的手動版） |
+
+`forge_*` 不會只回「好了」。文字若會溢出版面，回傳字串會附上一段
+`warning:`，逐頁逐框指出哪裡放不下——**ODForge 量測，呼叫端重寫**：
+
+```
+ok: wrote C:\...\deck.odp — structure: OK …; xml: OK …; soffice: OK …
+
+warning: 版面預算超載——檔案已產出且格式有效,但下列內容會溢出版面。
+請縮短這些頁面的文字後重新 forge:
+- 第 2 頁:投影片「太多重點」的「bullets」框內容超出版面:預估 15.2cm > 可用 10.8cm(frame 高 11cm)—— 請縮短文字或改用其他版型。
+```
+
+搭配 `skills/odforge-design/SKILL.md`（教外部 agent 怎麼設計一份好簡報）
+一起掛上，效果最好。
 
 **信任模型**：此 server 會把檔案寫到 MCP 客戶端所要求的任意路徑，因此請只搭配
 你信任的助理使用（它是一個本機 stdio 工具）。

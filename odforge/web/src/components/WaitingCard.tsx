@@ -26,7 +26,10 @@ export function WaitingCard({ onCancel, activeStep = 0 }: { onCancel: () => void
   const ss = String(elapsed % 60).padStart(2, "0");
 
   return (
-    <div className="waitcard" role="status" aria-live="polite">
+    // 刻意不把 role="status" 放在整張卡上:卡片裡有一個每秒跳動的計時器,整片
+    // 設成 live region 等於叫讀屏器每秒念一次時間。只有「階段變了」才值得播報,
+    // 所以 live region 縮到下面那一行離散的階段文字。
+    <div className="waitcard">
       <ol className="waitsteps">
         {STEPS.map((label, i) => (
           <li key={i} className={i === activeStep ? "on" : i < activeStep ? "past" : ""} aria-current={i === activeStep || undefined}>
@@ -34,8 +37,11 @@ export function WaitingCard({ onCancel, activeStep = 0 }: { onCancel: () => void
           </li>
         ))}
       </ol>
-      <div className="waitclock" aria-label="已等待時間" aria-live="off">
-        <span className="waitspin" aria-hidden="true" />
+      <span className="sr-only" role="status" aria-live="polite">
+        {STEPS[activeStep] ?? STEPS[0]}
+      </span>
+      <div className="waitclock" aria-hidden="true">
+        <span className="waitspin" />
         <b>{mm}:{ss}</b>
       </div>
       <p className="waitcalm">正在生成大綱，通常需要 30–60 秒。</p>

@@ -8,10 +8,14 @@
   --surface2: #efeee8;
   --surface3: #e5e6e3;
   --text: #18201f;
-  --muted: #686f6c;
-  --quiet: #929792;
+  --muted: #555b59;
+  --quiet: #646864;
   --line: #d7d7cf;
   --line-strong: #bfc2bb;
+  /* 互動元件(輸入框、選單、按鈕)的邊界。WCAG 1.4.11 要求非文字的 UI 元件
+     邊界對相鄰背景 >= 3:1;--line / --line-strong 是純裝飾分隔線,達不到也
+     不必達到這個門檻,所以控制項的框線用這一條,不共用裝飾線。 */
+  --line-interactive: #7d827a;
 
   --accent: #1f4f9d;
   --accent-strong: #153b7a;
@@ -20,11 +24,11 @@
   --on-accent: #ffffff;
   --glow: rgba(31, 79, 157, 0.24);
 
-  --pass: #237a55;
+  --pass: #20724f;
   --pass-soft: #e1f0e8;
-  --warn: #9a6a18;
+  --warn: #875e14;
   --warn-soft: #f5ead2;
-  --crit: #b6423d;
+  --crit: #a93c37;
   --crit-soft: #f7e3e1;
 
   --grid-op: 0.22;
@@ -48,10 +52,11 @@
     --surface2: #18212d;
     --surface3: #202b39;
     --text: #e6e9e7;
-    --muted: #9ca7ad;
-    --quiet: #6e7a83;
+    --muted: #b3bcc2;
+    --quiet: #8b969e;
     --line: #263241;
     --line-strong: #3a4859;
+    --line-interactive: #66788f;
 
     --accent: #78a6ff;
     --accent-strong: #9abaff;
@@ -83,21 +88,22 @@
   --surface2: #efeee8;
   --surface3: #e5e6e3;
   --text: #18201f;
-  --muted: #686f6c;
-  --quiet: #929792;
+  --muted: #555b59;
+  --quiet: #646864;
   --line: #d7d7cf;
   --line-strong: #bfc2bb;
+  --line-interactive: #7d827a;
   --accent: #1f4f9d;
   --accent-strong: #153b7a;
   --accent-soft: #e3eaf6;
   --accent2: #1f4f9d;
   --on-accent: #ffffff;
   --glow: rgba(31, 79, 157, 0.24);
-  --pass: #237a55;
+  --pass: #20724f;
   --pass-soft: #e1f0e8;
-  --warn: #9a6a18;
+  --warn: #875e14;
   --warn-soft: #f5ead2;
-  --crit: #b6423d;
+  --crit: #a93c37;
   --crit-soft: #f7e3e1;
   --grid-op: 0.22;
   --shadow-sm: 0 8px 22px rgba(46, 48, 43, 0.08);
@@ -115,10 +121,11 @@
   --surface2: #18212d;
   --surface3: #202b39;
   --text: #e6e9e7;
-  --muted: #9ca7ad;
-  --quiet: #6e7a83;
+  --muted: #b3bcc2;
+  --quiet: #8b969e;
   --line: #263241;
   --line-strong: #3a4859;
+  --line-interactive: #66788f;
   --accent: #78a6ff;
   --accent-strong: #9abaff;
   --accent-soft: #172a48;

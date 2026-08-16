@@ -6,7 +6,7 @@
 
 English | [繁體中文](README.md)
 
-![tests](https://img.shields.io/badge/tests-113%20passed-brightgreen) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![format](https://img.shields.io/badge/output-native%20ODF-orange)
+![tests](https://img.shields.io/badge/tests-711%20python%20%2B%20244%20web-brightgreen) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![format](https://img.shields.io/badge/output-native%20ODF-orange)
 
 ```powershell
 odforge new "Make a teaching deck for Data Structures ch.3: Trees and Binary Trees" -o tree.odp
@@ -41,19 +41,29 @@ One sentence from the user
 │               │  .odt/.ods via odfdo; .odp via hand-written XML
 └────┬─────────┘  (theme system, five layouts, speaker notes, full CJK support)
      │ native ODF file
-┌────▼─────────┐  1. zip structure (mimetype first & stored, manifest complete)
-│  Three gates  │  2. XML well-formedness (every part)
-│               │  3. Real LibreOffice conversion (headless → PDF must succeed)
-└────┬─────────┘
+┌────▼─────────┐  1. zip structure (mimetype first & stored, manifest)  ← blocking
+│  Four gates   │  2. XML well-formedness (every part)                  ← blocking
+│               │  3. Real LibreOffice conversion (headless → PDF)      ← reported
+└────┬─────────┘  4. Design review (vision model, page by page)         ← reported
      ▼
   Delivered via CLI, or reported back via MCP
 ```
 
-Every output must pass all three validation gates before it reaches you — **the file you get is guaranteed to open**.
+The first two gates are **blocking**: nothing ships without them. The last two are
+**reported honestly** — `pass` / `fail` / `skipped` (you turned it off) /
+`unknown` (it could not run). A gate that did not run never shows a green tick:
+**"could not check" is not "passed".** Full definitions in
+[`odforge/docs/gates.md`](odforge/docs/gates.md).
+
+> **Scope:** these gates certify that the file is well-formed, opens in
+> LibreOffice, and has had its layout reviewed. **They do not verify that the
+> content is true.** Figures, dates, quotations and source URLs may be model
+> output — check them yourself. See gates.md §4.
 
 ## Quick start
 
-Requirements: Python 3.10+, [LibreOffice](https://www.libreoffice.org/) (used by the third gate; everything else works without it).
+Requirements: Python 3.11+, [LibreOffice](https://www.libreoffice.org/) (used by the third gate; everything else works without it).
+Install with `pip install -e ".[test]"` to get everything the test suite needs.
 
 ```powershell
 git clone https://github.com/FantasySakura0515/ODForge.git
@@ -136,7 +146,9 @@ odforge/src/odforge/
 │   └── ods.py      # Spreadsheets (numeric cells + native formulas)
 ├── themes.py       # Themes & layout geometry (pure data)
 ├── package.py      # ODF zip packaging (mimetype rule + manifest)
-├── validate.py     # The three validation gates
+├── validate.py     # The format gates (zip / XML / LibreOffice)
+├── critic.py       # The design gate: vision critique + repair loop
+├── webapi.py       # FastAPI + SSE web console backend
 ├── check.py        # Inspection reports + docx↔odt structural diff
 ├── cli.py          # odforge new / check
 └── mcp_server.py   # MCP tools (take IR, not prompts; no key needed)
@@ -146,7 +158,22 @@ odforge/src/odforge/
 
 ```powershell
 cd odforge
-.\.venv\Scripts\python.exe -m pytest -q    # 113 passed
+.\.venv\Scripts\python.exe -m pytest -q --cov   # 711 passed, 87% branch
+.\.venv\Scripts\ruff.exe check .          # lint
+npm.cmd --prefix web ci                    # install from the lockfile
+npm.cmd --prefix web test                  # 244 passed
+npm.cmd --prefix web run typecheck:tests   # typecheck INCLUDING the tests
+npm.cmd --prefix web run build             # production bundle
+```
+
+To build and verify the distributable wheel (the web console is compiled into it
+by `hatch_build.py`; a wheel without it fails the build):
+
+```powershell
+cd odforge
+python -m build --wheel
+python -m pip install "dist/odforge-0.1.0-py3-none-any.whl[web]"
+python scripts/wheel_smoke.py              # GET / + JS + CSS must all be 200
 ```
 
 Built test-first throughout: every module started from failing tests; renderer tests assert on the raw zip/XML with zipfile + lxml, decoupled from the rendering libraries.

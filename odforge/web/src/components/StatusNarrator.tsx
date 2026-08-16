@@ -37,14 +37,41 @@ export function StatusNarrator({
     : phase === "qa" ? "正在檢查設計…"
     : phase === "complete" ? "完成 · 原生 ODF"
     : forging ? `正在生成第 ${forging.n} 頁…` : "生成中…";
+
+  // What is *announced* is deliberately coarser than what is *shown*. The visible
+  // line updates per page, and pages arrive in throttled bursts every 80–120 ms —
+  // a screen reader reading "正在生成第 7 頁…", "第 8 頁…", "第 9 頁…" thirty times
+  // is not progress information, it is a denial of service on the user's ears.
+  // So the live region carries the discrete phase only, plus a single "N pages
+  // done" summary that changes once per phase rather than once per page.
+  const done = units.filter((u) => u.status === "done" || u.status === "preview").length;
+  const announcement =
+    isError ? `發生問題:${humanizeStage(error?.stage)}`
+    : phase === "empty" && expired ? "任務不存在或已過期"
+    : submitting && phase === "empty" ? "正在生成大綱"
+    : phase === "empty" ? "準備就緒"
+    : phase === "await" && !fillingPending ? "大綱已完成,請確認後開始生成"
+    : phase === "qa" ? "正在檢查設計"
+    : phase === "complete" ? `完成,共 ${units.length} 頁,可以下載了`
+    : phase === "generating" || fillingPending ? "正在逐頁生成"
+    : phase === "outline" ? "大綱與配色已完成"
+    : "";
+
   return (
     <div
       className={"narrator" + (isError ? " is-error" : "")}
-      aria-live="polite"
       title={isError && error ? error.message : undefined}
     >
-      <span className="ndot">{isError ? "✕" : "◆"}</span>
-      <span className="nn">{text}</span>
+      {/* 視覺上的逐頁播報:看得到,但不進 live region。 */}
+      <span className="ndot" aria-hidden="true">{isError ? "✕" : "◆"}</span>
+      <span className="nn" aria-hidden="true">{text}</span>
+      <span className="sr-only" role="status" aria-live="polite">
+        {announcement}
+      </span>
+      {/* 頁數進度給讀屏器一個可查詢(但不主動播報)的數字。 */}
+      <span className="sr-only" aria-live="off">
+        已完成 {done} / {units.length} 頁
+      </span>
     </div>
   );
 }

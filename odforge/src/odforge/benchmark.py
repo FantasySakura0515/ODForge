@@ -24,7 +24,6 @@ from odforge.textmetrics import check_budget
 from odforge.themes import resolve_design
 from odforge.validate import validate_odf
 
-
 _VISUAL_LAYOUTS = {
     "chart",
     "process",
@@ -245,7 +244,7 @@ def run_benchmark(
             score = score_presentation(presentation, metrics)
             success = package_valid
             error = None if success else "ODF validation failed"
-        except Exception as exc:  # noqa: BLE001 - one candidate must not stop others
+        except Exception as exc:
             score = 0.0
             success = False
             error = str(exc)

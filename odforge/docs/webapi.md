@@ -116,9 +116,19 @@ CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：�
     []
   ],
   "final_ok": true,
-  "note": ""
+  "note": "",
+  "failure": "",
+  "repaired": true
 }
 ```
+
+- `rounds` 只計**完成**的評審輪數；`findings_by_round` 保留每一輪的發現,
+  中途失敗不再整份丟棄。
+- `failure` 非空表示評審迴圈未能跑完(視覺來源失效、修補階段出錯等),原因
+  同步鏡射到 `note` 供顯示。此時若 `final_ok=false`,代表最後完成的一輪仍有
+  error,且其後套用的修補**未經複驗**。
+- `repaired=true` 表示修補實際改寫並重渲染了成品——後端會重發 `preview_ready`
+  並在 URL 加上 `?v=k` cache-buster,前端照字面換圖即可。
 
 ---
 
@@ -126,18 +136,23 @@ CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：�
 
 | Method | Path | Body → 回應 |
 |---|---|---|
-| POST | `/api/discovery/questions` | `{prompt, mode?, theme?, backend?, doc_type?: "odp", pages?, assets?: [{description, credit, data_url?}]}` → `DiscoveryPlan` |
+| POST | `/api/discovery/questions` | `{prompt, mode?, theme?, language?, backend?, doc_type?: "odp", pages?, assets?: [{description, credit, data_url?}]}` → `DiscoveryPlan`。訪談一律以繁體中文提問，`language` 只是讓讀題模型知道成品要寫成哪一種語言 |
 | POST | `/api/discovery/questions/stream` | 同上 → NDJSON `progress` / `result` / `error` 事件 |
-| POST | `/api/generate` | `{prompt, mode?, theme?, interactive?: bool, qa?: bool, backend?, doc_type?: "odp", pages?: int, assets?: AssetUpload[]}` → `{job_id}` |
+| POST | `/api/generate` | `{prompt, mode?, theme?, design?: DesignSpec, language?: "zh-TW"\|"en"\|"bilingual", byline?, logo?: AssetUpload, logo_placement?: "cover"\|"cover-closing"\|"all", interactive?: bool, qa?: bool, backend?, doc_type?: "odp", pages?: int, assets?: AssetUpload[]}` → `{job_id}`。`theme` 對照內建主題註冊表（THEMES）驗證；`design` 是自訂範本的設計代幣，兩者同時給時 `design` 勝出 |
+| GET | `/api/templates` | 範本庫 `{templates: [{id, name, design, builtin, source, created_at}], languages: [{id, label}]}`。內建（`builtin: true`）以 `theme: <id>` 套用、不可改不可刪；自訂的整包送 `design` |
+| POST | `/api/templates` | `{name, design, source?: "custom"\|"extracted", id?}` → 存檔後的 `Template`。給 `id` 為覆寫；調色盤過不了 WCAG 對比或範本數達上限回 `422` |
+| DELETE | `/api/templates/{id}` | 刪除自訂範本 → `{ok: true}`；內建 `422`、不存在 `404` |
+| POST | `/api/templates/extract` | `{data_url}`（.otp/.odp/.ott/.odt 的 base64 data URI，≤ 12 MiB）→ `{design}`。只抽出、不存檔——命名與儲存是下一步 |
 | GET | `/api/sessions` | 最近 session `{sessions: [{id, title, prompt, status, page_count, preview_url?, download_url?, ...}]}` |
+| GET | `/api/sources` | 可用模型來源 `{text: [{name, available, reason}], vision: [...], defaults: {text, vision}}`。前端據此決定這一輪的「設計品質檢查」算不算數——第四道閘沒有開關,但沒有可用的視覺來源時不會送 `qa: true`,介面會直接說明只跑前三道 |
 | GET | `/api/jobs/{id}/events` | SSE 事件流（見「SSE 事件」） |
 | POST | `/api/jobs/{id}/outline` | `{action: "approve"}` 或 `{action: "edit", outline: Outline}` → `{ok, status}` |
 | POST | `/api/jobs/{id}/cancel` | 無 body → `{ok, status: "cancelled"}`；停止尚未開始的後續階段 |
-| POST | `/api/jobs/{id}/slides/{n}/regenerate` | `{instruction?: str}` → `{ok, n, slide, preview_url}`（同步：新頁 + preview 直接回在回應內，**不**走 SSE） |
+| POST | `/api/jobs/{id}/slides/{n}/regenerate` | `{instruction?: str}` → `{ok, n, slide, preview_url, version, gates}`（同步：新頁 + preview 直接回在回應內，**不**走 SSE）。交易式：算圖／驗證／預覽任一失敗即完整回滾，回 `500` 且工作維持原狀。`gates` 是重算後的四道閘結果，設計閘一律退回 `unknown`（視覺評審看的是被換掉的那一頁） |
 | POST | `/api/jobs/{id}/units/{n}/regenerate` | 同上（`slides/{n}/regenerate` 的 F4 正名別名，同一 handler） |
 | GET | `/api/jobs/{id}/preview/{n}.png` | 第 n 頁 PNG（`image/png`） |
-| GET | `/api/jobs/{id}/download` | 最終 `.odp`（`Content-Disposition: attachment`） |
-| GET | `/api/jobs/{id}` | 狀態快照 `{status, slides_done, outline?, findings?, download_url?, error?}` |
+| GET | `/api/jobs/{id}/download` | 最終 `.odp`（`Content-Disposition: attachment`）。**只有**「工作已完成且磁碟上的版本通過必要閘門」才回 `200`；生成中／驗證失敗／取消／重生中一律 `409` 並附中文原因；工作不存在為 `404` |
+| GET | `/api/jobs/{id}` | 狀態快照 `{status, slides_done, outline?, gates, artifact_version, downloadable, findings?, dropped_content?, download_url?, error?}`。`download_url` 只在 `downloadable` 為真時出現——不宣傳一個點下去就 409 的連結 |
 
 ### POST `/api/discovery/questions`
 
@@ -208,8 +223,10 @@ bytes；PDF 最多 120 頁，會抽取最多 60,000 字作為模型資料，無�
 既有 session。重啟時仍未完成的工作會標記為 `error`／`restore`，已完成的預覽與 ODP
 仍可由首頁開啟或下載。預設保存位置可用 `ODFORGE_SESSIONS_DIR` 覆寫。
 
-- `doc_type`（預設 `"odp"`）：目前**只**支援簡報（`odp`）。傳入其他值（如 `ods`／`odt`）
-  回 `422`，`detail` 為人可讀的中文字串（含「目前僅支援簡報(odp)」與「即將支援」字樣）。
+- `doc_type`（預設 `"odp"`）：Web 控制台**只**產生簡報（`odp`），這是定案而非待辦
+  （理由見 `gates.md` 第五節）。傳入其他值（如 `ods`／`odt`）回 `422`，`detail` 是
+  人可讀的中文字串，並指向能做這件事的介面（CLI 的 `odforge new` 與 MCP 的 `forge_*`
+  三種格式都支援）。
 - `pages`（選填，整數 `3..30`）：目標頁數；後端把「約 N 頁（含封面與結尾，可 ±1）」的
   軟性指示併入第一段（`generate_outline`）的提示，非硬性張數約束。超出 `3..30` 由 pydantic
   回 `422`。
@@ -367,6 +384,10 @@ data: {"n":1,"slide":{…}}
 { "n": 2, "url": "/api/jobs/3f0a1c9e8b7d4a2f9c1e6b5d4a3c2b1a/preview/2.png" }
 ```
 
+QA 修補或單頁重生後**重發**的 `preview_ready`,其 `url` 會帶 `?v=k`
+cache-buster(伺服器端忽略該 query)——同一頁的 URL 字串因此不同,前端照字面
+換掉 `src` 就能避開瀏覽器快取。
+
 ### `qa_round` — QA 每輪結束
 ```json
 {
@@ -380,10 +401,12 @@ data: {"n":1,"slide":{…}}
 ### `gate_result` — 四道品質閘的真實訊號
 
 前端的四道閘勾勾以此事件點亮（**非**用 `preview_ready` 假裝）。
-`data` 為 `{"gate": <str>, "status": <str>}`：
+`data` 為 `{"gate": <str>, "status": <str>, "note"?: <str>}`：
 
 - `gate` ∈ `zip | xml | libreoffice | design`
 - `status` ∈ `pass | fail | skipped`
+- `note`（選用）：這道閘為什麼是這個結果（視覺模型未設定、供應商拒絕、
+  評審中途失敗…）。只在需要解釋時附上，前端照字面顯示。
 
 ```json
 { "gate": "zip", "status": "pass" }
@@ -397,8 +420,11 @@ data: {"n":1,"slide":{…}}
    兩閘各發一個 `gate_result`。任一 `fail` 會**中止**流程並發 `error`（`stage="validate"`）。
 2. preview 階段(`libreoffice`)：`render_pages` 成功 → `pass`；無 soffice（`PreviewUnavailable`）
    → `skipped`；其他轉檔錯誤 → `fail`（preview 為 best-effort，`fail` 不中止 job）。
-3. `design` 閘：未開 `qa` → `skipped`；開 `qa` 時 QA 跑完後依 `qa_report.final_ok` 給
-   `pass`／`fail`；QA 例外被吞（不產報告）→ `skipped`。在 `complete` 前發出。
+3. `design` 閘：未開 `qa` → `skipped`；視覺來源為 `off` → `skipped`（沒有模型看過
+   圖,綠勾等於謊報）；`qa_report.rounds == 0`（無 soffice、或第一輪視覺品檢就
+   失敗）→ `skipped`；其餘依 `final_ok` 給 `pass`／`fail`。`skipped`／`fail` 都
+   帶 `note` 說明原因（`failure` 優先於 `note`）。QA 例外未產報告 → `skipped`
+   加上 `job.qa_error` 的原因。在 `complete` 前發出。
 
 `gate_result` 也進事件 log，故快照重連會完整回放。
 
@@ -444,6 +470,23 @@ data: {"n":1,"slide":{…}}
    不需先打 `GET /api/jobs/{id}` 快照；本專案前端即如此（`?job=` 直接重訂閱）。`GET
    /api/jobs/{id}` 快照端點仍可用於不想重播事件流的輕量狀態查詢（如輪詢 `status`）。
 
+## 閘門狀態與 `content_degraded`
+
+`gate_result` 的 `status` 有四種**已定案**的值,語意互不重疊:
+
+| status | 意思 |
+|--------|------|
+| `pass` | 跑完了,通過 |
+| `fail` | 跑完了,沒通過 |
+| `skipped` | **沒有人要求**跑這一道(使用者關掉 QA、或這次選擇不用視覺模型) |
+| `unknown` | **要求了但跑不成**(沒有 LibreOffice、視覺來源拒絕、回應讀不懂)——這份交付的該項品質實際上沒有被驗證過 |
+
+`skipped` 與 `unknown` 不可混用。完整定義見 [`gates.md`](gates.md)。
+
+`content_degraded`(新增事件):版面預算被迫刪掉內容時發出,
+`data = {items: [{slide_no, title, items: [被移除的文字, ...]}]}`。
+使用者要求過這些字,消失了就必須看得見——只寫進備忘稿等同於沒說。
+
 ## 安全性
 
 - **CORS**：明確 Origin 白名單、且 `allow_credentials=False`；絕不用 `*`＋credentials。
@@ -451,11 +494,15 @@ data: {"n":1,"slide":{…}}
   使用者真實 LLM 金鑰，故白名單是擋下任意網站跨源驅動的關鍵（綁定 127.0.0.1 無法取代
   它，因請求來自使用者自己的瀏覽器）。萬用、opaque 或格式不完整的 origin 會 fail closed。
 - **工作治理**：最多 4 個生成工作、2 個重生操作；互動核可 30 分鐘逾時。完成／失敗／
-  取消的工作保留 24 小時，建立新工作時清除過期產物，記憶體最多保留 100 個工作。
+  取消的工作保留 **90 天**（`_JOB_RETENTION_SECONDS`），建立新工作時清除過期產物，
+  記憶體最多保留 100 個工作。並行上限計算的是**仍在執行的 worker**,不是 UI 狀態:
+  已取消但外部呼叫尚未結束的工作照樣佔用名額,否則反覆 start/cancel 可以無限量
+  堆疊同時進行的供應商呼叫。
 - **路徑白名單**：`job_id` 由伺服器以 `uuid4().hex` 產生，**絕不**把呼叫端輸入寫進檔案
   路徑；它只當記憶體 dict 的鍵使用，查無即 `404`。
 - 每個 job 的產物落在伺服器自建的 `%TEMP%/odforge-jobs/{id}/` 之下（`preview/`、
-  `deck.odp`）。
+  `deck.odp`）。預覽採版本目錄 `preview/v{n}`：每次重算圖寫進新版本後才切換指標,
+  所以 5 頁縮成 3 頁時,`page-04.png` 不可能殘留在服務中的版本裡。
 - preview 的頁碼 `n` 由 FastAPI 驗證為整數並檢查落在 1..頁數，再格式化成固定的
   伺服器檔名 `page-NN.png`；不存在或超界即 `404`。任何請求都無法指涉自身 job
   目錄以外的路徑。

@@ -342,6 +342,14 @@ def check_budget(slide: Slide, theme: Theme) -> list[str]:
     if slide.layout == "big-fact":
         return _check_big_fact(slide, theme, label)
     messages: list[str] = []
+    if slide.layout == "cards":
+        # cards-area is shape-rendered (this walk charges it nothing) but rides
+        # on unbounded ``bullets``. The renderer owns the fit, so it owns the
+        # check — imported lazily because render.odp imports this module. The
+        # walk below still covers the page-title frame.
+        from odforge.render.odp import cards_budget_warnings
+
+        messages.extend(cards_budget_warnings(slide, theme))
     for frame in LAYOUTS.get(slide.layout, ()):
         content_h = _frame_content_height(slide, theme, frame, slide.layout)
         if content_h is None:

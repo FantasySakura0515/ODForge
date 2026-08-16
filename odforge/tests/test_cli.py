@@ -9,11 +9,13 @@ tmp_path output file.
 """
 
 import zipfile
+from pathlib import Path
 
 from typer.testing import CliRunner
 
 from odforge.cli import app
 from odforge.ir import Outline, PageRole
+from odforge.validate import validate_odf
 
 runner = CliRunner()
 
@@ -45,10 +47,11 @@ def _mock_two_stage(monkeypatch, presentation, outline=None):
     if outline is None:
         outline = _sample_outline()
     monkeypatch.setattr(
-        "odforge.cli.generate_outline", lambda prompt, backend=None: outline
+        "odforge.cli.generate_outline",
+        lambda prompt, backend=None, language="zh-TW": outline,
     )
     monkeypatch.setattr(
-        "odforge.cli.generate_slides", lambda outline, backend=None: presentation
+        "odforge.cli.generate_slides", lambda outline, backend=None, dropped=None: presentation
     )
 
 
@@ -71,16 +74,16 @@ def test_default_odp_uses_two_stage(tmp_path, monkeypatch, sample_presentation):
     # the --backend option flows through to both stage functions.
     calls = {"outline": 0, "slides": 0, "ir": 0, "backend": None}
 
-    def fake_outline(prompt, backend=None):
+    def fake_outline(prompt, backend=None, language="zh-TW"):
         calls["outline"] += 1
         calls["backend"] = backend
         return _sample_outline()
 
-    def fake_slides(outline, backend=None):
+    def fake_slides(outline, backend=None, dropped=None):
         calls["slides"] += 1
         return sample_presentation
 
-    def fake_ir(prompt, doc_type, backend=None):
+    def fake_ir(prompt, doc_type, backend=None, language="zh-TW"):
         calls["ir"] += 1
         return sample_presentation
 
@@ -113,10 +116,11 @@ def test_interactive_yes_generates_file(tmp_path, monkeypatch, sample_presentati
 def test_interactive_no_cancels_no_file(tmp_path, monkeypatch, sample_presentation):
     calls = {"slides": 0}
     monkeypatch.setattr(
-        "odforge.cli.generate_outline", lambda prompt, backend=None: _sample_outline()
+        "odforge.cli.generate_outline",
+        lambda prompt, backend=None, language="zh-TW": _sample_outline(),
     )
 
-    def fake_slides(outline, backend=None):
+    def fake_slides(outline, backend=None, dropped=None):
         calls["slides"] += 1
         return sample_presentation
 
@@ -173,10 +177,11 @@ def test_mode_override_passes_through(tmp_path, monkeypatch, sample_presentation
     outline = _sample_outline(mode="detailed")
     seen = {}
     monkeypatch.setattr(
-        "odforge.cli.generate_outline", lambda prompt, backend=None: outline
+        "odforge.cli.generate_outline",
+        lambda prompt, backend=None, language="zh-TW": outline,
     )
 
-    def fake_slides(outline, backend=None):
+    def fake_slides(outline, backend=None, dropped=None):
         seen["mode"] = outline.mode
         return sample_presentation
 
@@ -194,10 +199,11 @@ def test_mode_default_preserves_outline_mode(tmp_path, monkeypatch, sample_prese
     outline = _sample_outline(mode="detailed")
     seen = {}
     monkeypatch.setattr(
-        "odforge.cli.generate_outline", lambda prompt, backend=None: outline
+        "odforge.cli.generate_outline",
+        lambda prompt, backend=None, language="zh-TW": outline,
     )
 
-    def fake_slides(outline, backend=None):
+    def fake_slides(outline, backend=None, dropped=None):
         seen["mode"] = outline.mode
         return sample_presentation
 
@@ -209,7 +215,7 @@ def test_mode_default_preserves_outline_mode(tmp_path, monkeypatch, sample_prese
 
 
 def test_outline_failure_exit_1(tmp_path, monkeypatch):
-    def boom(prompt, backend=None):
+    def boom(prompt, backend=None, language="zh-TW"):
         raise RuntimeError("outline boom")
 
     monkeypatch.setattr("odforge.cli.generate_outline", boom)
@@ -223,10 +229,11 @@ def test_outline_failure_exit_1(tmp_path, monkeypatch):
 
 def test_slides_failure_exit_1(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "odforge.cli.generate_outline", lambda prompt, backend=None: _sample_outline()
+        "odforge.cli.generate_outline",
+        lambda prompt, backend=None, language="zh-TW": _sample_outline(),
     )
 
-    def boom(outline, backend=None):
+    def boom(outline, backend=None, dropped=None):
         raise RuntimeError("slides boom")
 
     monkeypatch.setattr("odforge.cli.generate_slides", boom)
@@ -395,10 +402,11 @@ def test_from_template_locks_extracted_design(tmp_path, monkeypatch, sample_pres
     outline = _sample_outline(design=None)
     seen = {}
     monkeypatch.setattr(
-        "odforge.cli.generate_outline", lambda prompt, backend=None: outline
+        "odforge.cli.generate_outline",
+        lambda prompt, backend=None, language="zh-TW": outline,
     )
 
-    def fake_slides(outline, backend=None):
+    def fake_slides(outline, backend=None, dropped=None):
         seen["design"] = outline.design
         # Mimic the real generate_slides: re-attach the outline's design.
         return sample_presentation.model_copy(update={"design": outline.design})
@@ -457,11 +465,11 @@ def test_one_shot_uses_generate_ir(tmp_path, monkeypatch, sample_presentation):
     # generate_outline is never touched.
     calls = {"ir": 0, "outline": 0}
 
-    def fake_ir(prompt, doc_type, backend=None):
+    def fake_ir(prompt, doc_type, backend=None, language="zh-TW"):
         calls["ir"] += 1
         return sample_presentation
 
-    def fake_outline(prompt, backend=None):
+    def fake_outline(prompt, backend=None, language="zh-TW"):
         calls["outline"] += 1
         return _sample_outline()
 
@@ -480,7 +488,7 @@ def test_one_shot_uses_generate_ir(tmp_path, monkeypatch, sample_presentation):
 def test_new_odt_success(tmp_path, monkeypatch, sample_text_doc):
     monkeypatch.setattr(
         "odforge.cli.generate_ir",
-        lambda prompt, doc_type, backend=None: sample_text_doc,
+        lambda prompt, doc_type, backend=None, language="zh-TW": sample_text_doc,
     )
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["new", "寫文件", "-o", "out.odt", "--no-soffice"])
@@ -493,7 +501,7 @@ def test_doc_type_inference(tmp_path, monkeypatch, sample_presentation, sample_t
     # default. Both must receive the extension-inferred doc_type.
     seen = {}
 
-    def fake(prompt, doc_type, backend=None):
+    def fake(prompt, doc_type, backend=None, language="zh-TW"):
         seen["doc_type"] = doc_type
         return sample_presentation if doc_type == "presentation" else sample_text_doc
 
@@ -510,7 +518,7 @@ def test_doc_type_inference(tmp_path, monkeypatch, sample_presentation, sample_t
 def test_unknown_extension_exit_2(tmp_path, monkeypatch):
     called = {"hit": False}
 
-    def fake(prompt, doc_type, backend=None):
+    def fake(prompt, doc_type, backend=None, language="zh-TW"):
         called["hit"] = True
         raise AssertionError("generate_ir must not be called")
 
@@ -523,7 +531,7 @@ def test_unknown_extension_exit_2(tmp_path, monkeypatch):
 
 
 def test_generate_failure_exit_1(tmp_path, monkeypatch):
-    def boom(prompt, doc_type, backend=None):
+    def boom(prompt, doc_type, backend=None, language="zh-TW"):
         raise RuntimeError("boom")
 
     monkeypatch.setattr("odforge.cli.generate_ir", boom)
@@ -540,7 +548,7 @@ def test_generate_failure_exit_1(tmp_path, monkeypatch):
 def test_backend_passthrough(tmp_path, monkeypatch, sample_presentation):
     seen = {}
 
-    def fake(prompt, doc_type, backend=None):
+    def fake(prompt, doc_type, backend=None, language="zh-TW"):
         seen["backend"] = backend
         return sample_presentation
 
@@ -565,7 +573,7 @@ def test_new_ods_success(tmp_path, monkeypatch, sample_spreadsheet):
     # CLI and validates, so the command succeeds with exit 0.
     monkeypatch.setattr(
         "odforge.cli.generate_ir",
-        lambda prompt, doc_type, backend=None: sample_spreadsheet,
+        lambda prompt, doc_type, backend=None, language="zh-TW": sample_spreadsheet,
     )
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["new", "x", "-o", "out.ods", "--no-soffice"])
@@ -577,7 +585,7 @@ def test_new_ods_success(tmp_path, monkeypatch, sample_spreadsheet):
 def test_error_message_with_brackets_survives(tmp_path, monkeypatch):
     # Pydantic-style errors contain bracketed segments like
     # "[type=missing, input_value=x]"; rich markup must not swallow them.
-    def boom(prompt, doc_type, backend=None):
+    def boom(prompt, doc_type, backend=None, language="zh-TW"):
         raise RuntimeError("field required [type=missing, input_value=x]")
 
     monkeypatch.setattr("odforge.cli.generate_ir", boom)
@@ -592,7 +600,7 @@ def test_error_message_with_brackets_survives(tmp_path, monkeypatch):
 def test_long_error_message_truncated(tmp_path, monkeypatch):
     # A real-API failure once dumped ~18KB of pydantic errors to the terminal;
     # the printed message must be bounded and flag the truncation.
-    def boom(prompt, doc_type, backend=None):
+    def boom(prompt, doc_type, backend=None, language="zh-TW"):
         raise RuntimeError("x" * 2000)
 
     monkeypatch.setattr("odforge.cli.generate_ir", boom)
@@ -612,7 +620,7 @@ def test_validation_failure_exit_1(tmp_path, monkeypatch, sample_text_doc):
 
     monkeypatch.setattr(
         "odforge.cli.generate_ir",
-        lambda prompt, doc_type, backend=None: sample_text_doc,
+        lambda prompt, doc_type, backend=None, language="zh-TW": sample_text_doc,
     )
     monkeypatch.setattr(
         "odforge.cli.validate_odf",
@@ -641,7 +649,7 @@ def test_qa_flag_runs_loop_and_prints_summary(tmp_path, monkeypatch, sample_pres
 
     captured = {}
 
-    def fake_loop(ir, out_path, *, outline=None, backend=None, llm_backend=None):
+    def fake_loop(ir, out_path, *, outline=None, backend=None, llm_backend=None, dropped=None):
         captured["backend"] = backend
         captured["outline_pages"] = None if outline is None else len(outline.pages)
         return QAReport(
@@ -650,7 +658,7 @@ def test_qa_flag_runs_loop_and_prints_summary(tmp_path, monkeypatch, sample_pres
                 [Finding(slide_no=2, issue="溢出", severity="error", fix_hint="縮短")],
                 [],
             ],
-            final_ok=True,
+            verdict="pass",
         )
 
     monkeypatch.setattr("odforge.cli.run_qa_loop", fake_loop)
@@ -677,7 +685,7 @@ def test_qa_flag_reports_unconverged(tmp_path, monkeypatch, sample_presentation)
     monkeypatch.setattr(
         "odforge.cli.run_qa_loop",
         lambda *a, **k: QAReport(
-            rounds=2, findings_by_round=[[err], [err]], final_ok=False
+            rounds=2, findings_by_round=[[err], [err]], verdict="fail"
         ),
     )
     monkeypatch.chdir(tmp_path)
@@ -729,7 +737,7 @@ def test_qa_flag_falls_back_when_no_soffice(tmp_path, monkeypatch, sample_presen
 def test_qa_flag_ignored_for_non_presentation(tmp_path, monkeypatch, sample_text_doc):
     monkeypatch.setattr(
         "odforge.cli.generate_ir",
-        lambda prompt, doc_type, backend=None: sample_text_doc,
+        lambda prompt, doc_type, backend=None, language="zh-TW": sample_text_doc,
     )
 
     def boom(*a, **k):
@@ -742,3 +750,238 @@ def test_qa_flag_ignored_for_non_presentation(tmp_path, monkeypatch, sample_text
     )
     assert result.exit_code == 0, _out(result)
     assert "僅適用於簡報" in _out(result)
+
+
+def test_qa_flag_never_prints_green_for_an_unfinished_review(
+    tmp_path, monkeypatch, sample_presentation
+):
+    # rounds=0 + failure = 沒有任何模型看過這份簡報;final_ok 在這個形狀下是
+    # 空洞的 True(什麼都沒改),印「設計 OK」等於替沒發生過的評審背書。
+    from odforge.critic import QAReport
+
+    _mock_two_stage(monkeypatch, sample_presentation)
+    monkeypatch.setattr(
+        "odforge.cli.find_soffice", lambda: __import__("pathlib").Path("soffice")
+    )
+    monkeypatch.setenv("ODFORGE_VISION_BACKEND", "ollama")
+
+    def fake_loop(ir, out_path, *, outline=None, backend=None, llm_backend=None, dropped=None):
+        return QAReport(
+            rounds=0,
+            findings_by_round=[],
+            verdict="unknown",
+            note="視覺品檢無法執行：codex exec 結束碼 1",
+            failure="視覺品檢無法執行：codex exec 結束碼 1",
+        )
+
+    monkeypatch.setattr("odforge.cli.run_qa_loop", fake_loop)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["new", "做簡報", "-o", "out.odp", "--qa", "--no-soffice"]
+    )
+    assert result.exit_code == 0, _out(result)
+    out = _out(result)
+    assert "設計 OK" not in out
+    assert "設計評審未完成" in out
+    assert "codex exec" in out  # the reason reaches the operator verbatim
+
+
+# ---------------------------------------------------------------------------
+# P2-03 — the final verdict must describe the file that is actually on disk.
+# ---------------------------------------------------------------------------
+
+
+def test_qa_repair_triggers_a_second_full_validation(tmp_path, monkeypatch, sample_presentation):
+    """QA 修補後重新算圖 → 表格上的三道閘結果屬於「修補前」那個檔案。
+
+    退出碼與交付宣稱必須來自同一份產物。舊流程驗證一次就定案,之後 QA 又把
+    磁碟上的檔案換掉了 —— 綠燈蓋在沒人驗過的 bytes 上。
+    """
+    from odforge.critic import QAReport
+
+    _mock_two_stage(monkeypatch, sample_presentation)
+    monkeypatch.setattr("odforge.cli.find_soffice", lambda: Path("soffice"))
+    monkeypatch.setenv("ODFORGE_VISION_BACKEND", "ollama")
+    monkeypatch.setattr(
+        "odforge.cli.run_qa_loop",
+        lambda *a, **k: QAReport(
+            rounds=1, findings_by_round=[[]], verdict="pass", repaired=True
+        ),
+    )
+
+    validations: list = []
+    real_validate = validate_odf
+
+    def counting_validate(path, **kwargs):
+        validations.append(path)
+        return real_validate(path, **kwargs)
+
+    monkeypatch.setattr("odforge.cli.validate_odf", counting_validate)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["new", "做簡報", "-o", "out.odp", "--qa", "--no-soffice"]
+    )
+
+    assert result.exit_code == 0, _out(result)
+    assert len(validations) == 2, "repaired deck was never re-validated"
+    assert "QA 修補後" in _out(result)
+
+
+def test_no_repair_means_no_redundant_second_validation(
+    tmp_path, monkeypatch, sample_presentation
+):
+    from odforge.critic import QAReport
+
+    _mock_two_stage(monkeypatch, sample_presentation)
+    monkeypatch.setattr("odforge.cli.find_soffice", lambda: Path("soffice"))
+    monkeypatch.setenv("ODFORGE_VISION_BACKEND", "ollama")
+    monkeypatch.setattr(
+        "odforge.cli.run_qa_loop",
+        lambda *a, **k: QAReport(
+            rounds=1, findings_by_round=[[]], verdict="pass", repaired=False
+        ),
+    )
+    validations: list = []
+    real_validate = validate_odf
+    monkeypatch.setattr(
+        "odforge.cli.validate_odf",
+        lambda path, **kw: (validations.append(path), real_validate(path, **kw))[1],
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["new", "做簡報", "-o", "out.odp", "--qa", "--no-soffice"]
+    )
+    assert result.exit_code == 0, _out(result)
+    assert len(validations) == 1
+
+
+def test_dropped_content_is_named_in_the_cli_output(tmp_path, monkeypatch, sample_presentation):
+    """P2-04(CLI 端):被版面預算刪掉的內容必須逐條印出來,不能只留在備忘稿。"""
+    from odforge.llm import DroppedContent
+
+    def fake_outline(prompt, backend=None, pages=None, language="zh-TW"):
+        return _sample_outline()
+
+    def fake_slides(outline, backend=None, dropped=None):
+        if dropped is not None:
+            dropped.append(
+                DroppedContent(slide_no=2, title="大綱", items=["被砍的第一條", "被砍的第二條"])
+            )
+        return sample_presentation
+
+    monkeypatch.setattr("odforge.cli.generate_outline", fake_outline)
+    monkeypatch.setattr("odforge.cli.generate_slides", fake_slides)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["new", "做簡報", "-o", "out.odp", "--no-soffice"])
+
+    assert result.exit_code == 0, _out(result)
+    out = _out(result)
+    assert "未能保留的內容" in out
+    assert "被砍的第一條" in out
+    assert "被砍的第二條" in out
+
+
+# ---------------------------------------------------------------------------
+# --language / --byline / --logo (CLI parity with the web console)
+# ---------------------------------------------------------------------------
+
+
+def _png_bytes() -> bytes:
+    return bytes.fromhex(
+        "89504e470d0a1a0a0000000d494844520000000100000001080600000"
+        "01f15c4890000000a49444154789c6360000002000154a24f3b0000000049454e44ae426082"
+    )
+
+
+def test_language_is_forwarded_and_stamped_on_the_outline(
+    tmp_path, monkeypatch, sample_presentation
+):
+    seen = {}
+
+    def fake_outline(prompt, backend=None, language="zh-TW"):
+        seen["language"] = language
+        return _sample_outline()
+
+    def fake_slides(outline, backend=None, dropped=None):
+        seen["outline_language"] = outline.language
+        return sample_presentation
+
+    monkeypatch.setattr("odforge.cli.generate_outline", fake_outline)
+    monkeypatch.setattr("odforge.cli.generate_slides", fake_slides)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["new", "deck", "-o", "out.odp", "--language", "en", "--no-soffice"]
+    )
+    assert result.exit_code == 0, _out(result)
+    assert seen["language"] == "en"
+    # Stage 2 reads it off the outline, so it must survive the handoff.
+    assert seen["outline_language"] == "en"
+
+
+def test_one_shot_forwards_the_language_too(tmp_path, monkeypatch, sample_presentation):
+    seen = {}
+
+    def fake_ir(prompt, doc_type, backend=None, language="zh-TW"):
+        seen["language"] = language
+        return sample_presentation
+
+    monkeypatch.setattr("odforge.cli.generate_ir", fake_ir)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app,
+        ["new", "deck", "-o", "out.odp", "--one-shot", "--language", "bilingual",
+         "--no-soffice"],
+    )
+    assert result.exit_code == 0, _out(result)
+    assert seen["language"] == "bilingual"
+
+
+def test_byline_and_logo_are_written_onto_the_deck(
+    tmp_path, monkeypatch, sample_presentation
+):
+    _mock_two_stage(monkeypatch, sample_presentation)
+    logo = tmp_path / "crest.png"
+    logo.write_bytes(_png_bytes())
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "new", "deck", "-o", "out.odp",
+            "--byline", "資工系 · 王小明",
+            "--logo", str(logo),
+            "--logo-placement", "cover",
+            "--no-soffice",
+        ],
+    )
+    assert result.exit_code == 0, _out(result)
+    with zipfile.ZipFile(tmp_path / "out.odp") as archive:
+        content = archive.read("content.xml").decode("utf-8")
+        pictures = [n for n in archive.namelist() if n.startswith("Pictures/logo-")]
+    assert "資工系 · 王小明" in content
+    assert len(pictures) == 1
+
+
+def test_byline_is_ignored_for_non_presentations(
+    tmp_path, monkeypatch, sample_text_doc
+):
+    monkeypatch.setattr(
+        "odforge.cli.generate_ir",
+        lambda prompt, doc_type, backend=None, language="zh-TW": sample_text_doc,
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["new", "文件", "-o", "out.odt", "--byline", "資工系", "--no-soffice"]
+    )
+    assert result.exit_code == 0, _out(result)
+    assert "僅適用於 .odp" in _out(result)
+
+
+def test_a_new_preset_is_selectable_from_the_cli(
+    tmp_path, monkeypatch, sample_presentation
+):
+    _mock_two_stage(monkeypatch, sample_presentation)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(
+        app, ["new", "deck", "-o", "out.odp", "--theme", "gold", "--no-soffice"]
+    )
+    assert result.exit_code == 0, _out(result)

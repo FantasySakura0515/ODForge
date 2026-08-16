@@ -86,10 +86,19 @@ export function UnitDetail({ units, n, jobId, onClose, onNavigate, dispatch }: P
     try {
       const res = await postRegenerate(jobId, n, text);
       dispatch({ type: "regen_done", data: { n: res.n, slide: res.slide, preview_url: res.preview_url } });
+      // 成品換了一版 → 四道閘是後端重算過的結果,照單接收。特別是設計閘:
+      // 視覺評審看的是被換掉的那一頁,舊的綠勾不能留在畫面上冒充這一版的保證。
+      for (const gate of res.gates ?? []) dispatch({ type: "gate_result", data: gate });
       setInstruction("");
-    } catch {
+    } catch (err) {
       dispatch({ type: "regen_error", data: { n } });
-      setError("重生失敗,請再試一次");
+      // 後端在失敗時已完整回滾(IR、成品、預覽、閘門都是原樣),所以這裡只要說
+      // 清楚「這一頁沒有變」,使用者才知道不必擔心檔案已經被改壞。
+      setError(
+        err instanceof Error && err.message
+          ? `重生失敗,這一頁維持原樣:${err.message}`
+          : "重生失敗,這一頁維持原樣,請再試一次",
+      );
     } finally {
       setBusy(false);
     }

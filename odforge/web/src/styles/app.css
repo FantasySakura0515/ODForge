@@ -61,6 +61,23 @@ button { color: inherit; }
 
 .skiplink:focus { transform: translateY(0); }
 
+/* Available to assistive technology, invisible on screen. Used for live regions
+   whose *announcement* must be coarser than the visible text (see
+   StatusNarrator: the visible line names each page as it lands, the announced
+   one names only the phase). `display:none`/`visibility:hidden` would remove it
+   from the accessibility tree entirely, which is the opposite of the intent. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* --------------------------------------------------------------------------
    Shared site header
    -------------------------------------------------------------------------- */
@@ -170,7 +187,7 @@ button { color: inherit; }
   grid-template-columns: repeat(2, 1fr);
   padding: 3px;
   background: var(--surface2);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-interactive);
   border-radius: 8px;
 }
 
@@ -346,8 +363,8 @@ button { color: inherit; }
 }
 
 .archive-state p,
-.archive-state h3 { margin: 0; }
-.archive-state h3 { color: var(--text); font-family: var(--f-title); font-size: 22px; }
+.archive-state h2 { margin: 0; }
+.archive-state h2 { color: var(--text); font-family: var(--f-title); font-size: 22px; }
 .archive-state > span:not(.archive-loader) { color: var(--quiet); font-family: var(--f-mono); font-size: 42px; }
 .archive-state .text-action { margin-top: 5px; color: var(--accent); }
 .archive-error p { color: var(--crit); }
@@ -371,19 +388,15 @@ button { color: inherit; }
   transition: background 160ms ease;
 }
 
-.session-card::before {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 3px;
-  content: "";
-  background: transparent;
-  transition: background 160ms ease;
+.session-card {
+  border: 1px solid transparent;
+  transition: background 160ms ease, border-color 160ms ease;
 }
 
-.session-card:hover { background: color-mix(in srgb, var(--surface2) 72%, transparent); }
-.session-card:hover::before { background: var(--accent); }
+.session-card:hover {
+  background: color-mix(in srgb, var(--surface2) 72%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
 
 .session-main {
   display: grid;
@@ -609,7 +622,7 @@ button { color: inherit; }
   min-height: 154px;
   padding: 18px 18px 16px;
   background: var(--bg);
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--line-interactive);
   border-radius: 14px;
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface) 80%, transparent);
   transition: border-color 180ms ease, box-shadow 180ms ease;
@@ -643,7 +656,10 @@ button { color: inherit; }
 }
 
 .promptbar textarea:focus { outline: 0; }
-.promptbar textarea::placeholder { color: color-mix(in srgb, var(--muted) 74%, transparent); }
+/* 不用 alpha 調淡:color-mix(--muted 74%, transparent) 疊在 surface 上實測
+   只有 3.68:1,而 placeholder 是使用者最需要讀得懂的一行提示。--quiet 就是
+   為「比內文淡、但仍過 AA」準備的 token,直接用它。 */
+.promptbar textarea::placeholder { color: var(--quiet); }
 
 .forge {
   align-self: end;
@@ -768,7 +784,9 @@ button { color: inherit; }
   text-transform: uppercase;
 }
 
-.discovery h3 {
+/* 面板標題是 h2、題目是 h3。選擇器要跟著標記走——之前選在 h3/h4 上,結果標題
+   與題目全部掉回瀏覽器預設(題目被放大成 27px、標題多出一圈預設 margin)。 */
+.discovery h2 {
   max-width: 24em;
   margin: 0;
   font-family: var(--f-title);
@@ -777,33 +795,13 @@ button { color: inherit; }
   line-height: 1.35;
 }
 
-.brief-score {
-  flex: none;
-  display: grid;
-  min-width: 78px;
-  padding: 8px 10px 7px;
-  text-align: right;
-  border-right: 3px solid var(--accent);
-}
-
-.brief-score strong {
-  font-family: var(--f-mono);
-  font-size: 21px;
-  line-height: 1;
-}
-
-.brief-score span {
-  margin-top: 4px;
-  color: var(--muted);
-  font-size: 9px;
-  letter-spacing: 0.08em;
-}
-
+/* 題號進度:空軌用 --line(與面板同一套分隔線),不用 --surface3——那個灰
+   比面板深,在白色面板上看起來像另一層的殘影而不是軌道。 */
 .discovery-meter {
   height: 3px;
   margin: 18px 0 24px;
   overflow: hidden;
-  background: var(--surface3);
+  background: var(--line);
   border-radius: 99px;
 }
 
@@ -837,7 +835,7 @@ button { color: inherit; }
   font-weight: 700;
 }
 
-.question-copy h4 {
+.question-copy h3 {
   margin: 0;
   font-size: 18px;
   letter-spacing: -0.015em;
@@ -867,7 +865,7 @@ button { color: inherit; }
   color: var(--text);
   text-align: left;
   background: var(--surface);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-interactive);
   border-radius: 9px;
   font-size: 12px;
   font-weight: 650;
@@ -879,7 +877,7 @@ button { color: inherit; }
   flex: none;
   width: 12px;
   height: 12px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--line-interactive);
   border-radius: 50%;
   box-shadow: inset 0 0 0 3px var(--surface);
 }
@@ -887,6 +885,17 @@ button { color: inherit; }
 .answer-option:hover { border-color: var(--accent); transform: translateY(-1px); }
 .answer-option.selected { background: var(--accent-soft); border-color: var(--accent); }
 .answer-option.selected > span { background: var(--accent); border-color: var(--accent); }
+
+/* 「其他」跨滿一整列並用虛線框:它跟上面幾個選項不是同一種東西——選它不是給
+   答案,是宣告「都不對,我自己寫」,所以看起來要像出口而不是第五個候選。 */
+.answer-option.other {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  border-style: dashed;
+  font-weight: 600;
+}
+
+.answer-option.other.selected { color: var(--text); border-style: solid; }
 
 .custom-answer {
   display: block;
@@ -907,7 +916,7 @@ button { color: inherit; }
   resize: vertical;
   color: var(--text);
   background: var(--surface);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-interactive);
   border-radius: 9px;
   line-height: 1.65;
   transition: border-color 160ms ease, box-shadow 160ms ease;
@@ -980,11 +989,13 @@ button { color: inherit; }
 .discovery-actions.end { flex-direction: row-reverse; justify-content: flex-start; }
 .discovery-actions.end .forge { min-width: 210px; }
 
+/* 同一塊面板的兩個狀態(讀題中 / 問答中):框線與底色都跟 .question-card 對齊,
+   讀題完成時卡片不會看起來換了一層。 */
 .discovery-loading {
   min-height: 260px;
   padding: 26px 28px 22px;
   background: var(--bg);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   border-radius: 4px 16px 16px;
 }
 
@@ -997,7 +1008,7 @@ button { color: inherit; }
 
 .discovery-loading-head .discovery-kicker { margin-bottom: 5px; }
 
-.discovery-loading-head h3 {
+.discovery-loading-head h2 {
   max-width: none;
   font-size: clamp(19px, 2vw, 25px);
 }
@@ -1010,12 +1021,13 @@ button { color: inherit; }
   font-size: 12px;
 }
 
+/* 沒有 border-left:那條線會被 grid 拉成整列高的孤立豎線,看起來像別的元件
+   漏出來的殘影。間距用 padding 就夠。 */
 .discovery-elapsed {
   display: grid;
   min-width: 66px;
   justify-items: end;
   padding-left: 16px;
-  border-left: 1px solid var(--line);
   font-family: var(--f-mono);
 }
 
@@ -1033,32 +1045,27 @@ button { color: inherit; }
   text-transform: uppercase;
 }
 
+/* 一顆珠子沿著環轉。環要看得見(2px、accent 染色),珠子要落在環上而不是飄在
+   環外。環裡面不再放第二個圖形——那顆淺色菱形在白底上只是一團看不懂的灰塊。 */
 .discovery-orbit {
   position: relative;
   width: 58px;
   height: 58px;
-  border: 1px solid var(--line-strong);
+  border: 2px solid color-mix(in srgb, var(--accent) 34%, transparent);
   border-radius: 50%;
   animation: discovery-spin 2.2s linear infinite;
 }
 
 .discovery-orbit span {
   position: absolute;
-  top: -4px;
-  left: 23px;
+  top: -6px;
+  left: 22px;
   width: 10px;
   height: 10px;
   background: var(--accent);
+  border: 2px solid var(--bg);
   border-radius: 50%;
   box-shadow: 0 0 18px var(--glow);
-}
-
-.discovery-orbit i {
-  position: absolute;
-  inset: 17px;
-  background: var(--accent-soft);
-  border-radius: 4px;
-  transform: rotate(45deg);
 }
 
 @keyframes discovery-spin { to { transform: rotate(360deg); } }
@@ -1071,28 +1078,37 @@ button { color: inherit; }
   list-style: none;
 }
 
+/* 圓點一列、文字一列。連接線有自己的格子(第一列第二欄),絕不會壓到文字上——
+   舊版把線絕對定位成 li::after 橫過整個文字欄,那條灰線正好落在標籤的字高上,
+   看起來像刪除線,也像一條不會動的殘影。 */
 .discovery-trace li {
-  position: relative;
   display: grid;
-  grid-template-columns: 26px minmax(0, 1fr);
-  gap: 9px;
+  grid-template-columns: 25px minmax(0, 1fr);
+  grid-template-rows: 25px auto;
+  column-gap: 8px;
   min-width: 0;
-  padding-right: 14px;
+  padding-right: 8px;
 }
 
-.discovery-trace li:not(:last-child)::after {
-  position: absolute;
-  top: 12px;
-  right: 0;
-  left: 25px;
-  height: 1px;
+.discovery-trace li:last-child { padding-right: 0; }
+
+.trace-line {
+  grid-area: 1 / 2 / 2 / 3;
+  align-self: center;
+  overflow: hidden;
+  height: 2px;
   background: var(--line);
-  content: "";
+  border-radius: 99px;
+}
+
+.trace-copy {
+  grid-area: 2 / 1 / 3 / -1;
+  min-width: 0;
+  padding-top: 9px;
 }
 
 .trace-mark {
-  position: relative;
-  z-index: 1;
+  grid-area: 1 / 1 / 2 / 2;
   display: grid;
   width: 25px;
   height: 25px;
@@ -1131,6 +1147,27 @@ button { color: inherit; }
   color: var(--on-accent);
   background: var(--accent);
   border-color: var(--accent);
+}
+
+/* 走完的那一段染成 accent、進行中的那一段有一顆亮點往下一站流。線因此在說
+   「進度到這裡、還在動」,而不是四段一樣的灰。 */
+.discovery-trace li[data-status="done"] .trace-line { background: var(--accent); }
+
+.discovery-trace li[data-status="active"] .trace-line::after {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  transform: translateX(-100%);
+  animation: trace-flow 1.5s ease-in-out infinite;
+  content: "";
+}
+
+@keyframes trace-flow {
+  to { transform: translateX(100%); }
+}
+
+@keyframes trace-flow-down {
+  to { transform: translateY(100%); }
 }
 
 .discovery-trace li[data-status="active"] .trace-mark {
@@ -1188,96 +1225,40 @@ button { color: inherit; }
 .discovery-error .discovery-actions { flex-wrap: wrap; }
 .forge.compact { min-width: 170px; }
 
-.examples {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0 16px;
+/* 需求框底下那一行說明:取代舊的範例清單——範例會被照抄,說明不會。 */
+.prompt-tip {
+  margin: -4px 0 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.6;
 }
 
-.exlead {
-  grid-column: 1 / -1;
-  margin-bottom: 2px;
+/* 參考文件與客製化:兩塊常駐的第一層區塊,不再是抽屜裡的東西。 */
+.composer-block {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.block-head { display: grid; gap: 3px; }
+
+.block-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+}
+
+.block-sub {
+  margin: 0;
   color: var(--muted);
   font-size: 11px;
-  font-weight: 650;
-}
-
-.exchip {
-  display: grid;
-  grid-template-columns: 25px minmax(0, 1fr);
-  gap: 7px;
-  align-items: start;
-  min-width: 0;
-  padding: 10px 0;
-  overflow: hidden;
-  color: var(--muted);
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  font-size: 11.5px;
-  line-height: 1.5;
-  text-align: left;
-  text-overflow: ellipsis;
-  cursor: pointer;
-  transition: color 180ms ease, border-color 180ms ease, padding-left 180ms ease;
-}
-
-.exchip::before {
-  content: attr(data-index);
-  color: var(--accent);
-  font-family: var(--f-mono);
-  font-size: 9px;
-}
-
-.exchip:hover {
-  padding-left: 4px;
-  color: var(--text);
-  border-color: var(--accent);
-}
-
-.exchip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-
-.advbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  min-height: 28px;
-}
-
-.advtoggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0;
-  color: var(--muted);
-  background: transparent;
-  border: 0;
-  font-size: 12px;
-  font-weight: 650;
-  cursor: pointer;
-  transition: color 180ms ease;
-}
-
-.advtoggle:hover { color: var(--text); }
-.advtoggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-
-.advtoggle-icon {
-  display: grid;
-  width: 22px;
-  height: 22px;
-  place-items: center;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-radius: 5px;
-  font-family: var(--f-mono);
-  font-size: 14px;
-}
-
-.advsummary {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 5px;
+  line-height: 1.55;
 }
 
 .advchip {
@@ -1291,22 +1272,14 @@ button { color: inherit; }
 
 .advchip.warn { color: var(--crit); background: var(--crit-soft); }
 
-.advdrawer {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 18px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-}
-
 .settings-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 150px;
   gap: 16px;
   align-items: start;
 }
+
+.settings-grid.even { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
 .advfield {
   display: flex;
@@ -1331,6 +1304,8 @@ button { color: inherit; }
   gap: 8px;
 }
 
+.density-options.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
 .density-option {
   position: relative;
   display: flex;
@@ -1340,7 +1315,7 @@ button { color: inherit; }
   padding: 10px 12px;
   color: var(--muted);
   background: var(--surface);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-interactive);
   border-radius: 8px;
   cursor: pointer;
   transition: color 180ms ease, background 180ms ease, border-color 180ms ease;
@@ -1350,7 +1325,7 @@ button { color: inherit; }
   flex: none;
   width: 12px;
   height: 12px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--line-interactive);
   border-radius: 50%;
   content: "";
   box-shadow: inset 0 0 0 3px var(--surface);
@@ -1393,58 +1368,387 @@ button { color: inherit; }
 
 .density-option:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* 第四道閘的開關:沿用 density-option 的卡片語彙,指示器改方框打勾。 */
-.qa-option {
-  position: relative;
+/* 單選晶片:場合 / 講述時間 / 語氣。再點一次同一顆即取消,回到「交給 AI」。 */
+.chipset {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  padding: 7px 11px;
   color: var(--muted);
   background: var(--surface);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-interactive);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease, border-color 160ms ease;
+}
+
+.chip:hover { color: var(--text); border-color: var(--line-strong); }
+
+.chip.on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 視覺主題:色票 + 名稱的單選格。AI 決定排第一,而且是預設。 */
+.themeset {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.theme-option {
+  position: relative;
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--line-interactive);
   border-radius: 8px;
   cursor: pointer;
   transition: color 180ms ease, background 180ms ease, border-color 180ms ease;
 }
 
-.qa-option::before {
-  flex: none;
-  width: 12px;
-  height: 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: 3px;
-  content: "";
-}
-
-.qa-option.on {
+.theme-option.on {
   color: var(--text);
   background: var(--accent-soft);
   border-color: var(--accent);
 }
 
-.qa-option.on::before {
-  color: var(--surface);
-  background: var(--accent);
-  border-color: var(--accent);
-  content: "✓";
-  font-size: 9px;
-  line-height: 12px;
-  text-align: center;
-}
-
-.qa-option > span { display: grid; gap: 2px; }
-.qa-option b { color: var(--text); font-size: 11px; line-height: 1.3; }
-.qa-option small { color: var(--muted); font-size: 9.5px; line-height: 1.35; }
-
-.qa-option input {
+.theme-option input {
   position: absolute;
   width: 1px;
   height: 1px;
   opacity: 0;
 }
 
-.qa-option:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.theme-option:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.theme-name { font-size: 11px; font-weight: 650; }
+
+/* 底色是色票本身,兩個小方塊是 accent 與內文色——三個顏色就足以認出一組配色。 */
+.theme-swatch {
+  display: flex;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+  padding-bottom: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+}
+
+.theme-swatch i {
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+}
+
+.theme-swatch.auto {
+  background: conic-gradient(
+    from 210deg,
+    #1a4b8c,
+    #0f766e,
+    #2c6e49,
+    #c0560e,
+    #b49bf5,
+    #1a4b8c
+  );
+}
+
+/* 第四道閘的狀態列:它不是開關,只報告這一輪跑不跑得成。 */
+.qa-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: 8px;
+}
+
+.qa-status[data-state="on"] {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--line));
+  border-left-color: var(--accent);
+}
+
+.qa-status[data-state="off"] { border-left-color: var(--warn); }
+
+.qa-mark {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  place-items: center;
+  margin-top: 1px;
+  color: var(--on-accent);
+  background: var(--line-strong);
+  border-radius: 4px;
+  font-size: 10px;
+}
+
+.qa-status[data-state="on"] .qa-mark { background: var(--accent); }
+
+.qa-copy { display: grid; gap: 3px; }
+.qa-copy b { color: var(--text); font-size: 11.5px; line-height: 1.35; }
+.qa-copy small { color: var(--muted); font-size: 10.5px; line-height: 1.5; }
+
+.linkish {
+  flex: none;
+  align-self: center;
+  padding: 6px 8px;
+  color: var(--accent);
+  background: transparent;
+  border: 0;
+  font-size: 11px;
+  font-weight: 650;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.text-setting input {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  padding: 0 11px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line-interactive);
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.text-setting input::placeholder { color: var(--quiet); }
+.text-setting input:focus-visible { border-color: var(--accent); outline: 2px solid var(--accent-soft); }
+
+.text-setting select {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 9px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line-interactive);
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+/* --------------------------------------------------------------------------
+   範本庫 (home) — built-in presets and the user's own designs
+   -------------------------------------------------------------------------- */
+
+.template-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 26px;
+  padding: 24px 26px 28px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 3px 18px 18px 18px;
+}
+
+.tpl-lead {
+  margin: -4px 0 0;
+  max-width: 62ch;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.tpl-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* The file input itself is invisible; the label is the button. */
+.tpl-import {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  padding: 0 11px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px dashed var(--line-strong);
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.tpl-import:hover { color: var(--text); border-color: var(--accent); }
+.tpl-import input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.tpl-import:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.tpl-section {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.tpl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 12px;
+}
+
+.tpl-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.tpl-meta { display: grid; gap: 2px; }
+.tpl-meta strong { font-size: 12px; }
+.tpl-meta small { color: var(--quiet); font-size: 10px; }
+
+.tpl-card-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: auto;
+}
+
+.tpl-card-actions .text-action { padding: 0 7px; font-size: 10.5px; }
+.text-action.danger:hover { color: var(--crit); background: var(--crit-soft); }
+
+/* 迷你封面:用範本自己的顏色畫,所以卡片上看到的就是簡報上會出現的。 */
+.tpl-preview {
+  position: relative;
+  display: block;
+  padding: 14px 12px 16px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  aspect-ratio: 16 / 9;
+}
+
+.tpl-preview .tpl-rule {
+  display: block;
+  width: 28px;
+  height: 3px;
+  margin-bottom: 8px;
+  border-radius: 2px;
+}
+
+.tpl-preview b {
+  display: block;
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.tpl-preview em {
+  display: block;
+  margin-top: 3px;
+  font-size: 9px;
+  font-style: normal;
+}
+
+.tpl-preview .tpl-card {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: block;
+  width: 42%;
+  height: 26%;
+  border-radius: 4px;
+  text-decoration: none;
+}
+
+.tpl-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+}
+
+.tpl-editor-main {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.tpl-fields { display: grid; gap: 14px; }
+
+.tpl-swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 8px;
+}
+
+.tpl-swatch {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid var(--line-interactive);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.tpl-swatch input[type="color"] {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.tpl-swatch span { display: grid; gap: 1px; }
+.tpl-swatch b { font-size: 10.5px; }
+.tpl-swatch small { color: var(--quiet); font: 9px var(--f-mono); }
+.tpl-swatch:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.tpl-problems {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 10px 12px 10px 28px;
+  color: var(--crit);
+  background: var(--crit-soft);
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.tpl-problems-note { color: var(--muted); list-style: none; margin-left: -16px; }
+.tpl-error { margin: 0; color: var(--crit); font-size: 11.5px; }
+
+.tpl-editor-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
 
 .page-setting input {
   width: 100%;
@@ -1453,7 +1757,7 @@ button { color: inherit; }
   padding: 0 11px;
   color: var(--text);
   background: var(--surface);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-interactive);
   border-radius: 7px;
   font-size: 12px;
 }
@@ -1477,7 +1781,7 @@ button { color: inherit; }
   padding: 7px 10px;
   color: var(--text);
   background: var(--bg);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-interactive);
   border-radius: 5px;
   font-weight: 700;
   cursor: pointer;
@@ -1488,6 +1792,24 @@ button { color: inherit; }
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+}
+
+.assetloading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.assetloading .spin {
+  display: inline-block;
+  color: var(--accent);
+  animation: asset-spin 1.1s linear infinite;
+}
+
+@keyframes asset-spin {
+  to { transform: rotate(360deg); }
 }
 
 .assetclear {
@@ -1557,8 +1879,12 @@ button { color: inherit; }
   text-transform: uppercase;
 }
 
+/* An <h1> semantically; the workhead's own type scale visually. Being the
+   document's top-level heading is a landmark for assistive tech, not a
+   licence to make it 32px. */
 .promptline {
   min-width: 0;
+  margin: 0;
   overflow: hidden;
   color: var(--text);
   font-size: 14px;
@@ -1632,6 +1958,29 @@ button { color: inherit; }
 .cockpit[data-outline="absent"] {
   grid-template-columns: minmax(0, 1fr) 300px;
   grid-template-areas: "center right";
+}
+
+/* 桌機:整個 cockpit 綁在 viewport 內,三欄各自捲動。沒有這一條時,一份 20 頁的
+   簡報會把頁面撐到三、四個螢幕高,而交付列(下載鈕)就落在首屏之外——使用者
+   得先捲過整面預覽牆才找得到自己要的那個動作。 */
+@media (min-width: 921px) {
+  .workbench {
+    display: flex;
+    flex-direction: column;
+    max-height: 100dvh;
+  }
+
+  .cockpit {
+    min-height: 0;
+    flex: 1 1 auto;
+  }
+
+  .rail,
+  .center {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
 }
 
 .cockpit::before {
@@ -1750,6 +2099,10 @@ button { color: inherit; }
   display: flex;
   flex-direction: column;
   gap: 0;
+  /* Takes the rail's leftover height and scrolls inside itself, so the approval
+     gate above it stays put however long the outline gets. */
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--line-strong) transparent;
@@ -1802,7 +2155,7 @@ button { color: inherit; }
   padding: 0 8px;
   color: var(--text);
   background: var(--bg);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-interactive);
   border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
@@ -1817,7 +2170,7 @@ button { color: inherit; }
   place-items: center;
   color: var(--muted);
   background: transparent;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-interactive);
   border-radius: 6px;
   cursor: pointer;
 }
@@ -1826,33 +2179,61 @@ button { color: inherit; }
 .odel:disabled { opacity: 0.35; cursor: not-allowed; }
 .odel:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+/* Directly under the rail head, full-bleed, with an accent edge: this is a gate
+   the run is blocked on, so it reads as one on arrival. It was previously pinned
+   to the rail's bottom (margin: auto) where a long outline hid it entirely. */
 .confirmbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 9px 11px;
-  margin: auto -20px -26px;
-  padding: 16px 20px;
-  background: var(--surface2);
-  border-top: 1px solid var(--line);
+  gap: 8px 11px;
+  margin: 18px -20px 0;
+  padding: 13px 20px 14px 17px;
+  background: var(--accent-soft);
+  border-top: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+}
+
+/* The palette right below would otherwise stack a second rule 24px away. */
+.confirmbar + .palette {
+  margin-top: 0;
+  border-top: 0;
+}
+
+.confirmkicker {
+  flex-basis: 100%;
+  color: var(--accent);
+  font-family: var(--f-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .confirmgo {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
   min-height: 40px;
-  padding: 0 14px;
+  padding: 7px 14px;
   color: var(--on-accent);
   background: var(--accent);
   border: 0;
   border-radius: 7px;
   font-size: 12px;
   font-weight: 700;
+  text-align: left;
   cursor: pointer;
 }
+
+.confirmgo b { font-size: 12.5px; font-weight: 700; }
+.confirmgo small { font-size: 10px; font-weight: 600; opacity: 0.88; }
 
 .confirmgo:hover:not(:disabled) { background: var(--accent-strong); }
 .confirmgo:disabled { opacity: 0.56; cursor: wait; }
 .confirmgo:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.confirmhint { color: var(--muted); font-size: 10px; }
+.confirmhint { flex: 1 1 120px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .confirmerr { flex-basis: 100%; color: var(--crit); font-size: 11px; }
 
 /* Preview canvas */
@@ -1911,16 +2292,19 @@ button { color: inherit; }
   gap: clamp(14px, 1.8vw, 22px);
 }
 
+/* 上緣留一條 26px 的裱框:頁碼住在那裡,不再壓在投影片自己的標題上。
+   之前頁碼是浮在圖上的半透明徽章,剛好蓋住每頁左上角的標題與 accent 直條,
+   看起來像標題被切掉或被一條線劃過。 */
 .cell {
   position: relative;
   display: block;
   width: 100%;
   min-width: 0;
-  padding: 0;
+  padding: 26px 0 0;
   overflow: hidden;
   color: var(--text);
   background: var(--surface);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-interactive);
   border-radius: 9px;
   box-shadow: var(--shadow-sm);
   text-align: left;
@@ -1943,29 +2327,32 @@ button { color: inherit; }
 
 .cn {
   position: absolute;
-  top: 11px;
-  left: 12px;
+  top: 0;
+  left: 0;
   z-index: 3;
   display: grid;
-  min-width: 27px;
-  height: 22px;
-  place-items: center;
-  color: var(--accent);
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
-  border-radius: 4px;
+  width: 100%;
+  height: 26px;
+  align-items: center;
+  padding: 0 11px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
   font-family: var(--f-mono);
   font-size: 9px;
   font-variant-numeric: tabular-nums;
-  backdrop-filter: blur(8px);
+  letter-spacing: 0.06em;
 }
+
+.cell[data-status="done"] .cn,
+.cell.clickable:hover .cn { color: var(--accent); }
 
 .thumb {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: contain;
-  background: var(--surface);
+  /* 投影片本身多半是近白底,信箱框用 surface2 才看得出是裱框而不是頁面延伸。 */
+  background: var(--surface2);
 }
 
 .thumb.placeholder {
@@ -2088,20 +2475,24 @@ button { color: inherit; }
   transform-origin: left;
 }
 
-.cell[data-status="flagged"] { border-color: var(--crit); }
-.cell[data-status="flagged"]::before {
+/* 品檢徽章是真的元素(見 UnitCell 的 .cqa),不是 ::before 的 content 文字——
+   螢幕閱讀器讀不到 content,而「這一頁沒過品檢」正是最需要被讀到的一句。 */
+.cell[data-qa="flagged"] { border-color: var(--crit); }
+.cell[data-qa="warned"] { border-color: var(--warn); }
+
+.cqa {
   position: absolute;
   top: 10px;
   right: 10px;
   z-index: 4;
   padding: 3px 6px;
-  color: var(--crit);
-  content: "需檢查";
-  background: var(--crit-soft);
   border-radius: 4px;
   font-size: 9px;
   font-weight: 700;
 }
+
+.cqa[data-qa="flagged"] { color: var(--crit); background: var(--crit-soft); }
+.cqa[data-qa="warned"] { color: var(--warn); background: var(--warn-soft); }
 
 .cell[data-status="regen"] { opacity: 0.76; }
 
@@ -2166,12 +2557,43 @@ button { color: inherit; }
   white-space: nowrap;
 }
 
+/* 範圍聲明:四個綠勾很容易被讀成「這份簡報沒問題」,而它們只保證格式與版面。
+   這一行是防止那個誤讀的唯一機制,所以用 --muted 而不是 --quiet。 */
+.gate-scope {
+  margin: 0 0 16px;
+  padding: 10px 11px;
+  color: var(--muted);
+  background: var(--surface2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 10.5px;
+  line-height: 1.6;
+}
+
+.gate-scope b { color: var(--text); font-weight: 700; }
+
 .gs {
   color: var(--quiet);
   font-family: var(--f-mono);
   font-size: 10px;
   text-align: right;
 }
+
+/* 原因說明:跨整列第二行,可完整換行(它常是供應商回的錯誤訊息,截斷就沒用了)。
+   .gt small 是可截斷的固定副標,這裡刻意不共用那組規則。 */
+.gnote {
+  grid-column: 2 / -1;
+  align-self: start;
+  margin: -4px 0 12px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.gate[data-status="skipped"] .gnote,
+.gate[data-status="unknown"] .gnote,
+.gate[data-status="fail"] .gnote { color: var(--text); }
 
 .gate[data-status="active"] .gi,
 .gate[data-status="active"] .gs { color: var(--accent); }
@@ -2185,7 +2607,28 @@ button { color: inherit; }
 .gate[data-status="pass"] .gs { color: var(--pass); font-size: 14px; }
 .gate[data-status="fail"] .gi,
 .gate[data-status="fail"] .gs { color: var(--crit); }
-.gate[data-status="skipped"] { opacity: 0.55; }
+
+/* 「無法判定」= 該檢查卻檢查不成:這份交付的設計其實沒被驗過。用警示色標出來,
+   別跟「使用者自己關掉」共用同一套灰。 */
+.gate[data-status="unknown"] .gi {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+}
+
+.gate[data-status="unknown"] .gs { color: var(--warn); }
+
+/* 未啟用要看起來收斂,但「收斂」不能靠把文字調到讀不到。
+   opacity: 0.62 疊在卡片底色上,.gt 的副標實測只剩 2.7:1 —— 上一輪只確認了
+   .gnote 沒被整列淡化,沒有人去算被淡化的那幾行剩多少。文字改用 --quiet
+   (本來就是「比內文淡但仍過 AA」的 token),opacity 只留給純裝飾的圖示格。 */
+/* 0.75,不是 0.62:圖示格裡是縮寫代碼,是內容不是純裝飾,至少要過非文字的
+   3:1(0.62 實測 2.73:1,淺色主題不及格)。 */
+.gate[data-status="skipped"] .gi { opacity: 0.75; }
+
+.gate[data-status="skipped"] .gt b,
+.gate[data-status="skipped"] .gt small,
+.gate[data-status="skipped"] .gs { color: var(--quiet); }
 
 .spin {
   display: inline-block;
@@ -2266,8 +2709,18 @@ button.finding {
 
 button.finding:hover { border-color: var(--accent); transform: translateY(-1px); }
 button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.finding[data-severity="error"] { border-left: 3px solid var(--crit); }
-.finding[data-severity="warn"] { border-left: 3px solid var(--warn); }
+/* 嚴重度靠狀態底色 + 邊框整圈變色表達,不再用側邊色條 —— 那個語彙在這個介面裡
+   已經被 session 卡、ConfirmBar、錯誤區各用過一次,第四次出現時它不再指涉任何
+   特定意義,只是視覺噪音。 */
+.finding[data-severity="error"] {
+  background: var(--crit-soft);
+  border-color: color-mix(in srgb, var(--crit) 45%, var(--line));
+}
+
+.finding[data-severity="warn"] {
+  background: var(--warn-soft);
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+}
 .fno { color: var(--muted); font-family: var(--f-mono); font-size: 9px; }
 
 .fsev {
@@ -2323,7 +2776,7 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
   padding: 0 13px;
   color: var(--muted);
   background: var(--surface2);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-interactive);
   border-radius: 7px;
   font-size: 11px;
   text-decoration: none;
@@ -2448,7 +2901,7 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
   padding: 0 14px;
   color: var(--muted);
   background: transparent;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--line-interactive);
   border-radius: 7px;
   font-size: 11px;
   cursor: pointer;
@@ -2462,12 +2915,24 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
   place-items: center;
 }
 
+/* 生成中途出錯:錯誤面板疊在預覽舞台(center 區)上。半透明底讓凍結的牆仍
+   看得到「已經做到哪」,但錯誤與重試鈕是視線第一層,不是 hover 才有的訊息。 */
+.stage-error {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-area: center;
+  align-items: start;
+  padding: 74px 22px 32px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+
 .errbox {
   width: min(100%, 520px);
   padding: 30px;
   background: var(--surface);
-  border-left: 4px solid var(--crit);
-  border-radius: 4px 12px 12px 4px;
+  border: 1px solid color-mix(in srgb, var(--crit) 45%, var(--line));
+  border-radius: 12px;
   box-shadow: var(--shadow-sm);
 }
 
@@ -2604,7 +3069,7 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
   place-items: center;
   color: var(--muted);
   background: var(--surface2);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-interactive);
   border-radius: 7px;
   cursor: pointer;
 }
@@ -2628,7 +3093,7 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
   place-items: center;
   color: var(--text);
   background: var(--surface2);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-interactive);
   border-radius: 7px;
   font-size: 26px;
   cursor: pointer;
@@ -2705,7 +3170,7 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
   padding: 0 13px;
   color: var(--text);
   background: var(--bg);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-interactive);
   border-radius: 8px;
 }
 
@@ -2788,13 +3253,46 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
     padding-top: 56px;
   }
 
+  /* 視覺順序 = DOM 順序 = 朗讀順序 = Tab 順序,每一個 phase 都一樣。
+     舊版只在 await 時把 left 排到前面,其餘狀態一律是視覺 center→left→right
+     配 DOM left→center→right:看得到的第一欄要按好幾次 Tab 才到得了,而讀屏
+     使用者聽到的順序跟畫面上的完全對不起來。這是 grid-area 的重排,不是 order
+     hack —— 一種順序,不是兩種。 */
   .cockpit,
+  .cockpit[data-phase="await"] {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "left"
+      "center"
+      "right";
+  }
+
+  /* 沒有大綱欄時就不要留它的軌道。 */
   .cockpit[data-outline="absent"] {
     grid-template-columns: 1fr;
     grid-template-areas:
       "center"
-      "left"
       "right";
+  }
+
+  /* 還沒確認之前,整面骨架牆只是佔位:它沒有任何內容可看,卻能把畫面推長好幾
+     個螢幕。收成一條可捲的窄帶,讓「大綱 → 確認」成為此刻畫面上唯一的事。 */
+  .cockpit[data-phase="await"] .grid {
+    max-height: 132px;
+    overflow: hidden;
+    mask-image: linear-gradient(#000 55%, transparent);
+  }
+
+  /* 確認 CTA 黏在畫面頂端:即使使用者往下捲看大綱,動作永遠在視野內。 */
+  .cockpit[data-phase="await"] .confirmbar {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    margin: -24px -20px 16px;
+    padding: 14px 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    box-shadow: var(--shadow-sm);
   }
 
   .rail.left,
@@ -2806,6 +3304,25 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
 
   .rail.left {
     max-height: none;
+  }
+
+  /* 交付列黏在視窗底部。一份 12 頁簡報在 504×692 上是好幾個螢幕高,而「下載」
+     與「再鍛一份」是完成後唯一要做的事——它們不該埋在整面預覽牆的後面。
+     .foot 本來就同時裝著 narrator 與 DownloadDock,黏住它就等於黏住交付動作。 */
+  .foot {
+    position: sticky;
+    bottom: 0;
+    z-index: 4;
+    border-top: 1px solid var(--line);
+  }
+
+  /* 完成後把「再鍛一份」也帶進可觸及範圍:頂欄在手機上會捲走,所以讓它跟著
+     workhead 一起黏在頂端。 */
+  .workhead {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    background: var(--surface);
   }
 
   .rail.right {
@@ -2826,8 +3343,6 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0 22px;
   }
-
-  .confirmbar { grid-column: 1 / -1; }
 }
 
 @media (max-width: 680px) {
@@ -2904,8 +3419,7 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
   }
 
   .discovery-head { gap: 12px; }
-  .discovery h3 { font-size: 20px; }
-  .brief-score { min-width: 64px; padding-inline: 7px; }
+  .discovery h2 { font-size: 20px; }
   .question-card { padding: 18px 14px; }
   .question-copy { padding-left: 0; }
   .question-count {
@@ -2941,11 +3455,11 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
     height: 46px;
   }
   .discovery-orbit span {
-    left: 18px;
+    top: -6px;
+    left: 16px;
     width: 9px;
     height: 9px;
   }
-  .discovery-orbit i { inset: 14px; }
   .discovery-elapsed {
     grid-column: 1 / -1;
     grid-template-columns: auto auto;
@@ -2957,22 +3471,33 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
     border-left: 0;
   }
   .discovery-elapsed strong { font-size: 20px; }
+  /* 窄螢幕轉成直式:圓點在左、文字在右、線往下接到下一站。 */
   .discovery-trace {
     grid-template-columns: 1fr;
-    gap: 11px;
     margin-top: 18px;
   }
   .discovery-trace li {
-    min-height: 34px;
-    padding-right: 0;
+    grid-template-rows: 25px minmax(13px, auto);
+    column-gap: 10px;
+    padding: 0 0 4px;
   }
-  .discovery-trace li:not(:last-child)::after {
-    top: 25px;
-    right: auto;
-    bottom: -11px;
-    left: 12px;
-    width: 1px;
+  .discovery-trace li:last-child { grid-template-rows: 25px 0; }
+  .trace-copy {
+    grid-area: 1 / 2 / 3 / 3;
+    padding-top: 2px;
+  }
+  .trace-line {
+    grid-area: 2 / 1 / 3 / 2;
+    align-self: stretch;
+    justify-self: center;
+    width: 2px;
     height: auto;
+  }
+  .discovery-trace li[data-status="active"] .trace-line::after {
+    width: 100%;
+    background-image: linear-gradient(180deg, transparent, var(--accent), transparent);
+    transform: translateY(-100%);
+    animation-name: trace-flow-down;
   }
   .discovery-live-note {
     grid-template-columns: auto minmax(0, 1fr);
@@ -2982,9 +3507,15 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
     justify-self: start;
   }
 
-  .examples { grid-template-columns: 1fr; }
-  .settings-grid { grid-template-columns: 1fr; }
-  .density-options { grid-template-columns: 1fr; }
+  .composer-block { padding: 15px 13px; }
+  .settings-grid,
+  .settings-grid.even { grid-template-columns: 1fr; }
+  .density-options,
+  .density-options.three { grid-template-columns: 1fr; }
+  .themeset { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .template-gallery { padding: 20px 14px 22px; }
+  .tpl-editor-main { grid-template-columns: 1fr; }
+  .tpl-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
 
   .workbench {
     width: calc(100% - 16px);
@@ -3015,7 +3546,10 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
 
   .rail { padding: 22px 16px 24px; }
   .outline { grid-template-columns: 1fr; }
-  .confirmbar { margin: auto -16px -24px; padding: 14px 16px; }
+  /* ConfirmBar 已移到大綱欄「頂部」:沿用桌面的 top 位置,只換成行動版的
+     -16px 出血(舊的 margin: auto -16px -24px 是底部釘死時代的殘留,會把後面
+     內容往 CTA 上拉 24px 並把閘門重新釘回底部)。 */
+  .confirmbar { margin: 18px -16px 0; padding: 14px 16px; }
 
   .rail.right .gates { grid-template-columns: 1fr; }
   .rail.right .gate { min-height: 62px; padding: 0; border-right: 0; }
@@ -3027,6 +3561,8 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
   }
 
   .narrator { flex: 1 1 100%; }
+  /* 手機上把敘述放在下面、動作放在上面:動作先被看到,不必先讀完一行狀態文字。 */
+  .foot .dl { order: -1; flex: 1 1 100%; justify-content: center; min-height: 44px; }
 
   .waitcard { min-height: 390px; padding: 36px 8px; }
   .waitsteps { width: 100%; margin-bottom: 36px; }
@@ -3043,8 +3579,18 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
 }
 
 @media (pointer: coarse) {
-  button, .dl, .seg, summary { min-height: 44px; }
+  /* 44×44,兩個方向都算。舊版只寫了 min-height,於是一顆 44px 高、20px 寬的
+     圖示鈕在手機上照樣按不準 —— 而「觸控已經處理過了」這個印象,正好讓它不會
+     再被人檢查一次。 */
+  button, .dl, .seg, summary, [role="button"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
   input[type="text"], input[type="number"], textarea { min-height: 44px; }
+  /* 核取方塊本身維持看得順眼的尺寸;可觸區域交給包住它的 label(下一條),
+     那才是使用者真正按下去的東西。 */
+  input[type="checkbox"], input[type="radio"] { min-height: 24px; min-width: 24px; }
+  label.theme-option, label.seg, .advfield > label { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -5,13 +5,38 @@ LibreOffice → PDF → PyMuPDF PNGs). The unavailable-path test monkeypatches
 ``find_soffice`` and needs no LibreOffice at all.
 """
 
-import fitz  # PyMuPDF
+import re
+from pathlib import Path
+
+import pymupdf as fitz
 import pytest
 
 from odforge import preview
 from odforge.preview import PreviewUnavailable, render_pages
 from odforge.render.odp import render_odp
 from odforge.validate import find_soffice
+
+# ``import fitz`` is PyMuPDF's legacy alias. From 1.28.2 it prints a deprecation
+# notice **to stdout** on import, which is fatal for the stdio MCP server (stdout
+# is protocol there) and turns an otherwise green suite red on a clean machine
+# that resolves a newer PyMuPDF than this repo's venv happens to hold. The alias
+# is banned repo-wide rather than fixed file-by-file, because the next person to
+# reach for PyMuPDF will type the name they know.
+_LEGACY_ALIAS = re.compile(r"^\s*(?:import\s+fitz\b|from\s+fitz\b)", re.MULTILINE)
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_no_module_imports_the_legacy_fitz_alias():
+    offenders = [
+        path.relative_to(_REPO_ROOT).as_posix()
+        for path in (*_REPO_ROOT.joinpath("src").rglob("*.py"),
+                     *_REPO_ROOT.joinpath("tests").rglob("*.py"))
+        if _LEGACY_ALIAS.search(path.read_text(encoding="utf-8"))
+    ]
+    assert not offenders, (
+        "use `import pymupdf` — the legacy `fitz` alias prints a deprecation "
+        f"notice to stdout on PyMuPDF >= 1.28.2: {offenders}"
+    )
 
 
 @pytest.mark.skipif(find_soffice() is None, reason="LibreOffice not installed")

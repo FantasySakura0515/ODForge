@@ -1,4 +1,29 @@
-import type { DocType, Outline } from "./types";
+import type { DocType, GateId, GateResultStatus, Outline } from "./types";
+
+/**
+ * 後端「有回應但拒絕」(非 2xx)的錯誤。帶狀態碼,讓呼叫端能與「根本連不上」
+ * 區分——429(同時工作數上限)或 422(驗證失敗)時叫使用者去重啟伺服器是誤導。
+ */
+export class ApiHttpError extends Error {
+  constructor(message: string, public status: number) {
+    super(message);
+    this.name = "ApiHttpError";
+  }
+}
+
+/** 非 2xx → 優先用後端 detail(字串)當訊息,並附上狀態碼;沒有就用 fallback。 */
+async function httpError(res: Response, fallback: string): Promise<ApiHttpError> {
+  let message = `${fallback}(HTTP ${res.status})`;
+  try {
+    const data = await res.json() as { detail?: unknown };
+    if (typeof data.detail === "string" && data.detail.trim()) {
+      message = `${data.detail}(HTTP ${res.status})`;
+    }
+  } catch {
+    // 非 JSON 回應(或無 body)→ 保留 fallback + 狀態碼。
+  }
+  return new ApiHttpError(message, res.status);
+}
 
 export interface AssetUpload {
   description: string;
@@ -6,16 +31,106 @@ export interface AssetUpload {
   data_url: string;
 }
 
+/** 一組設計代幣;與後端 ir.DesignSpec 同形。 */
+export interface DesignSpec {
+  palette: {
+    bg: string;
+    surface: string;
+    text: string;
+    muted: string;
+    accent: string;
+  };
+  fonts: { display: string; body: string };
+  scale: "compact" | "standard" | "display";
+  mode?: "presenter" | "detailed";
+}
+
+export type LanguageId = "zh-TW" | "en" | "bilingual";
+export type LogoPlacement = "cover" | "cover-closing" | "all";
+
 export interface GenerateBody {
   prompt: string;
   doc_type: DocType;
   mode?: string;
+  /** 內建主題 id;與 design 互斥(自訂範本走 design)。 */
   theme?: string;
+  /** 自訂範本的設計代幣;送了就整份鎖定這一組。 */
+  design?: DesignSpec;
+  language?: LanguageId;
   pages?: number;
+  /** 封面署名(單位／講者／日期)。 */
+  byline?: string;
+  /** 封面校徽;PNG/JPEG 的 base64 data URI。 */
+  logo?: AssetUpload;
+  logo_placement?: LogoPlacement;
   interactive?: boolean;
   qa?: boolean;
   assets?: AssetUpload[];
   backend?: "deepseek" | "ollama" | "custom";
+}
+
+/**
+ * 範本庫的一列。內建(builtin)與自訂的差別不只是能不能刪:
+ * 內建以 `theme: <id>` 送出(渲染器本來就認得的預設),自訂則整包送 `design`。
+ * 呼叫端不必記這條規則——`applyTemplate` 依這個旗標決定要送哪一個欄位。
+ */
+export interface DeckTemplate {
+  id: string;
+  name: string;
+  design: DesignSpec;
+  builtin: boolean;
+  source: "builtin" | "custom" | "extracted";
+  created_at: number;
+}
+
+export interface LanguageOption {
+  id: LanguageId;
+  label: string;
+}
+
+export interface TemplatesReport {
+  templates: DeckTemplate[];
+  languages: LanguageOption[];
+}
+
+export async function getTemplates(): Promise<TemplatesReport> {
+  const res = await fetch("/api/templates");
+  if (!res.ok) throw await httpError(res, "無法讀取範本庫");
+  return res.json();
+}
+
+export async function saveTemplate(body: {
+  name: string;
+  design: DesignSpec;
+  source?: "custom" | "extracted";
+  id?: string;
+}): Promise<DeckTemplate> {
+  const res = await fetch("/api/templates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await httpError(res, "範本儲存失敗");
+  return res.json();
+}
+
+export async function deleteTemplate(id: string): Promise<void> {
+  const res = await fetch(`/api/templates/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw await httpError(res, "範本刪除失敗");
+}
+
+/** 上傳現有 .otp/.odp 範本檔,抽出設計代幣供預覽(不會直接存進範本庫)。 */
+export async function extractTemplateDesign(dataUrl: string): Promise<DesignSpec> {
+  const res = await fetch("/api/templates/extract", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ data_url: dataUrl }),
+  });
+  if (!res.ok) throw await httpError(res, "無法讀取這個範本檔");
+  const data = await res.json() as { design: DesignSpec };
+  return data.design;
 }
 
 export interface SessionSummary {
@@ -36,6 +151,49 @@ export async function getSessions(): Promise<SessionSummary[]> {
   if (!res.ok) throw new Error(`無法讀取工作紀錄：${res.status}`);
   const data = await res.json() as { sessions?: SessionSummary[] };
   return data.sessions ?? [];
+}
+
+export interface SourceStatus {
+  name: string;
+  available: boolean;
+  /** 為什麼不能用(缺金鑰、找不到 CLI…);available 時為空字串。 */
+  reason: string;
+}
+
+export interface SourcesReport {
+  text: SourceStatus[];
+  vision: SourceStatus[];
+  defaults: { text: string; vision: string };
+}
+
+/**
+ * 目前有哪些模型來源、哪些真的跑得起來。
+ *
+ * 前端必須問過才敢承諾:設計品質檢查的開關預設是開的,但若環境沒有視覺來源,
+ * 打勾等於承諾一件不會發生的事——使用者以為第四道閘跑過了,實際上那一格從頭到尾
+ * 都是空的。快取一次(每個 session 問一次就夠),失敗時回 undefined 讓呼叫端降級。
+ */
+let sourcesCache: Promise<SourcesReport> | undefined;
+
+export function getSources(): Promise<SourcesReport> {
+  sourcesCache ??= fetch("/api/sources")
+    .then(async (res) => {
+      if (!res.ok) throw await httpError(res, "無法讀取模型來源");
+      return res.json() as Promise<SourcesReport>;
+    })
+    // 只快取「成功的答案」。舊版連 rejected promise 一起留著,於是後端晚三秒
+    // 才起來、或網路抖一下,這個 session 就永遠問不到來源了——每次重試都拿回
+    // 同一個早就失敗的 promise,連一次真正的請求都不會再送出去。
+    .catch((error) => {
+      sourcesCache = undefined;
+      throw error;
+    });
+  return sourcesCache;
+}
+
+/** Test seam: drop the cached answer (also used when the backend restarts). */
+export function resetSourcesCache(): void {
+  sourcesCache = undefined;
 }
 
 export interface DiscoveryQuestion {
@@ -78,12 +236,25 @@ export interface GenerateOptions {
   mode: "presenter" | "detailed";
   /** undefined = 自動(交給 AI)→ theme 欄位不送 */
   theme?: string;
+  /** 自訂範本的設計代幣;與 theme 互斥,送了就整份鎖定 */
+  design?: DesignSpec;
+  /** 預設 zh-TW;非預設才送 */
+  language?: LanguageId;
+  /** 封面署名;空字串不送 */
+  byline?: string;
+  /** 封面校徽;沒選就不送(placement 也隨之省略) */
+  logo?: AssetUpload;
+  logoPlacement?: LogoPlacement;
   /** undefined = 留空(交給 AI)→ pages 欄位不送 */
   pages?: number;
+  /** 後端沒有此欄位,附加進 prompt 尾端 */
+  purpose?: string;
   /** 後端沒有此欄位,附加進 prompt 尾端 */
   audience?: string;
   /** 後端沒有此欄位,附加進 prompt 尾端 */
   tone?: string;
+  /** 後端沒有此欄位,附加進 prompt 尾端 */
+  duration?: string;
   qa: boolean;
   interactive: boolean;
   assets?: AssetUpload[];
@@ -104,14 +275,19 @@ export function isValidPages(pages: number | undefined): boolean {
  * - 自動主題(theme undefined)→ omit the theme field entirely.
  * - 頁數留空/非數字(NaN)/超界(<3 或 >30)→ omit the pages field
  *   (避免 JSON.stringify(NaN) 把 pages 序列化成 null 送給後端)。
- * - 受眾/語氣沒有對應後端欄位 → 以「受眾:X;語氣:Y」附加進 prompt 尾端。
+ * - 場合/受眾/語氣/講述時間沒有對應後端欄位 → 以「場合:X;受眾:Y」的形式附加進
+ *   prompt 尾端(訪談與大綱兩段都讀同一段文字,所以填了就真的會影響輸出)。
  */
 export function buildGenerateBody(prompt: string, docType: DocType, opts: GenerateOptions): GenerateBody {
   const bits: string[] = [];
+  const purpose = opts.purpose?.trim();
   const audience = opts.audience?.trim();
   const tone = opts.tone?.trim();
+  const duration = opts.duration?.trim();
+  if (purpose) bits.push(`場合:${purpose}`);
   if (audience) bits.push(`受眾:${audience}`);
   if (tone) bits.push(`語氣:${tone}`);
+  if (duration) bits.push(`講述時間:${duration}`);
   const finalPrompt = bits.length ? `${prompt}\n\n${bits.join(";")}` : prompt;
 
   const body: GenerateBody = {
@@ -121,18 +297,40 @@ export function buildGenerateBody(prompt: string, docType: DocType, opts: Genera
     interactive: opts.interactive,
     qa: opts.qa,
   };
-  if (opts.theme) body.theme = opts.theme;
+  // 自訂範本(design)勝過內建主題:兩個都送只會讓後端在兩種「使用者指定的樣子」
+  // 之間挑一個,而使用者只挑過一次。
+  if (opts.design) body.design = opts.design;
+  else if (opts.theme) body.theme = opts.theme;
   if (isValidPages(opts.pages)) body.pages = opts.pages;
+  if (opts.language && opts.language !== "zh-TW") body.language = opts.language;
+  const byline = opts.byline?.trim();
+  if (byline) body.byline = byline;
+  // 沒有校徽時連 placement 都不送:一個「校徽放哪裡」的設定配上不存在的校徽,
+  // 只會讓後續讀 job metadata 的人以為有一張圖不見了。
+  if (opts.logo) {
+    body.logo = opts.logo;
+    body.logo_placement = opts.logoPlacement ?? "cover-closing";
+  }
   if (opts.assets?.length) body.assets = opts.assets;
   if (opts.backend) body.backend = opts.backend;
   return body;
+}
+
+/** 把範本庫的一列折成 GenerateOptions 的兩個欄位(內建走 theme,自訂走 design)。 */
+export function templateSelection(
+  template: DeckTemplate | undefined,
+): Pick<GenerateOptions, "theme" | "design"> {
+  if (!template) return {};
+  return template.builtin
+    ? { theme: template.id }
+    : { design: template.design };
 }
 
 export async function postGenerate(body: GenerateBody): Promise<{ job_id: string }> {
   const res = await fetch("/api/generate", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`generate 失敗:${res.status}`);
+  if (!res.ok) throw await httpError(res, "generate 失敗");
   return res.json();
 }
 
@@ -142,6 +340,9 @@ function discoveryPayload(body: GenerateBody) {
     doc_type: body.doc_type,
     mode: body.mode,
     theme: body.theme,
+    // 訪談仍以繁體中文提問;這只是讓讀題模型知道成品要寫成哪一種語言。
+    // (後端 DiscoveryBody 不收 design / byline / logo,送了會被 422 擋下。)
+    language: body.language,
     pages: body.pages,
     backend: body.backend,
     assets: body.assets?.map(({ description, credit, data_url }) => ({
@@ -254,16 +455,30 @@ export async function postDiscoveryQuestions(
 
 export async function postCancel(jobId: string): Promise<void> {
   const res = await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
-  if (!res.ok) throw new Error(`取消失敗:${res.status}`);
+  if (!res.ok) throw await httpError(res, "取消失敗");
 }
 
-export interface RegenerateResult { ok: boolean; n: number; slide: unknown; preview_url: string | null; }
+export interface RegenerateResult {
+  ok: boolean;
+  n: number;
+  slide: unknown;
+  preview_url: string | null;
+  /** 交付的成品版本號;每次成功重生 +1(失敗會回滾,號碼不動)。 */
+  version?: number;
+  /**
+   * 重生後重新算過的四道閘。成品換了一版,上一版的綠勾就不再代表這一版——
+   * 尤其設計閘:視覺評審看的是被換掉的那一頁,結果一律退回 unknown。
+   * 型別與 SSE 的 gate_result 同一組(已定案的結果,不含 pending/active),
+   * 這些物件會被原樣 dispatch 進 reducer。
+   */
+  gates?: { gate: GateId; status: GateResultStatus; note?: string }[];
+}
 
 export async function postRegenerate(jobId: string, n: number, instruction: string): Promise<RegenerateResult> {
   const res = await fetch(`/api/jobs/${jobId}/slides/${n}/regenerate`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instruction }),
   });
-  if (!res.ok) throw new Error(`重生失敗:${res.status}`);
+  if (!res.ok) throw await httpError(res, "重生失敗");
   return res.json();
 }
 
@@ -280,7 +495,7 @@ export async function postOutlineAction(jobId: string, body: OutlineActionBody):
   const res = await fetch(`/api/jobs/${jobId}/outline`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`outline 失敗:${res.status}`);
+  if (!res.ok) throw await httpError(res, "outline 失敗");
 }
 
 export const eventsUrl = (jobId: string) => `/api/jobs/${jobId}/events`;

@@ -25,8 +25,9 @@ import asyncio
 import base64
 import json
 import time
+from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 import pytest
 
 fastapi = pytest.importorskip("fastapi")
@@ -36,6 +37,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 from odforge import webapi  # noqa: E402
 from odforge.critic import Finding, QAReport  # noqa: E402
 from odforge.ir import Outline, PageRole, Presentation, Slide  # noqa: E402
+from odforge.llm import DroppedContent  # noqa: E402
+from odforge.preview import PreviewUnavailable  # noqa: E402
 
 # A 1x1 transparent PNG — enough bytes for FileResponse to serve.
 _PNG = bytes.fromhex(
@@ -81,10 +84,10 @@ def _install_fakes(monkeypatch, n=3, *, record_slides=None, qa_report=None):
     call appends the outline it received (for the regenerate assertion).
     """
 
-    def fake_outline(prompt, backend=None, pages=None):
+    def fake_outline(prompt, backend=None, pages=None, language="zh-TW"):
         return _outline(n)
 
-    def fake_slides(outline, backend=None):
+    def fake_slides(outline, backend=None, dropped=None):
         if record_slides is not None:
             record_slides.append(outline)
         return _slides_for(outline)
@@ -111,7 +114,7 @@ def _install_fakes(monkeypatch, n=3, *, record_slides=None, qa_report=None):
 
     def fake_qa(ir, out_path, **kwargs):
         webapi.render(ir, out_path)  # QA re-renders each round
-        return qa_report or QAReport(rounds=1, findings_by_round=[[]], final_ok=True)
+        return qa_report or QAReport(rounds=1, findings_by_round=[[]], verdict="pass")
 
     def fake_validate(path, **kwargs):
         from odforge.validate import ValidationReport
@@ -423,7 +426,7 @@ def test_generate_uses_pdf_text_as_model_context_not_render_asset(app, monkeypat
     prompts = []
     _install_fakes(monkeypatch)
 
-    def fake_outline(prompt, backend=None, pages=None):
+    def fake_outline(prompt, backend=None, pages=None, language="zh-TW"):
         prompts.append(prompt)
         return _outline().model_copy(update={"source_prompt": prompt})
 
@@ -568,7 +571,11 @@ def test_event_sequence_direct(app, monkeypatch):
     assert gates[0]["data"] == {"gate": "zip", "status": "pass"}
     assert gates[1]["data"] == {"gate": "xml", "status": "pass"}
     assert gates[2]["data"] == {"gate": "libreoffice", "status": "pass"}
-    assert gates[3]["data"] == {"gate": "design", "status": "skipped"}
+    assert gates[3]["data"] == {
+        "gate": "design",
+        "status": "skipped",
+        "note": "這次生成關閉了設計品質檢查。",
+    }
     pr = next(e for e in job.events if e["event"] == "preview_ready")["data"]
     assert pr["n"] == 1 and pr["url"].endswith("/preview/1.png")
     done = job.events[-1]["data"]
@@ -635,7 +642,8 @@ def test_preview_degrades_when_unavailable(app, monkeypatch):
     # PreviewUnavailable → libreoffice gate reports skipped (not fail)
     gates = [e["data"] for e in job.events if e["event"] == "gate_result"]
     assert {"gate": "libreoffice", "status": "skipped"} in gates
-    assert {"gate": "design", "status": "skipped"} in gates
+    design = next(g for g in gates if g["gate"] == "design")
+    assert design["status"] == "skipped"
 
 
 # ---------------------------------------------------------------------------
@@ -649,11 +657,14 @@ def test_interactive_gate_direct(app, monkeypatch):
 
     async def scenario():
         task = asyncio.create_task(webapi.run_job(job))
-        # advance until the runner parks at the approval gate
-        for _ in range(1000):
+        # Advance until the runner parks at the approval gate. `sleep(0)` alone
+        # is not enough any more: session persistence runs on a worker thread
+        # (asyncio.to_thread), and a zero-delay yield never gives that thread a
+        # chance to finish. A real — if tiny — sleep does.
+        for _ in range(2000):
             if job.status == "awaiting_approval":
                 break
-            await asyncio.sleep(0)
+            await asyncio.sleep(0.001)
         assert job.status == "awaiting_approval"
         names = [e["event"] for e in job.events]
         assert names == ["outline", "awaiting_approval"]
@@ -790,12 +801,127 @@ def test_download_after_completion(app, monkeypatch):
         assert r.content == b"PK\x03\x04 fake-odp"
 
 
-def test_download_before_ready_404(app, monkeypatch):
+def test_download_before_ready_is_409_with_a_reason(app, monkeypatch):
+    """工作存在但成品還不存在 → 409 + 人話,不是空泛的 404。
+
+    404 的意思是「沒有這個東西」;這裡東西在,只是還不能交付。兩者對前端是
+    不同的處置(重試 vs 放棄),對使用者是不同的訊息。
+    """
     _install_fakes(monkeypatch)
     job = webapi.create_job(app, prompt="x")  # never rendered
     with TestClient(app) as client:
         r = client.get(f"/api/jobs/{job.id}/download")
-        assert r.status_code == 404
+        assert r.status_code == 409
+        assert "還沒開始生成" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# P1-03 (API half) — an unknown request field is a 422, never a silent drop.
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_generate_field_is_rejected(app, monkeypatch):
+    """``doc_typ``/``qa_mode`` 之類的拼錯欄位曾被靜默丟掉,使用者拿到的是預設行為。"""
+    _install_fakes(monkeypatch)
+    with TestClient(app) as client:
+        r = client.post("/api/generate", json={"prompt": "x", "doc_typ": "ods"})
+        assert r.status_code == 422
+        assert "doc_typ" in json.dumps(r.json(), ensure_ascii=False)
+
+
+def test_pages_out_of_range_is_rejected(app, monkeypatch):
+    _install_fakes(monkeypatch)
+    with TestClient(app) as client:
+        for bad in (2, 31, 0, -1):
+            r = client.post("/api/generate", json={"prompt": "x", "pages": bad})
+            assert r.status_code == 422, bad
+        # 上下界本身合法
+        assert client.post(
+            "/api/generate", json={"prompt": "x", "pages": 3}
+        ).status_code == 200
+
+
+def test_api_page_ceiling_matches_the_outline_schema():
+    """前後端與 Outline schema 共用同一個上限常數,不會各自漂移。"""
+    from odforge.ir import MAX_OUTLINE_PAGES
+
+    field = webapi.GenerateBody.model_fields["pages"]
+    ceilings = [m.le for m in field.metadata if getattr(m, "le", None) is not None]
+    assert ceilings == [MAX_OUTLINE_PAGES]
+
+
+# ---------------------------------------------------------------------------
+# P1-02 — a download is an artifact *version* that passed the gates, never
+# "a file happens to exist at that path".
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["generating_slides", "rendering", "validating", "qa", "regenerating"],
+)
+def test_download_refused_while_work_is_in_flight(app, monkeypatch, status):
+    _install_fakes(monkeypatch, n=2)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+    assert job.odp_path.is_file()  # the file is right there…
+    job.status = status  # …and it still must not be served
+    with TestClient(app) as client:
+        r = client.get(f"/api/jobs/{job.id}/download")
+        assert r.status_code == 409
+        assert r.json()["detail"]
+
+
+def test_download_refused_after_validation_failed(app, monkeypatch):
+    """驗證未過 → 檔案在磁碟上,但永遠不得交付。"""
+    _install_fakes(monkeypatch, n=2)
+
+    def failing_validate(path, **kwargs):
+        from odforge.validate import ValidationReport
+
+        return ValidationReport(
+            ok=False, gates={"structure": (True, "ok"), "xml": (False, "壞掉的 XML")}
+        )
+
+    monkeypatch.setattr(webapi, "validate_odf", failing_validate)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+
+    assert job.status == "error"
+    assert job.odp_path.is_file()
+    assert job.validated_version != job.artifact_version
+    with TestClient(app) as client:
+        r = client.get(f"/api/jobs/{job.id}/download")
+        assert r.status_code == 409
+        assert "失敗" in r.json()["detail"]
+    # 快照也不能宣傳一個點下去就 409 的連結。
+    with TestClient(app) as client:
+        snap = client.get(f"/api/jobs/{job.id}").json()
+    assert "download_url" not in snap
+    assert snap["downloadable"] is False
+
+
+def test_download_refused_after_cancel(app, monkeypatch):
+    _install_fakes(monkeypatch, n=2)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+    # 已完成的工作是終態,取消端點會 409;直接把狀態設成取消,模擬「生成中被取消
+    # 但磁碟上已經有中途檔」——這才是下載端點必須擋住的情形。
+    job.status = "cancelled"
+    with TestClient(app) as client:
+        r = client.get(f"/api/jobs/{job.id}/download")
+        assert r.status_code == 409
+        assert "取消" in r.json()["detail"]
+
+
+def test_download_serves_the_validated_version(app, monkeypatch):
+    _install_fakes(monkeypatch, n=2)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+    assert job.downloadable
+    assert job.validated_version == job.artifact_version == 1
+    with TestClient(app) as client:
+        assert client.get(f"/api/jobs/{job.id}/download").status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -858,7 +984,7 @@ def test_regenerate_reruns_only_that_page(app, monkeypatch):
     # Re-arm generate_slides to record the outline the regenerate path sends.
     recorded = []
 
-    def recording_slides(outline, backend=None):
+    def recording_slides(outline, backend=None, dropped=None):
         recorded.append(outline)
         return _slides_for(outline)
 
@@ -885,7 +1011,8 @@ def test_regenerate_reruns_only_that_page(app, monkeypatch):
     body = r.json()
     assert body["ok"] is True and body["n"] == 2
     assert body["slide"]["title"] == job.ir.slides[1].title
-    assert body["preview_url"].endswith("/preview/2.png")
+    # 重算圖後 URL 帶版本參數:字串不同,瀏覽器/React 才會重抓(F5 cache-bust)。
+    assert body["preview_url"].endswith("/preview/2.png?v=1")
 
 
 def test_unit_done_mirrors_slide_done(app, monkeypatch):
@@ -918,12 +1045,243 @@ def test_regenerate_via_units_alias(app, monkeypatch):
         assert r.status_code == 200
         body = r.json()
         assert body["ok"] is True and body["n"] == 2
-        assert body["preview_url"].endswith("/preview/2.png")
+        # 重算圖 → 版本遞增的 cache-bust URL(與 slides 路徑同一 handler)。
+        assert body["preview_url"].endswith("/preview/2.png?v=1")
         # out-of-range still 404 on the alias path
         assert (
             client.post(f"/api/jobs/{job.id}/units/99/regenerate", json={}).status_code
             == 404
         )
+
+
+# ---------------------------------------------------------------------------
+# P1-01 — regeneration is transactional: it publishes everything or nothing.
+# ---------------------------------------------------------------------------
+
+
+def _regen_fixture(app, monkeypatch, n=3):
+    _install_fakes(monkeypatch, n=n)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+    return job
+
+
+def _snapshot(job):
+    """Everything a rollback has to leave byte-identical."""
+    return {
+        "titles": [s.title for s in job.ir.slides],
+        "layouts": [s.layout for s in job.ir.slides],
+        "deck": job.odp_path.read_bytes(),
+        "artifact_version": job.artifact_version,
+        "validated_version": job.validated_version,
+        "preview_version": job.preview_version,
+        "gates": dict(job.gates),
+        "previews": sorted(p.name for p in job.preview_dir.glob("*.png")),
+    }
+
+
+def test_regenerate_rolls_back_when_the_model_fails(app, monkeypatch):
+    job = _regen_fixture(app, monkeypatch)
+    before = _snapshot(job)
+
+    def boom(outline, backend=None, dropped=None):
+        raise RuntimeError("provider 500")
+
+    monkeypatch.setattr(webapi, "generate_slides", boom)
+    with TestClient(app) as client:
+        r = client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={})
+        assert r.status_code == 500
+    assert _snapshot(job) == before
+    assert job.status == "complete" and job.downloadable
+
+
+def test_regenerate_rolls_back_when_render_fails(app, monkeypatch):
+    """render 在 IR 換頁之後炸掉 → 舊行為留下 IR/成品/預覽三者互相矛盾的工作。"""
+    job = _regen_fixture(app, monkeypatch)
+    before = _snapshot(job)
+    monkeypatch.setattr(
+        webapi,
+        "render",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("renderer exploded")),
+    )
+    with TestClient(app) as client:
+        r = client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={})
+        assert r.status_code == 500
+    assert _snapshot(job) == before
+    assert not (job.dir / "deck.candidate.odp").exists()
+
+
+def test_regenerate_rolls_back_when_validation_fails(app, monkeypatch):
+    """算得出來不代表合法:重生後的檔案沒過 zip/xml 就不准取代原檔。"""
+    job = _regen_fixture(app, monkeypatch)
+    before = _snapshot(job)
+
+    def failing_validate(path, **kwargs):
+        from odforge.validate import ValidationReport
+
+        return ValidationReport(
+            ok=False, gates={"structure": (True, "ok"), "xml": (False, "not well-formed")}
+        )
+
+    monkeypatch.setattr(webapi, "validate_odf", failing_validate)
+    with TestClient(app) as client:
+        r = client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={})
+        assert r.status_code == 500
+        assert "驗證未通過" in r.json()["detail"]["message"]
+    assert _snapshot(job) == before
+
+
+def test_regenerate_rolls_back_when_preview_blows_up(app, monkeypatch):
+    job = _regen_fixture(app, monkeypatch)
+    before = _snapshot(job)
+    monkeypatch.setattr(
+        webapi,
+        "render_pages",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("soffice crashed")),
+    )
+    with TestClient(app) as client:
+        assert (
+            client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={}).status_code
+            == 500
+        )
+    assert _snapshot(job) == before
+
+
+def test_failed_regeneration_then_a_successful_one_ships_only_the_good_page(
+    app, monkeypatch
+):
+    """驗收條件:第一頁重生失敗、第二頁重生成功 → 下載檔不得含第一次失敗的內容。"""
+    job = _regen_fixture(app, monkeypatch)
+    original = [s.title for s in job.ir.slides]
+
+    def poisoned(outline, backend=None, dropped=None):
+        deck = _slides_for(outline)
+        deck.slides[0].title = "毒藥"
+        return deck
+
+    monkeypatch.setattr(webapi, "generate_slides", poisoned)
+    monkeypatch.setattr(
+        webapi,
+        "render",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("render died")),
+    )
+    with TestClient(app) as client:
+        assert (
+            client.post(f"/api/jobs/{job.id}/slides/1/regenerate", json={}).status_code
+            == 500
+        )
+    assert job.ir.slides[0].title == original[0]  # 毒藥沒有進到 IR
+
+    # 現在讓 render 恢復正常,重生第 2 頁。
+    _install_fakes(monkeypatch, n=3)
+
+    def second(outline, backend=None, dropped=None):
+        deck = _slides_for(outline)
+        deck.slides[0].title = "第二頁新內容"
+        return deck
+
+    monkeypatch.setattr(webapi, "generate_slides", second)
+    with TestClient(app) as client:
+        assert (
+            client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={}).status_code
+            == 200
+        )
+        download = client.get(f"/api/jobs/{job.id}/download")
+        assert download.status_code == 200
+
+    assert job.ir.slides[0].title == original[0]
+    assert job.ir.slides[1].title == "第二頁新內容"
+    assert job.ir.slides[2].title == original[2]
+
+
+def test_regeneration_recomputes_gates_and_clears_the_old_design_verdict(
+    app, monkeypatch
+):
+    """重生後不得沿用上一版的綠燈,設計閘必須退回「無法判定」。"""
+    report = QAReport(rounds=1, findings_by_round=[[]], verdict="pass")
+    _install_fakes(monkeypatch, n=3, qa_report=report)
+    job = webapi.create_job(app, prompt="x", qa=True, vision_backend="custom")
+    asyncio.run(webapi.run_job(job))
+    assert job.gates["design"] == "pass"
+
+    with TestClient(app) as client:
+        body = client.post(
+            f"/api/jobs/{job.id}/slides/2/regenerate", json={}
+        ).json()
+
+    gates = {g["gate"]: g["status"] for g in body["gates"]}
+    assert gates == {
+        "zip": "pass", "xml": "pass", "libreoffice": "pass", "design": "unknown"
+    }
+    assert job.gates["design"] == "unknown"
+    assert job.qa_report is None
+    assert body["version"] == job.artifact_version == 2
+
+
+def test_consecutive_regenerations_each_advance_the_version(app, monkeypatch):
+    job = _regen_fixture(app, monkeypatch)
+    with TestClient(app) as client:
+        first = client.post(f"/api/jobs/{job.id}/slides/1/regenerate", json={}).json()
+        second = client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={}).json()
+    assert first["version"] == 2 and second["version"] == 3
+    assert first["preview_url"].endswith("?v=1")
+    assert second["preview_url"].endswith("?v=2")
+    assert job.validated_version == job.artifact_version == 3
+
+
+def test_regeneration_updates_the_page_contract_so_a_qa_fix_survives(
+    app, monkeypatch
+):
+    """QA 把第 2 頁改成 process 後再重生,不得被過期的 outline 打回 title-content。"""
+    job = _regen_fixture(app, monkeypatch)
+    assert job.outline.pages[1].role == "title-content"
+
+    # 模擬 QA 修復:把第 2 頁換成另一種版型(引擎端已改,大綱還沒跟上)。
+    def upgraded(outline, backend=None, dropped=None):
+        deck = _slides_for(outline)
+        deck.slides[0] = Slide(
+            layout="quote", title="升級後", quote="一句引言", attribution="某人"
+        )
+        return deck
+
+    monkeypatch.setattr(webapi, "generate_slides", upgraded)
+    with TestClient(app) as client:
+        assert (
+            client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={}).status_code
+            == 200
+        )
+
+    # 契約跟著成品走:下一次重生會拿到 quote,而不是原本的 title-content。
+    assert job.ir.slides[1].layout == "quote"
+    assert job.outline.pages[1].role == "quote"
+    assert job.outline.pages[1].title == "升級後"
+
+
+def test_regeneration_of_a_shorter_deck_leaves_no_stale_preview_pages(
+    app, monkeypatch
+):
+    """P2-07:5 頁縮成 3 頁後,page-04/05.png 不得殘留在服務中的預覽版本。"""
+    _install_fakes(monkeypatch, n=5)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+    assert sorted(p.name for p in job.preview_dir.glob("*.png")) == [
+        f"page-0{i}.png" for i in range(1, 6)
+    ]
+
+    # 下一輪只算得出 3 頁(等同重生後頁數變少)。
+    _install_fakes(monkeypatch, n=3)
+    job.ir.slides = job.ir.slides[:3]
+    job.outline.pages = job.outline.pages[:3]
+    with TestClient(app) as client:
+        assert (
+            client.post(f"/api/jobs/{job.id}/slides/1/regenerate", json={}).status_code
+            == 200
+        )
+        assert client.get(f"/api/jobs/{job.id}/preview/4.png").status_code == 404
+
+    assert sorted(p.name for p in job.preview_dir.glob("*.png")) == [
+        "page-01.png", "page-02.png", "page-03.png"
+    ]
 
 
 def test_regenerate_out_of_range_404(app, monkeypatch):
@@ -951,7 +1309,7 @@ def test_qa_rounds_emitted(app, monkeypatch):
             [Finding(slide_no=1, issue="文字溢出", severity="error", fix_hint="縮短文字")],
             [],
         ],
-        final_ok=True,
+        verdict="pass",
     )
     _install_fakes(monkeypatch, n=2, qa_report=report)
     job = webapi.create_job(app, prompt="x", qa=True)
@@ -974,7 +1332,7 @@ def test_qa_rounds_emitted(app, monkeypatch):
 def test_error_event_on_failure(app, monkeypatch):
     _install_fakes(monkeypatch)
 
-    def boom(outline, backend=None):
+    def boom(outline, backend=None, dropped=None):
         raise RuntimeError("stage-2 blew up")
 
     monkeypatch.setattr(webapi, "generate_slides", boom)
@@ -1149,14 +1507,30 @@ def test_incomplete_session_is_marked_interrupted_after_restart(tmp_path):
 
 
 def test_gate_result_design_pass_when_qa_ok(app, monkeypatch):
-    report = QAReport(rounds=1, findings_by_round=[[]], final_ok=True)
+    report = QAReport(rounds=1, findings_by_round=[[]], verdict="pass")
     _install_fakes(monkeypatch, n=2, qa_report=report)
-    job = webapi.create_job(app, prompt="x", qa=True)
+    job = webapi.create_job(app, prompt="x", qa=True, vision_backend="custom")
     asyncio.run(webapi.run_job(job))
 
     gates = [e["data"] for e in job.events if e["event"] == "gate_result"]
     assert {"gate": "design", "status": "pass"} in gates
-    assert {"gate": "design", "status": "skipped"} not in gates
+    assert not [g for g in gates if g["gate"] == "design" and g["status"] != "pass"]
+
+
+def test_gate_result_design_skipped_when_no_vision_source(app, monkeypatch):
+    """QA on but no vision model → 未啟用 + 原因,絕不塗一個假的綠勾。"""
+    report = QAReport(rounds=1, findings_by_round=[[]], verdict="pass")
+    _install_fakes(monkeypatch, n=2, qa_report=report)
+    monkeypatch.setenv("ODFORGE_VISION_BACKEND", "off")
+    job = webapi.create_job(app, prompt="x", qa=True)
+    asyncio.run(webapi.run_job(job))
+
+    design = next(
+        e["data"] for e in job.events
+        if e["event"] == "gate_result" and e["data"]["gate"] == "design"
+    )
+    assert design["status"] == "skipped"
+    assert "ODFORGE_VISION_BACKEND=off" in design["note"]
 
 
 def test_gate_result_design_fail_when_qa_not_ok(app, monkeypatch):
@@ -1166,30 +1540,173 @@ def test_gate_result_design_fail_when_qa_not_ok(app, monkeypatch):
             [Finding(slide_no=1, issue="溢出", severity="error", fix_hint="縮短")],
             [Finding(slide_no=1, issue="仍溢出", severity="error", fix_hint="再縮")],
         ],
-        final_ok=False,
+        verdict="fail",
     )
     _install_fakes(monkeypatch, n=2, qa_report=report)
-    job = webapi.create_job(app, prompt="x", qa=True)
+    job = webapi.create_job(app, prompt="x", qa=True, vision_backend="custom")
     asyncio.run(webapi.run_job(job))
 
     gates = [e["data"] for e in job.events if e["event"] == "gate_result"]
     assert {"gate": "design", "status": "fail"} in gates
 
 
-def test_gate_result_design_skipped_when_qa_raises(app, monkeypatch):
+def test_gate_result_design_unknown_when_qa_raises(app, monkeypatch):
     _install_fakes(monkeypatch, n=2)
 
     def boom_qa(ir, out_path, **kwargs):
-        raise RuntimeError("qa exploded")
+        raise RuntimeError("403 free quota has been exhausted")
 
     monkeypatch.setattr(webapi, "run_qa_loop", boom_qa)
+    job = webapi.create_job(app, prompt="x", qa=True, vision_backend="custom")
+    asyncio.run(webapi.run_job(job))
+
+    # QA error never fails the run — but the reason travels with the gate, and the
+    # status is 無法判定 (unknown), never 未啟用: the user asked for the review and
+    # did not get it. 無法檢查不等於通過, and it is not the same as opting out.
+    assert job.status == "complete"
+    design = next(
+        e["data"] for e in job.events
+        if e["event"] == "gate_result" and e["data"]["gate"] == "design"
+    )
+    assert design["status"] == "unknown"
+    assert "custom" in design["note"]
+    assert "free quota has been exhausted" in design["note"]
+    assert job.qa_error is not None
+
+
+def test_gate_result_design_unknown_when_no_rounds_completed(app, monkeypatch):
+    """rounds=0 的 degrade(no soffice / 視覺來源第一輪失敗)= unknown,不是 pass,
+    也不是 skipped。
+
+    舊 ladder 只看 final_ok — rounds=0 的報告 final_ok 空泛地為 True,閘門
+    就給了一個「沒人評過」的綠勾(F4)。改成 skipped 只解決了一半:使用者*要求*
+    了品檢卻沒跑成,和使用者自己關掉品檢,是兩件不同的事,不能共用一個「未啟用」。
+    """
+    report = QAReport(
+        rounds=0,
+        findings_by_round=[],
+        verdict="unknown",
+        note=(
+            "預覽不可用(找不到 LibreOffice/soffice):已略過視覺評審,"
+            "僅套用 deterministic 檢查。"
+        ),
+    )
+    _install_fakes(monkeypatch, n=2, qa_report=report)
+    job = webapi.create_job(app, prompt="x", qa=True, vision_backend="custom")
+    asyncio.run(webapi.run_job(job))
+
+    design = next(
+        e["data"] for e in job.events
+        if e["event"] == "gate_result" and e["data"]["gate"] == "design"
+    )
+    assert design["status"] == "unknown"
+    assert "預覽不可用" in design["note"]
+
+
+def test_gate_result_design_fail_carries_unverified_repair_reason(app, monkeypatch):
+    """部分失敗(修補過、未複驗)→ fail + 原因跟著閘門走,且預覽刷新換版本。
+
+    這是 F3 的 webapi 端:第 2 輪評審失敗時,run_qa_loop 回傳的部分報告帶著
+    第 1 輪 findings、failure 原因與 repaired=True — 閘門必須誠實說 fail
+    (最後完成的評審仍有 error、修補未複驗),預覽必須重新發佈並 cache-bust。
+    """
+    failure = "第 2 輪視覺品檢無法執行:視覺模型逾時;已套用第 1 輪修補但未複驗"
+    report = QAReport(
+        rounds=1,
+        findings_by_round=[
+            [Finding(slide_no=1, issue="溢出", severity="error", fix_hint="縮短")]
+        ],
+        verdict="fail",
+        note=failure,
+        failure=failure,
+        repaired=True,
+    )
+    _install_fakes(monkeypatch, n=2, qa_report=report)
+    job = webapi.create_job(app, prompt="x", qa=True, vision_backend="custom")
+    asyncio.run(webapi.run_job(job))
+
+    design = next(
+        e["data"] for e in job.events
+        if e["event"] == "gate_result" and e["data"]["gate"] == "design"
+    )
+    assert design["status"] == "fail"
+    assert "未複驗" in design["note"]
+    # 已完成輪次的 qa_round 事件保留(舊行為:例外把它們全丟了)。
+    qa_events = [e for e in job.events if e["event"] == "qa_round"]
+    assert [e["data"]["round"] for e in qa_events] == [1]
+    # repaired → 預覽重新發佈:第一批是原始 URL,第二批帶 ?v=1(F5 cache-bust,
+    # 同字串 URL 瀏覽器不會重抓)。
+    previews = [e["data"]["url"] for e in job.events if e["event"] == "preview_ready"]
+    assert previews == [
+        f"/api/jobs/{job.id}/preview/1.png",
+        f"/api/jobs/{job.id}/preview/2.png",
+        f"/api/jobs/{job.id}/preview/1.png?v=1",
+        f"/api/jobs/{job.id}/preview/2.png?v=1",
+    ]
+
+
+def test_preview_route_ignores_cache_bust_query(app, monkeypatch):
+    # ?v=k 只為了讓 URL 字串不同;伺服器端照樣以固定檔名服務,舊連結不受影響。
+    _install_fakes(monkeypatch, n=2)
+    job = webapi.create_job(app, prompt="x")
+    asyncio.run(webapi.run_job(job))
+    with TestClient(app) as client:
+        r = client.get(f"/api/jobs/{job.id}/preview/1.png?v=7")
+        assert r.status_code == 200
+        assert r.content == _PNG
+
+
+def test_design_note_when_job_chose_no_vision_model(app, monkeypatch):
+    """工作自己選 off(不是環境變數)→ 說明不得叫使用者去改 .env(F6)。"""
+    report = QAReport(rounds=1, findings_by_round=[[]], verdict="pass")
+    _install_fakes(monkeypatch, n=2, qa_report=report)
+    monkeypatch.delenv("ODFORGE_VISION_BACKEND", raising=False)
+    job = webapi.create_job(app, prompt="x", qa=True, vision_backend="off")
+    asyncio.run(webapi.run_job(job))
+
+    design = next(
+        e["data"] for e in job.events
+        if e["event"] == "gate_result" and e["data"]["gate"] == "design"
+    )
+    assert design["status"] == "skipped"
+    assert "ODFORGE_VISION_BACKEND" not in design["note"]
+    assert "選擇不使用視覺模型" in design["note"]
+
+
+def test_design_note_prefers_qa_error_over_env_off_note(app, monkeypatch):
+    # 視覺來源 off 但 QA 仍炸了(render 端):真實原因優先於「你沒開」的泛用說明。
+    _install_fakes(monkeypatch, n=2)
+
+    def boom_qa(ir, out_path, **kwargs):
+        raise RuntimeError("render blew up mid-QA")
+
+    monkeypatch.setattr(webapi, "run_qa_loop", boom_qa)
+    monkeypatch.setenv("ODFORGE_VISION_BACKEND", "off")
     job = webapi.create_job(app, prompt="x", qa=True)
     asyncio.run(webapi.run_job(job))
 
-    # QA error is swallowed (existing behaviour) → design reported skipped, job ok
-    assert job.status == "complete"
-    gates = [e["data"] for e in job.events if e["event"] == "gate_result"]
-    assert {"gate": "design", "status": "skipped"} in gates
+    design = next(
+        e["data"] for e in job.events
+        if e["event"] == "gate_result" and e["data"]["gate"] == "design"
+    )
+    assert design["status"] == "unknown"
+    assert "render blew up mid-QA" in design["note"]
+    assert "ODFORGE_VISION_BACKEND=off" not in design["note"]
+
+
+def test_session_title_prefers_cover_page_over_first_page(app):
+    # 與前端 taskName 對齊(F9):封面頁(role=="title")標題優先於第一頁,
+    # 兩邊的工作名稱才會一致。ir.title 仍然最優先(此處 ir 為 None)。
+    job = webapi.create_job(app, prompt="做一份研究簡報")
+    job.outline = Outline(
+        design=None,
+        mode="presenter",
+        pages=[
+            PageRole(role="agenda", title="議程", gist="開場"),
+            PageRole(role="title", title="量子運算入門", gist="破題"),
+        ],
+    )
+    assert webapi._session_title(job) == "量子運算入門"
 
 
 def test_gate_result_validate_fail_raises_error_stage_validate(app, monkeypatch):
@@ -1231,8 +1748,11 @@ def test_generate_rejects_non_odp_doc_type(app, monkeypatch):
         assert r.status_code == 422
         detail = r.json()["detail"]
         assert isinstance(detail, str)
-        assert "目前僅支援簡報(odp)" in detail
-        assert "即將支援" in detail
+        assert "只產生簡報(odp)" in detail
+        # 「即將支援」與 gates.md 第五節的「定案」互相矛盾,不能兩種說法並存;
+        # 拒絕的同時要指出真正做得到這件事的介面。
+        assert "即將支援" not in detail
+        assert "CLI" in detail and "forge_" in detail
 
 
 def test_generate_defaults_doc_type_odp(app, monkeypatch):
@@ -1253,7 +1773,7 @@ def test_pages_forwarded_to_generate_outline(app, monkeypatch):
     _install_fakes(monkeypatch, n=3)
     seen = {}
 
-    def recording_outline(prompt, backend=None, pages=None):
+    def recording_outline(prompt, backend=None, pages=None, language="zh-TW"):
         seen["pages"] = pages
         return _outline(3)
 
@@ -1369,7 +1889,7 @@ def test_regenerate_error_is_clean(app, monkeypatch):
     job = webapi.create_job(app, prompt="x")
     asyncio.run(webapi.run_job(job))
 
-    def boom(outline, backend=None):
+    def boom(outline, backend=None, dropped=None):
         raise RuntimeError("regen model exploded")
 
     monkeypatch.setattr(webapi, "generate_slides", boom)
@@ -1457,3 +1977,667 @@ def test_interactive_job_times_out_instead_of_holding_a_slot_forever(app, monkey
     assert job.finished_at is not None
     assert job.error is not None
     assert job.error["stage"] == "outline_approval"
+
+
+# ---------------------------------------------------------------------------
+# P2-02 — the concurrency limit counts running WORK, not UI status.
+# ---------------------------------------------------------------------------
+
+
+def test_cancelled_jobs_still_hold_a_slot_until_their_worker_finishes(app, monkeypatch):
+    """按下取消不會叫回已經送出去的供應商呼叫。
+
+    舊的計數只看 job.status,取消後立刻歸零 —— 於是「開始 → 取消」按五次,就有
+    五個同時進行的付費 API 呼叫,而畫面上顯示機器閒著。
+    """
+    _install_fakes(monkeypatch, n=1)
+
+    class FakeTask:
+        """只要 _occupies_a_slot 會問的那一件事:worker 收工了沒。"""
+
+        def __init__(self):
+            self.finished = False
+
+        def done(self):
+            return self.finished
+
+    tasks = []
+    for _ in range(webapi._MAX_ACTIVE_JOBS):
+        job = webapi.create_job(app, prompt="x")
+        # UI 上已經取消,但 worker 還在跑(供應商呼叫無法中斷)。
+        job.status = "cancelled"
+        job.finished_at = time.time()
+        job.task = FakeTask()
+        tasks.append(job.task)
+
+    with TestClient(app) as client:
+        refused = client.post("/api/generate", json={"prompt": "x"})
+        assert refused.status_code == 429
+        assert "尚未結束" in refused.json()["detail"]
+
+        # worker 真的收工之後,名額才釋放。
+        for task in tasks:
+            task.finished = True
+        assert client.post("/api/generate", json={"prompt": "x"}).status_code == 200
+
+
+def test_cancel_stops_the_pipeline_before_it_claims_completion(app, monkeypatch):
+    """取消之後不得再啟動 render/QA,也不得發出 complete。"""
+    _install_fakes(monkeypatch, n=2)
+    rendered: list = []
+    real_render = webapi.render
+
+    def cancelling_slides(outline, backend=None, dropped=None):
+        # 模擬「使用者在第二階段進行中按下取消」。
+        job.status = "cancelled"
+        job.finished_at = time.time()
+        return _slides_for(outline)
+
+    monkeypatch.setattr(webapi, "generate_slides", cancelling_slides)
+    monkeypatch.setattr(
+        webapi, "render", lambda *a, **k: (rendered.append(1), real_render(*a, **k))[1]
+    )
+
+    job = webapi.create_job(app, prompt="x", qa=True)
+    asyncio.run(webapi.run_job(job))
+
+    assert rendered == []  # 取消後不再算圖
+    assert [e["event"] for e in job.events].count("complete") == 0
+    assert job.status == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# R1-01 / R1-02 / R1-07 — the second-round findings.
+#
+# The first round made regeneration build a candidate before committing. These
+# cover what it still got wrong afterwards: a commit that could half-apply, a
+# success that lived only in the HTTP response, and a preview pointer left on
+# the previous version when rasterisation produced nothing.
+# ---------------------------------------------------------------------------
+
+
+def test_regenerate_rolls_back_when_the_final_swap_fails(app, monkeypatch):
+    """os.replace is the point of no return, so its failure must change nothing.
+
+    Everything before it was already covered. This is the step that was not: it
+    ran first in a block commented "nothing may fail", with four in-memory
+    mutations after it that would have applied to a deck that never moved.
+    """
+    job = _regen_fixture(app, monkeypatch)
+    before = _snapshot(job)
+
+    def unswappable(src, dst):
+        raise OSError(32, "file is locked by another process")
+
+    monkeypatch.setattr(webapi.os, "replace", unswappable)
+    with TestClient(app) as client:
+        r = client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={})
+        assert r.status_code == 500
+
+    assert _snapshot(job) == before
+    assert not (job.dir / "deck.candidate.odp").exists()
+    assert job.status == "complete" and job.downloadable
+
+
+def test_regenerate_does_not_serve_the_previous_image_when_no_preview_is_made(
+    app, monkeypatch
+):
+    """No soffice at regeneration time → no thumbnail, not the old thumbnail.
+
+    Leaving the pointer on the previous version answered every request for the
+    new page with a picture of the page it replaced: same URL, plausible image,
+    silently wrong.
+    """
+    job = _regen_fixture(app, monkeypatch)
+    old_version = job.preview_version
+    assert (job.preview_dir / "page-02.png").is_file()
+
+    def no_soffice(*a, **k):
+        raise PreviewUnavailable("soffice not installed")
+
+    monkeypatch.setattr(webapi, "render_pages", no_soffice)
+    with TestClient(app) as client:
+        r = client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={})
+        assert r.status_code == 200
+        assert r.json()["preview_url"] is None
+        # …and the endpoint agrees: no image, rather than the previous one.
+        assert client.get(f"/api/jobs/{job.id}/preview/2.png").status_code == 404
+
+    assert job.preview_version > old_version
+    gates = {g["gate"]: g["status"] for g in r.json()["gates"]}
+    assert gates["libreoffice"] == "skipped"
+
+
+def test_regeneration_survives_a_reload(app, monkeypatch):
+    """R1-02: the new page must come back after F5, not the one it replaced.
+
+    The cockpit rebuilds itself from the SSE log. A regeneration that only
+    answered the HTTP caller left that log describing the previous deck — so a
+    refresh restored the old slide, the old gates and the old preview while the
+    download served the new bytes.
+    """
+    job = _regen_fixture(app, monkeypatch)
+
+    def renamed(outline, backend=None, dropped=None):
+        deck = _slides_for(outline)
+        deck.slides[0].title = "重生後的新標題"
+        return deck
+
+    monkeypatch.setattr(webapi, "generate_slides", renamed)
+    with TestClient(app) as client:
+        assert (
+            client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={}).status_code
+            == 200
+        )
+
+    # Replaying the log the way the browser does must end on the new state.
+    last_slide = [
+        e["data"] for e in job.events
+        if e["event"] == "slide_done" and e["data"]["n"] == 2
+    ][-1]
+    assert last_slide["slide"]["title"] == "重生後的新標題"
+
+    gates = {}
+    for event in job.events:
+        if event["event"] == "gate_result":
+            gates[event["data"]["gate"]] = event["data"]["status"]
+    assert gates["design"] == "unknown"
+
+    # The log must also END terminal, or a restored cockpit hangs mid-generation.
+    assert job.events[-1]["event"] == "complete"
+
+
+def test_events_replay_does_not_stop_at_a_superseded_complete(app, monkeypatch):
+    """The stream closed on the FIRST terminal event, hiding everything after it."""
+    job = _regen_fixture(app, monkeypatch)
+    with TestClient(app) as client:
+        assert (
+            client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={}).status_code
+            == 200
+        )
+        body = client.get(f"/api/jobs/{job.id}/events").text
+
+    # Two completes in the log; a reconnecting client must receive both — i.e.
+    # everything appended by the regeneration, which sits between them.
+    assert body.count("event: complete") == 2
+    assert "qa_invalidated" in body
+
+
+def test_regeneration_discards_the_previous_rounds_qa(app, monkeypatch):
+    """R1-07: findings describe a deck that no longer exists."""
+    findings = [Finding(slide_no=2, issue="文字溢出", severity="error", fix_hint="縮短")]
+    report = QAReport(rounds=1, findings_by_round=[findings], verdict="fail")
+    _install_fakes(monkeypatch, n=3, qa_report=report)
+    job = webapi.create_job(app, prompt="x", qa=True, vision_backend="custom")
+    asyncio.run(webapi.run_job(job))
+    assert job.qa_report is not None
+
+    with TestClient(app) as client:
+        assert (
+            client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={}).status_code
+            == 200
+        )
+        snap = client.get(f"/api/jobs/{job.id}").json()
+
+    assert job.qa_report is None
+    # The snapshot must not still be handing out findings for the replaced page.
+    assert "findings" not in snap
+    assert snap["gates"]["design"] == "unknown"
+    # And the event log must carry the invalidation, so a replay clears it too.
+    assert [e for e in job.events if e["event"] == "qa_invalidated"]
+
+
+def test_regeneration_reports_content_the_budget_dropped(app, monkeypatch):
+    """R2-03: the one generate path that could lose content silently."""
+    job = _regen_fixture(app, monkeypatch)
+
+    def drops(outline, backend=None, dropped=None):
+        if dropped is not None:
+            dropped.append(
+                DroppedContent(slide_no=1, title="第2頁", items=["被刪掉的要點"])
+            )
+        return _slides_for(outline)
+
+    monkeypatch.setattr(webapi, "generate_slides", drops)
+    with TestClient(app) as client:
+        r = client.post(f"/api/jobs/{job.id}/slides/2/regenerate", json={})
+        assert r.status_code == 200
+        assert r.json()["dropped_content"][0]["items"] == ["被刪掉的要點"]
+        snap = client.get(f"/api/jobs/{job.id}").json()
+
+    assert snap["dropped_content"][-1]["items"] == ["被刪掉的要點"]
+    degraded = [e for e in job.events if e["event"] == "content_degraded"]
+    assert degraded and degraded[-1]["data"]["items"][0]["items"] == ["被刪掉的要點"]
+
+
+# ---------------------------------------------------------------------------
+# R1-06 — the slot must be held by the real worker THREAD.
+#
+# The previous test used a FakeTask whose ``done()`` the test itself controlled,
+# so it could not observe the actual defect: cancelling a task parked on
+# ``asyncio.to_thread`` marks the task done immediately while the thread keeps
+# running inside the provider call. These use real cancellation and a real
+# thread.
+# ---------------------------------------------------------------------------
+
+
+def test_cancelled_task_does_not_free_the_slot_while_the_thread_still_runs(
+    app, monkeypatch
+):
+    import threading
+
+    _install_fakes(monkeypatch, n=1)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_provider_call(*a, **k):
+        entered.set()
+        release.wait(timeout=10)      # the uninterruptible requests.post
+        return _outline(1)
+
+    monkeypatch.setattr(webapi, "generate_outline", slow_provider_call)
+
+    async def scenario():
+        job = webapi.create_job(app, prompt="x")
+        job.task = asyncio.create_task(webapi.run_job(job))
+        await asyncio.to_thread(entered.wait, 10)
+
+        job.status = "cancelled"
+        job.task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await job.task
+
+        # The task is done. The thread is not — and it is the thread that is
+        # spending the user's quota, so the slot is still taken.
+        assert job.task.done()
+        assert webapi._occupies_a_slot(job) is True
+
+        release.set()
+        # Give the worker its moment to actually return, then the slot frees.
+        for _ in range(200):
+            if not webapi._occupies_a_slot(job):
+                break
+            await asyncio.sleep(0.01)
+        assert webapi._occupies_a_slot(job) is False
+        return job
+
+    asyncio.run(scenario())
+
+
+def test_start_cancel_loop_cannot_exceed_the_provider_call_limit(app, monkeypatch):
+    """The abuse shape: press start/cancel repeatedly, watch the calls pile up."""
+    import threading
+
+    _install_fakes(monkeypatch, n=1)
+    in_flight = threading.Semaphore(0)
+    release = threading.Event()
+    started = []
+    lock = threading.Lock()
+
+    def slow_provider_call(*a, **k):
+        with lock:
+            started.append(1)
+        in_flight.release()
+        release.wait(timeout=10)
+        return _outline(1)
+
+    monkeypatch.setattr(webapi, "generate_outline", slow_provider_call)
+
+    async def scenario():
+        with TestClient(app) as client:
+            for _ in range(webapi._MAX_ACTIVE_JOBS):
+                assert client.post("/api/generate", json={"prompt": "x"}).status_code == 200
+            for job in list(app.state.jobs.values()):
+                await asyncio.to_thread(in_flight.acquire, True, 10)
+                client.post(f"/api/jobs/{job.id}/cancel")
+
+            # Every one is "cancelled" on screen; every one is still calling out.
+            refused = client.post("/api/generate", json={"prompt": "x"})
+            assert refused.status_code == 429
+            with lock:
+                assert len(started) == webapi._MAX_ACTIVE_JOBS
+            release.set()
+
+    asyncio.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# R2-01 — the 16 MiB reference budget is the SERVER's rule.
+#
+# Only the browser enforced it. Six files just under the per-file cap decoded to
+# ~17 MiB and arrived as ~23 MiB of JSON, and the API took all of it — a limit a
+# client is free not to run is not a limit.
+# ---------------------------------------------------------------------------
+
+
+def _png_of_size(decoded_bytes: int) -> str:
+    return "data:image/png;base64," + base64.b64encode(b"x" * decoded_bytes).decode()
+
+
+def _pdf_of_size(decoded_bytes: int) -> str:
+    return "data:application/pdf;base64," + base64.b64encode(
+        b"%PDF-1.4" + b"x" * decoded_bytes
+    ).decode()
+
+
+def test_generate_refuses_a_batch_over_the_total_budget(app):
+    three_mib = _png_of_size(3 * 1024 * 1024)
+    body = {
+        "prompt": "x",
+        "assets": [{"description": f"圖{i}", "data_url": three_mib} for i in range(6)],
+    }
+    with TestClient(app) as client:
+        r = client.post("/api/generate", json=body)
+    assert r.status_code == 422
+    assert "總量過大" in json.dumps(r.json(), ensure_ascii=False)
+
+
+def test_discovery_refuses_a_batch_over_the_total_budget(app):
+    three_mib = _pdf_of_size(3 * 1024 * 1024)
+    body = {
+        "prompt": "x",
+        "assets": [{"description": f"檔{i}", "data_url": three_mib} for i in range(6)],
+    }
+    with TestClient(app) as client:
+        r = client.post("/api/discovery/questions", json=body)
+    assert r.status_code == 422
+    assert "總量過大" in json.dumps(r.json(), ensure_ascii=False)
+
+
+def test_a_batch_inside_the_budget_passes_the_gate(app):
+    """The gate must refuse oversized batches without refusing ordinary ones.
+
+    Asserted on the request model rather than the endpoint: 15 MiB of ``b"x"``
+    is within budget but is not a decodable PNG, and the image decoder's 422 is
+    a different (correct) refusal that would mask this one.
+    """
+    three_mib = _png_of_size(3 * 1024 * 1024)
+    webapi.GenerateBody(
+        prompt="x",
+        assets=[{"description": f"圖{i}", "data_url": three_mib} for i in range(5)],
+    )
+
+
+def test_decoded_length_matches_a_real_decode():
+    for size in (0, 1, 2, 3, 1000, 4096):
+        url = _png_of_size(size)
+        payload = url.split(",", 1)[1]
+        assert webapi._decoded_length(url) == len(base64.b64decode(payload))
+
+
+# ---------------------------------------------------------------------------
+# R2-08 — the packaged-frontend lookup must return a directory that EXISTS.
+#
+# `as_file()` deletes what it materialised when its context closes, and the path
+# was returned from inside the `with`. Undetectable on a normal install (pip
+# unpacks wheels, so `as_file` is a no-op) and broken everywhere else.
+# ---------------------------------------------------------------------------
+
+
+def test_frontend_dist_returns_a_directory_that_is_still_there(monkeypatch, tmp_path):
+    packaged = tmp_path / "webui"
+    packaged.mkdir()
+    (packaged / "index.html").write_text("<!doctype html>", encoding="utf-8")
+
+    class FakeFiles:
+        def __truediv__(self, name):
+            return tmp_path / name
+
+    monkeypatch.setattr(webapi.resources, "files", lambda _pkg: FakeFiles())
+
+    found = webapi.frontend_dist()
+    assert found == packaged
+    # The assertion the old code could not satisfy: still present after return.
+    assert found.is_dir() and (found / "index.html").is_file()
+
+
+def test_a_non_filesystem_package_degrades_to_api_only_and_says_so(
+    monkeypatch, tmp_path, caplog
+):
+    """A zip import is unsupported — which must look like unsupported, not fine."""
+
+    class ZippedResource:
+        def __truediv__(self, name):
+            return self
+
+        def is_file(self):
+            return True
+
+    monkeypatch.setattr(webapi.resources, "files", lambda _pkg: ZippedResource())
+    # No source-tree fallback either.
+    monkeypatch.setattr(
+        webapi.Path, "is_file", lambda self: False, raising=False
+    )
+
+    with caplog.at_level("WARNING"):
+        assert webapi.frontend_dist() is None
+    assert "zip" in caplog.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Output language / 封面署名與校徽 / 自訂範本 — the settings the composer now sends
+#
+# Every one of these is a promise made in the UI before a single token is spent.
+# The tests below are about the promise arriving intact at the place that can
+# keep it: the model call, the deck, or the renderer's asset map.
+# ---------------------------------------------------------------------------
+
+
+def _run_to_completion(client, body):
+    response = client.post("/api/generate", json=body)
+    assert response.status_code == 200, response.text
+    job_id = response.json()["job_id"]
+    snapshot = {}
+    for _ in range(200):
+        snapshot = client.get(f"/api/jobs/{job_id}").json()
+        if snapshot["status"] in ("complete", "error"):
+            break
+        time.sleep(0.01)
+    return job_id, snapshot
+
+
+def test_language_reaches_the_outline_call_and_the_deck(app, monkeypatch):
+    _install_fakes(monkeypatch, n=3)
+    seen = {}
+
+    def recording_outline(prompt, backend=None, pages=None, language="zh-TW"):
+        seen["language"] = language
+        return _outline(3)
+
+    monkeypatch.setattr(webapi, "generate_outline", recording_outline)
+    with TestClient(app) as client:
+        job_id, snapshot = _run_to_completion(
+            client, {"prompt": "photosynthesis", "language": "en"}
+        )
+    assert seen["language"] == "en"
+    assert snapshot["status"] == "complete"
+    # Stage 2 reads the language off the outline, so it has to be stamped there.
+    assert app.state.jobs[job_id].outline.language == "en"
+
+
+def test_an_unknown_language_is_refused(app, monkeypatch):
+    _install_fakes(monkeypatch)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate", json={"prompt": "x", "language": "klingon"}
+        )
+    assert response.status_code == 422
+
+
+def test_regenerating_one_page_keeps_the_decks_language(app, monkeypatch):
+    seen = []
+    _install_fakes(monkeypatch, n=3, record_slides=seen)
+
+    def outline_in_english(prompt, backend=None, pages=None, language="zh-TW"):
+        return _outline(3).model_copy(update={"language": language})
+
+    monkeypatch.setattr(webapi, "generate_outline", outline_in_english)
+    with TestClient(app) as client:
+        job_id, snapshot = _run_to_completion(client, {"prompt": "x", "language": "en"})
+        assert snapshot["status"] == "complete"
+        response = client.post(
+            f"/api/jobs/{job_id}/slides/2/regenerate", json={"instruction": "shorter"}
+        )
+        assert response.status_code == 200, response.text
+    # The sub-outline built for the single page must carry the same language —
+    # otherwise the one page the user asked to fix comes back in zh-TW.
+    assert seen[-1].language == "en"
+
+
+def test_byline_and_logo_land_on_the_deck(app, monkeypatch):
+    _install_fakes(monkeypatch, n=3)
+    logo = "data:image/png;base64," + base64.b64encode(_PNG).decode()
+    with TestClient(app) as client:
+        job_id, snapshot = _run_to_completion(
+            client,
+            {
+                "prompt": "x",
+                "byline": "  輔仁大學資工系 · 王小明  ",
+                "logo": {"description": "校徽", "credit": "", "data_url": logo},
+                "logo_placement": "all",
+            },
+        )
+    assert snapshot["status"] == "complete"
+    job = app.state.jobs[job_id]
+    assert job.ir.branding is not None
+    assert job.ir.branding.byline == "輔仁大學資工系 · 王小明"  # trimmed
+    assert job.ir.branding.logo == "asset://logo"
+    assert job.ir.branding.placement == "all"
+    # The bytes have to be in the asset map the renderer is handed, and on disk.
+    assert "logo" in job.assets
+    assert Path(job.assets["logo"]).is_file()
+
+
+def test_the_crest_is_not_offered_to_the_model_as_page_media(app, monkeypatch):
+    _install_fakes(monkeypatch, n=3)
+    logo = "data:image/png;base64," + base64.b64encode(_PNG).decode()
+    with TestClient(app) as client:
+        job_id, _snapshot = _run_to_completion(
+            client,
+            {
+                "prompt": "x",
+                "logo": {"description": "校徽", "credit": "", "data_url": logo},
+            },
+        )
+    # asset_refs is the menu stage 2 may choose images from. A crest on slide 4
+    # is exactly what happens when furniture is put on that menu.
+    assert app.state.jobs[job_id].asset_refs == []
+
+
+def test_a_pdf_cannot_be_used_as_a_logo(app, monkeypatch):
+    _install_fakes(monkeypatch)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate",
+            json={
+                "prompt": "x",
+                "logo": {
+                    "description": "校徽",
+                    "credit": "",
+                    "data_url": _pdf_data_url(),
+                },
+            },
+        )
+    assert response.status_code == 422
+
+
+def test_no_branding_fields_means_no_branding_on_the_deck(app, monkeypatch):
+    _install_fakes(monkeypatch, n=3)
+    with TestClient(app) as client:
+        job_id, snapshot = _run_to_completion(client, {"prompt": "x"})
+    assert snapshot["status"] == "complete"
+    assert app.state.jobs[job_id].ir.branding is None
+
+
+def test_a_user_template_design_beats_the_models_own(app, monkeypatch):
+    _install_fakes(monkeypatch, n=3)
+    seen = []
+
+    def recording_slides(outline, backend=None, dropped=None):
+        seen.append(outline)
+        return _slides_for(outline)
+
+    monkeypatch.setattr(webapi, "generate_slides", recording_slides)
+    design = {
+        "palette": {
+            "bg": "#FBF9F4",
+            "surface": "#EFEADD",
+            "text": "#1F2733",
+            "muted": "#5B6470",
+            "accent": "#A3212F",
+        },
+        "fonts": {"display": "Noto Serif TC", "body": "Noto Sans TC"},
+        "scale": "compact",
+    }
+    with TestClient(app) as client:
+        job_id, snapshot = _run_to_completion(
+            client, {"prompt": "x", "theme": "navy", "design": design}
+        )
+    assert snapshot["status"] == "complete"
+    job = app.state.jobs[job_id]
+    # Applied to the OUTLINE too: stage 2 is told the art direction, and being
+    # told one palette while the renderer paints another is how a "presenter on
+    # dark" deck gets written for a light one.
+    assert seen[0].design.palette.accent == "#A3212F"
+    assert job.ir.design.palette.accent == "#A3212F"
+    assert job.ir.design.scale == "compact"
+
+
+def test_an_unreadable_template_design_is_refused(app, monkeypatch):
+    _install_fakes(monkeypatch)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/generate",
+            json={
+                "prompt": "x",
+                "design": {
+                    "palette": {
+                        "bg": "#FFFFFF",
+                        "surface": "#FFFFFF",
+                        "text": "#EEEEEE",
+                        "muted": "#F5F5F5",
+                        "accent": "#FAFAFA",
+                    },
+                    "fonts": {"display": "Noto Sans TC", "body": "Noto Sans TC"},
+                    "scale": "standard",
+                },
+            },
+        )
+    assert response.status_code == 422
+
+
+def test_a_new_preset_is_accepted_by_the_api(app, monkeypatch):
+    # theme is validated against the registry now, not a hand-kept Literal —
+    # this is the test that fails if the two ever drift apart again.
+    _install_fakes(monkeypatch, n=3)
+    with TestClient(app) as client:
+        job_id, snapshot = _run_to_completion(client, {"prompt": "x", "theme": "crimson"})
+        rejected = client.post(
+            "/api/generate", json={"prompt": "x", "theme": "not-a-theme"}
+        )
+    assert rejected.status_code == 422
+    assert snapshot["status"] == "complete"
+    assert app.state.jobs[job_id].ir.theme == "crimson"
+
+
+def test_branding_and_language_survive_a_reload(app, monkeypatch):
+    _install_fakes(monkeypatch, n=3)
+    logo = "data:image/png;base64," + base64.b64encode(_PNG).decode()
+    with TestClient(app) as client:
+        job_id, snapshot = _run_to_completion(
+            client,
+            {
+                "prompt": "x",
+                "language": "bilingual",
+                "byline": "資工系",
+                "logo": {"description": "校徽", "credit": "", "data_url": logo},
+            },
+        )
+    assert snapshot["status"] == "complete"
+
+    revived = webapi.create_app(jobs_dir=app.state.jobs_dir)
+    job = revived.state.jobs[job_id]
+    assert job.language == "bilingual"
+    assert job.branding is not None and job.branding.byline == "資工系"
+    assert job.branding.logo == "asset://logo"
+    assert "logo" in job.assets and Path(job.assets["logo"]).is_file()

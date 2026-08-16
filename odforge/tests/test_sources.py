@@ -7,16 +7,42 @@ the registries instead, and the frontend asks ``GET /api/sources`` rather than
 carrying its own list.
 """
 
+import os
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
-from odforge import critic, llm
-from odforge.webapi import create_app
+from odforge import critic, llm, webapi
+from odforge.ir import Outline, PageRole, Presentation, Slide
+from odforge.webapi import create_app, vision_source_names
+
+
+def _stub_pipeline(monkeypatch):
+    """Replace the two generation stages and the renderer with offline fakes."""
+    outline = Outline(
+        design=None,
+        mode="presenter",
+        pages=[PageRole(role="title", title="封面", gist="開場")],
+    )
+    deck = Presentation(title="測試", slides=[Slide(layout="title", title="封面")])
+    monkeypatch.setattr(webapi, "generate_outline", lambda *a, **k: outline)
+    monkeypatch.setattr(webapi, "generate_slides", lambda *a, **k: deck)
+    monkeypatch.setattr(
+        webapi, "render", lambda ir, out, **k: out.write_bytes(b"PK") or out
+    )
+    monkeypatch.setattr(
+        webapi,
+        "render_pages",
+        lambda *a, **k: (_ for _ in ()).throw(webapi.PreviewUnavailable("no soffice")),
+    )
 
 
 @pytest.fixture
-def client() -> TestClient:
-    return TestClient(create_app())
+def client(tmp_path) -> TestClient:
+    # jobs_dir is not optional in practice: these tests POST /api/generate, and
+    # without it the jobs land in the operator's real session history.
+    return TestClient(create_app(jobs_dir=tmp_path / "sessions"))
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +104,11 @@ def _generate(client, **overrides):
     return client.post("/api/generate", json=payload)
 
 
-def test_generate_accepts_a_vision_backend_per_job(client):
+def test_generate_accepts_a_vision_backend_per_job(client, monkeypatch):
+    # 這些測試要驗的是「請求被接受」,不是「生成跑得完」。所以把兩段式生成換掉:
+    # 否則每個斷言都會在背景真的打一次供應商 API,測試變成在花別人的額度,而且
+    # 在沒有金鑰的 CI 上結果完全不同。
+    _stub_pipeline(monkeypatch)
     resp = _generate(client, qa=True, vision_backend="off")
     assert resp.status_code == 200
     job_id = resp.json()["job_id"]
@@ -95,7 +125,59 @@ def test_generate_rejects_an_unknown_vision_backend(client):
     assert resp.status_code == 422
 
 
-def test_generate_accepts_every_registered_text_backend(client, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    for name in llm.BACKENDS:
-        assert _generate(client, backend=name).status_code == 200, name
+@pytest.mark.parametrize("name", sorted(llm.BACKENDS))
+def test_every_registered_text_backend_is_accepted_by_the_schema(name):
+    """純 schema 驗證:註冊過的名稱一定通過,不需要啟動任何背景工作。"""
+    body = webapi.GenerateBody(prompt="測試", backend=name)
+    assert body.backend == name
+
+
+@pytest.mark.parametrize("name", sorted(vision_source_names()))
+def test_every_registered_vision_source_is_accepted_by_the_schema(name):
+    body = webapi.GenerateBody(prompt="測試", vision_backend=name)
+    assert body.vision_backend == name
+
+
+# ---------------------------------------------------------------------------
+# R2-07 — test isolation must not fall through to the developer's real login.
+# ---------------------------------------------------------------------------
+
+def test_codex_home_points_at_an_empty_directory_not_the_real_one():
+    """Deleting CODEX_HOME meant "use the default" — i.e. ``~/.codex``.
+
+    The scrub that existed to isolate the suite was handing it the maintainer's
+    live subscription credentials, so every "not logged in" branch was dead code
+    on the only machine anyone ran the suite on.
+    """
+    from odforge.critic import _codex_auth_path
+
+    codex_home = os.environ.get("CODEX_HOME")
+    assert codex_home, "CODEX_HOME must be set (to a throwaway), never unset"
+
+    path = _codex_auth_path()
+    assert Path(codex_home) in path.parents
+    # The specific file that must never be reached. (A pytest tmp dir lives
+    # under the home directory on Windows, so "not under $HOME" is the wrong
+    # assertion; "not the real credential file" is the right one.)
+    assert path != Path.home() / ".codex" / "auth.json"
+    assert not path.exists(), "an isolated CODEX_HOME must look logged-out"
+
+
+def test_the_codex_cli_cannot_be_launched_from_a_test():
+    """Environment isolation stops the read; this stops the spend."""
+    import subprocess
+
+    with pytest.raises(AssertionError, match="codex"):
+        subprocess.run(["codex", "exec", "hello"], capture_output=True)
+    with pytest.raises(AssertionError, match="codex"):
+        subprocess.Popen(["codex"])
+
+
+def test_the_guard_does_not_block_other_tools():
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-c", "print('ok')"], capture_output=True, text=True
+    )
+    assert proc.returncode == 0 and proc.stdout.strip() == "ok"

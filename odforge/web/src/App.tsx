@@ -9,6 +9,7 @@ import { ErrorPanel } from "./components/ErrorPanel";
 import { DiscoveryPanel } from "./components/DiscoveryPanel";
 import { HomeDashboard } from "./components/HomeDashboard";
 import {
+  ApiHttpError,
   getSessions,
   postCancel,
   postDiscoveryQuestions,
@@ -21,12 +22,25 @@ import {
   type SessionSummary,
 } from "./state/api";
 import { cockpitReducer, initialState } from "./state/cockpit";
+import { taskNameFromOutline } from "./state/taskName";
 import { playMock } from "./state/mockStream";
 import { subscribeJob } from "./state/sse";
 import { createThrottledDispatch } from "./state/throttle";
 import { useTheme } from "./theme/useTheme";
 import "./theme/tokens.css";
 import "./styles/app.css";
+
+// 展示模式活在 URL 參數裡(?mock / ?mockStep):所有 URL 重寫都要帶著它們走,
+// 否則「再鍛一份 / 新增簡報 / 首頁」重寫 URL 的瞬間,demo 就無聲退出展示模式。
+function replaceUrl(next: URLSearchParams) {
+  const cur = new URLSearchParams(window.location.search);
+  for (const key of ["mock", "mockStep"]) {
+    const value = cur.get(key);
+    if (value != null) next.set(key, value);
+  }
+  const qs = next.toString();
+  history.replaceState(null, "", qs ? `${window.location.pathname}?${qs}` : window.location.pathname);
+}
 
 export default function App() {
   const [state, dispatch] = useReducer(cockpitReducer, undefined, () => initialState());
@@ -120,6 +134,9 @@ export default function App() {
         setExpired(true);
         setView("create");
       },
+      // 連線(重)開啟 → 後端無 Last-Event-ID,必從 cursor 0 重播全部事件。
+      // 清掉節流器的去重集合與待播佇列,讓重播完整流進 reducer(冪等重建牆)。
+      throttle.reset,
     );
     cancelRef.current = () => { close(); throttle.cancel(); };
     return () => { close(); throttle.cancel(); };
@@ -154,17 +171,45 @@ export default function App() {
       history.replaceState(null, "", `?job=${encodeURIComponent(job_id)}`);
       // 只有 SSE 事件流走視覺節流器;本地 dispatch(大綱重同步、重生)直接進 reducer。
       const throttle = createThrottledDispatch(dispatch);
-      const closeSse = subscribeJob(job_id, throttle.push);
+      const closeSse = subscribeJob(
+        job_id,
+        throttle.push,
+        EventSource,
+        (e) => {
+          // 與 ?job= 復原路徑同款生死判準:CONNECTING(0)是自動重連中的暫時錯誤,
+          // 交給瀏覽器繼續試;readyState 已 CLOSED(2)= 放棄重連(如 server 重啟後
+          // job 404)→ 不能讓 UI 永遠轉圈,收線並以 error 收尾(錯誤區可重試)。
+          const rs = (e as { target?: { readyState?: number } } | undefined)?.target?.readyState;
+          if (rs != null && rs !== 2 /* EventSource.CLOSED */) return;
+          closeSse();
+          // 走節流器的 DRAIN_FIRST:先排空已到的 slide,再收 error,牆保住已生成頁。
+          throttle.push({ type: "error", data: { message: "與後端的事件串流已中斷（伺服器可能重啟過），請重試。", stage: "connect" } });
+        },
+        // 重連重播 → 重設節流器去重/佇列,讓 reducer 冪等重建(同 ?job= 復原路徑)。
+        throttle.reset,
+      );
       cancelRef.current = () => { closeSse(); throttle.cancel(); };
-    } catch {
-      // 後端不可用時,誠實回報連線失敗(不再靜默退回 mock 演假簡報)。
-      // phase 進 error 後 PromptBar 會回來,使用者可重試。
-      dispatch({ type: "error", data: { message: "無法連上後端,請確認 odforge serve 是否在執行", stage: "connect" } });
+    } catch (error) {
+      // 後端「有回應但拒絕」(如 429 同時工作數上限、422 驗證失敗)→ 原樣轉述
+      // detail 與狀態碼,不誤導使用者去重啟伺服器;真的連不上(fetch 拋網路錯誤)
+      // 才給連線提示。phase 進 error 後 PromptBar 會回來,使用者可重試。
+      dispatch({
+        type: "error",
+        data: error instanceof ApiHttpError
+          ? { message: error.message, stage: "request" }
+          : { message: "無法連上後端,請確認 odforge serve 是否在執行", stage: "connect" },
+      });
       setView("create");
     }
   }
 
   async function beginDiscovery(body: GenerateBody) {
+    // 展示模式沒有後端可訪談:跳過訪談直接進 mock 生成流。否則第一下點擊就打
+    // 真網路請求,死在「舊版後端」的誤導訊息裡,onGenerate 的 mock 分支永遠到不了。
+    if (mockMode) {
+      await onGenerate(body);
+      return;
+    }
     discoveryAbortRef.current?.abort();
     const controller = new AbortController();
     discoveryAbortRef.current = controller;
@@ -231,13 +276,13 @@ export default function App() {
   function startNew() {
     clearWorkspace();
     setPrompt("");
-    history.replaceState(null, "", `${window.location.pathname}?new=1`);
+    replaceUrl(new URLSearchParams({ new: "1" }));
     setView("create");
   }
 
   function goHome() {
     clearWorkspace();
-    history.replaceState(null, "", window.location.pathname);
+    replaceUrl(new URLSearchParams());
     setView("home");
   }
 
@@ -245,7 +290,7 @@ export default function App() {
   // prompt 文字刻意保留在輸入框(受控 state 不動),使用者可微調再送。
   function resetCockpit() {
     clearWorkspace();
-    history.replaceState(null, "", `${window.location.pathname}?new=1`);
+    replaceUrl(new URLSearchParams({ new: "1" }));
     setView("create");
   }
 
@@ -291,6 +336,7 @@ export default function App() {
     : disconnected
     ? { kind: "offline" as const, label: "後端未連線" }
     : null;
+  const taskName = taskNameFromOutline(state.outline);
   const home = view === "home" && !submitting && state.phase === "empty";
   const composer = view === "create"
     && !submitting
@@ -385,9 +431,15 @@ export default function App() {
           <header className="workhead">
             <div className="workbrief">
               <span className="worklabel">目前任務</span>
-              <div className="promptline" title={prompt || undefined}>
-                <span className="pl-text">{prompt || "生成中的文件"}</span>
-              </div>
+              {/* 任務名稱用模型讀完需求後定的文件標題(封面頁),不是使用者那句原始輸入
+                  ——輸入是「參考文件後製作一個…」這種指令句,當成任務名稱既冗長也不像
+                  一份文件的名字。大綱還沒到之前才退回原句。title 屬性保留原始需求。 */}
+              {/* 工作台的唯一 h1。這裡本來完全沒有 h1 —— 一個讀屏使用者跳到
+                  「標題 1」會直接掠過整個工作台,或落在某個區塊標題上,沒有任何
+                  一處說得出「你正在看的是哪一份文件」。 */}
+              <h1 className="promptline" title={prompt || undefined}>
+                <span className="pl-text">{taskName || prompt || "生成中的文件"}</span>
+              </h1>
             </div>
             <div className="work-actions">
               <button type="button" className="work-home" onClick={goHome}>首頁</button>
@@ -399,8 +451,15 @@ export default function App() {
             </div>
           </header>
 
-          {/* data-outline 讓 CSS 在大綱未到前收掉左欄,避免空白直條。 */}
-          <div className="cockpit" data-outline={state.outline ? "present" : "absent"}>
+          {/* data-outline 讓 CSS 在大綱未到前收掉左欄,避免空白直條。
+              data-phase 讓窄螢幕能依階段換欄位順序:等待確認時,承載 CTA 的大綱欄
+              必須排在縮圖牆之前——12 頁的骨架牆會把「就這樣鍛」推到數千像素之後,
+              使用者看到的是一個沒有按鈕、像是卡住的畫面。 */}
+          <div
+            className="cockpit"
+            data-outline={state.outline ? "present" : "absent"}
+            data-phase={state.phase}
+          >
           <OutlineRail outline={state.outline} phase={state.phase} onConfirm={onConfirmOutline} />
           <PreviewStage
             units={state.units}
@@ -412,7 +471,14 @@ export default function App() {
             selectedN={selectedN}
             onSelect={setSelectedN}
           />
-          <GateRail gates={state.gates} qaRounds={state.qaRounds} onOpenFinding={state.phase === "error" ? undefined : (n) => setSelectedN(n)} />
+          {/* 生成中途出錯:錯誤面板直接壓在舞台區上——牆不卸載(已生成頁留著),
+              但錯誤與「重試」必須是看得見的第一層,不能只躲在 narrator 的 hover 裡。 */}
+          {state.phase === "error" && (
+            <div className="stage-error">
+              <ErrorPanel error={state.error} onRetry={lastBodyRef.current ? retryGenerate : undefined} />
+            </div>
+          )}
+          <GateRail gates={state.gates} gateNotes={state.gateNotes} qaRounds={state.qaRounds} dropped={state.dropped} onOpenFinding={state.phase === "error" ? undefined : (n) => setSelectedN(n)} />
           </div>
 
           <footer className="foot">

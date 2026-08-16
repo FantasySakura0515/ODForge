@@ -27,6 +27,17 @@ test("await 階段:每列可就地編輯且出現 ConfirmBar", () => {
   expect(screen.getByRole("button", { name: /就這樣鍛/ })).toBeInTheDocument();
 });
 
+test("確認鈕排在大綱清單之前,且標明按下去會開始生成", () => {
+  const { container } = render(
+    <OutlineRail outline={makeOutline()} phase="await" onConfirm={vi.fn().mockResolvedValue(undefined)} />,
+  );
+  const bar = container.querySelector(".confirmbar")!;
+  const list = container.querySelector(".outline")!;
+  // 位置回歸守門:排在清單之後 → 長大綱會把它推出視窗,使用者以為系統卡住。
+  expect(bar.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getByRole("button", { name: /就這樣鍛/ })).toHaveTextContent(/開始逐頁生成/);
+});
+
 test("未改動 → approve 路徑", async () => {
   const onConfirm = vi.fn().mockResolvedValue(undefined);
   render(<OutlineRail outline={makeOutline()} phase="await" onConfirm={onConfirm} />);
@@ -89,4 +100,25 @@ test("送出失敗 → ConfirmBar 顯示錯誤,可重試", async () => {
   render(<OutlineRail outline={makeOutline()} phase="await" onConfirm={onConfirm} />);
   fireEvent.click(screen.getByRole("button", { name: /就這樣鍛/ }));
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/409/));
+});
+
+test("重播的同內容大綱(新物件身分)不得抹掉編輯中的草稿", () => {
+  const onConfirm = vi.fn().mockResolvedValue(undefined);
+  const { rerender } = render(<OutlineRail outline={makeOutline()} phase="await" onConfirm={onConfirm} />);
+  fireEvent.change(screen.getAllByRole("textbox")[0], { target: { value: "改到一半的標題" } });
+
+  // SSE 重連重播:內容相同、物件身分全新的 outline prop 再來一次。
+  rerender(<OutlineRail outline={makeOutline()} phase="await" onConfirm={onConfirm} />);
+  expect((screen.getAllByRole("textbox")[0] as HTMLInputElement).value).toBe("改到一半的標題");
+});
+
+test("內容真的變了的大綱到達 → 草稿重新播種(不是永遠黏著舊草稿)", () => {
+  const onConfirm = vi.fn().mockResolvedValue(undefined);
+  const { rerender } = render(<OutlineRail outline={makeOutline()} phase="await" onConfirm={onConfirm} />);
+  fireEvent.change(screen.getAllByRole("textbox")[0], { target: { value: "改到一半的標題" } });
+
+  const changed = makeOutline();
+  changed.pages[0] = { ...changed.pages[0], title: "後端改寫的新封面" };
+  rerender(<OutlineRail outline={changed} phase="await" onConfirm={onConfirm} />);
+  expect((screen.getAllByRole("textbox")[0] as HTMLInputElement).value).toBe("後端改寫的新封面");
 });

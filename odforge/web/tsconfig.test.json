@@ -1,0 +1,14 @@
+{
+  // The production tsconfig excludes *.test.ts(x), so nothing ever typechecked
+  // the tests — and five call sites were passing the wrong shape to the reducer
+  // with no build ever complaining. This config covers the same sources *plus*
+  // the tests, and CI runs it. It emits nothing; it exists to fail.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // node: the token/layout contract tests read the CSS files off disk.
+    "types": ["vitest/globals", "@testing-library/jest-dom", "node"]
+  },
+  "include": ["src"],
+  "exclude": []
+}

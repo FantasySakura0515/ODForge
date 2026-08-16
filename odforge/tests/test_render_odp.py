@@ -13,11 +13,12 @@ from odforge.ir import (
     Slide,
     contrast_ratio,
 )
-from odforge.package import ODP_MIMETYPE
 from odforge.media import AssetBlob
+from odforge.package import ODP_MIMETYPE
 from odforge.render import render
 from odforge.render.odp import (
     _GraphicStyles,
+    _LogoAsset,
     _line_xml,
     _rect_xml,
     _section_fill,
@@ -25,7 +26,16 @@ from odforge.render.odp import (
     build_styles_xml,
     render_odp,
 )
-from odforge.themes import LAYOUTS, PAGE_H, PAGE_W, SCALES, THEMES, resolve_design
+from odforge.themes import (
+    LAYOUTS,
+    PAGE_H,
+    PAGE_W,
+    SCALES,
+    THEME_LABELS,
+    THEMES,
+    resolve_design,
+)
+from odforge.validate import find_soffice
 
 
 def test_all_layouts_exist():
@@ -48,8 +58,15 @@ def test_frames_within_page_bounds():
 
 def test_all_presets_exist():
     assert set(THEMES) == {
-        "academic", "minimal", "dark", "teal", "forest", "navy", "violet"
+        "academic", "minimal", "dark", "teal", "forest", "navy", "violet",
+        "crimson", "slate", "gold", "sky", "plum", "clay",
     }
+
+
+def test_every_preset_has_a_display_label():
+    # The gallery and the CLI both name themes from THEME_LABELS; a preset with
+    # no label would show up as a bare id in the UI.
+    assert set(THEME_LABELS) == set(THEMES)
 
 
 def test_theme_colors_are_valid_hex():
@@ -309,7 +326,7 @@ def parse_fragment(fragment: str):
     assertions instead of raw substring matching.
     """
     decls = " ".join(f'xmlns:{p}="{u}"' for p, u in NS.items())
-    return etree.fromstring(f"<root {decls}>{fragment}</root>".encode("utf-8"))
+    return etree.fromstring(f"<root {decls}>{fragment}</root>".encode())
 
 
 def test_graphic_styles_dedup_and_sequential_names():
@@ -464,11 +481,11 @@ def test_light_theme_content_page_style_stays_solid():
 # ---------------------------------------------------------------------------
 
 from odforge.render.odp import (  # noqa: E402
-    _ParagraphStyles,
-    _list_xml,
-    _list_style_xml,
-    _kicker_paragraph_xml,
     _LIST_STYLE_NAME,
+    _kicker_paragraph_xml,
+    _list_style_xml,
+    _list_xml,
+    _ParagraphStyles,
 )
 
 
@@ -845,7 +862,7 @@ def test_big_fact_fact_style_uses_display_pt_and_accent():
 # Task 13.4: SVG decorations on title pages + rounded surface cards on two-col
 # ---------------------------------------------------------------------------
 
-from odforge.render.odp import _svg_decoration, _DECO_HREF, _wrap_width  # noqa: E402
+from odforge.render.odp import _DECO_HREF, _svg_decoration, _wrap_width  # noqa: E402
 
 
 # ① The engine-generated decoration is deterministic, accent-coloured, small.
@@ -1029,7 +1046,7 @@ def test_new_layouts_registered_and_in_bounds():
     # ② the five new keys exist; the parameterized boundary test above already
     #    proves every frame (including the new ones) sits within 28×15.75.
     for key in ("quote", "agenda", "comparison", "chart", "closing"):
-        assert key in LAYOUTS and LAYOUTS[key]
+        assert LAYOUTS.get(key)
 
 
 # --- quote -----------------------------------------------------------------
@@ -1851,6 +1868,57 @@ def test_cards_wrapping_title_does_not_print_through_the_children():
     assert spills == [], f"text spilling out of its box: {spills}"
 
 
+def _closing_root(actions, theme=None):
+    theme = theme or THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[Slide(layout="closing", title="下一步", bullets=actions)],
+    )
+    root = _content_root(p, theme)
+    return root, root.find(".//draw:page", NS)
+
+
+# A live run put 「節約用電:隨手關燈,減少待機耗電」 on a closing card drawn at a
+# flat 3.35cm: the third line landed on the inverted background in near-black
+# ink — unreadable, on the last page anyone looks at.
+_SPILLING_ACTION = "節約用電：隨手關燈，減少待機耗電"
+
+
+def test_closing_action_cards_hold_a_three_line_action():
+    root, page = _closing_root(
+        [_SPILLING_ACTION, "減少食物浪費：吃多少煮多少", "綠色運輸：多走路、騎單車或搭公車"]
+    )
+    spills = _overflowing_text(root, page)
+    assert spills == [], f"action text spilling onto the inverted page: {spills}"
+
+
+def test_closing_action_cards_grow_with_their_text():
+    # Four across is where the cards get narrow enough to wrap — and it is the
+    # count both live failures had.
+    short = _card_heights(
+        _closing_root(["確認範圍", "指定負責人", "每週檢視", "啟動預約"])[1]
+    )
+    longer = _card_heights(
+        _closing_root(
+            [
+                _SPILLING_ACTION,
+                "減少食物浪費：吃多少煮多少",
+                "綠色運輸：多走路、騎單車或搭公車",
+                "你的選擇，決定地球的未來",
+            ]
+        )[1]
+    )
+    assert len(set(short)) == 1 and len(set(longer)) == 1, "a row must read even"
+    assert longer[0] > short[0], "a wrapping action must grow its card"
+
+
+def test_closing_short_actions_keep_the_compact_card():
+    heights = _card_heights(_closing_root(["確認範圍", "指定負責人", "每週檢視"])[1])
+    assert heights[0] == pytest.approx(3.35, abs=0.01), (
+        f"short actions should keep today's compact card: {heights[0]}cm"
+    )
+
+
 def test_timeline_cards_stay_equal_height():
     _, page = _timeline_root()
     heights = {card.get(_q("svg", "height")) for card in _visual_cards(page)}
@@ -1977,3 +2045,476 @@ def test_every_hub_edge_keeps_a_visible_run_of_line():
             f"edge ({x1:.2f},{y1:.2f})->({x2:.2f},{y2:.2f}) only {shown:.2f}cm "
             "of line is actually visible"
         )
+
+
+# ===========================================================================
+# IR 上限長度的內容不得把字印出卡片外。
+#
+# 系統性缺陷:卡高被 max_h/available 夾住,但卡內文字框仍照「未夾住」的量測高度
+# 與偏移擺放 —— IR 上限長度的 CJK 內容就把字印出卡外、印過鄰卡(ODF z-order =
+# 文件順序,後畫的卡矩形直接蓋掉前面的字)、甚至印出頁面底邊。修法是共用的
+# _fit_stacked_texts:先降 title 字級(到 12pt)、再降 detail 字級(到 10pt)、
+# 最後截斷加「…」——LibreOffice 不裁字,看得見的刪節號勝過印在卡外的墨水。
+# ===========================================================================
+
+
+def _card_bound_escapes(page, tol=0.05):
+    """文字框左上角落在哪張卡,框的底邊就必須留在那張卡內。
+
+    LibreOffice 不把文字裁在框內,但 _fit_stacked_texts 保證框足以容納量測後
+    的文字(墨水對框的檢查交給 _overflowing_text);因此「框留在卡內」加上
+    「墨水留在框內」合起來就是「墨水留在卡內」。回傳違規清單。
+    """
+    cards = [
+        (
+            float(c.get(_q("svg", "x")).removesuffix("cm")),
+            float(c.get(_q("svg", "y")).removesuffix("cm")),
+            float(c.get(_q("svg", "width")).removesuffix("cm")),
+            float(c.get(_q("svg", "height")).removesuffix("cm")),
+        )
+        for c in _visual_cards(page)
+    ]
+    escapes = []
+    for x, y, w, h, text in _page_text_frames(page):
+        for cx, cy, cw, ch in cards:
+            if cx - tol <= x <= cx + cw and cy - tol <= y <= cy + ch:
+                if y + h > cy + ch + tol:
+                    escapes.append((text[:12], round(y + h, 2), round(cy + ch, 2)))
+                break
+    return escapes
+
+
+# process:5 步 × 24 字標題 + 56 字說明(皆為 IR 上限)。舊版卡高被 7.0cm 的
+# max_h 夾住,detail 卻照未夾住的偏移擺 —— 說明文字一路印過頁面底邊,而
+# process-area 在 budget gate 回傳 None,沒有任何防線。
+def test_process_ir_max_content_stays_on_card_and_page():
+    theme = THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="process",
+                title="流程",
+                steps=[
+                    ProcessStep(title="步" * 24, detail="說" * 56) for _ in range(5)
+                ],
+            )
+        ],
+    )
+    root = _content_root(p, theme)
+    page = root.find(".//draw:page", NS)
+    spills = _overflowing_text(root, page)
+    assert spills == [], f"text spilling out of its box: {spills}"
+    escapes = _card_bound_escapes(page)
+    assert escapes == [], f"text frame escaping its card: {escapes}"
+    for x, y, w, h, text in _page_text_frames(page):
+        assert y + h <= PAGE_H + 0.05, f"「{text[:12]}」printed past the page bottom"
+
+
+# timeline:上排卡的 detail_offset 由未夾住的 title_h 推出,IR 上限內容讓上排
+# 說明文字剛好落在下排卡上,再被後畫的下排卡矩形蓋掉。框留在卡內即不可能相撞
+# (上排卡底 = 軸線-莖長,恆在下排卡頂之上)。
+def test_timeline_ir_max_content_does_not_land_on_the_bottom_row():
+    theme = THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="timeline",
+                title="歷程",
+                events=[
+                    TimelineEvent(label=f"第{i}期", title="事" * 24, detail="詳" * 48)
+                    for i in range(1, 6)
+                ],
+            )
+        ],
+    )
+    root = _content_root(p, theme)
+    page = root.find(".//draw:page", NS)
+    spills = _overflowing_text(root, page)
+    assert spills == [], f"text spilling out of its box: {spills}"
+    escapes = _card_bound_escapes(page)
+    assert escapes == [], f"top-row text landing on the bottom row: {escapes}"
+
+
+# cards 2×2:約 60 字的標題把 child_y_offset 推到被夾住的卡外,子項落到第二排
+# 卡的位置,還被後畫的第二排卡蓋掉。
+def test_cards_grid_long_title_keeps_children_on_their_own_card():
+    theme = THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="cards",
+                title="標題",
+                bullets=[
+                    BulletItem(text="想" * 60, children=["子項一", "子項二"]),
+                    BulletItem(text="流程順暢", children=["自動化"]),
+                    BulletItem(text="資料可信", children=["治理"]),
+                    BulletItem(text="持續改善", children=["回饋"]),
+                ],
+            )
+        ],
+    )
+    root = _content_root(p, theme)
+    page = root.find(".//draw:page", NS)
+    spills = _overflowing_text(root, page)
+    assert spills == [], f"text spilling out of its box: {spills}"
+    escapes = _card_bound_escapes(page)
+    assert escapes == [], f"children landing on the second row: {escapes}"
+
+
+# closing:children 字串沒有 IR 長度上限,合併後的說明在 12pt 下限仍外溢到反白
+# 背景;極端時 detail_offset 超過 card_h,整個說明框掉到卡片下方。舊 while 迴圈
+# 只縮 title,detail 量一次就定案。
+def test_closing_long_children_details_stay_on_their_card():
+    root, page = _closing_root(
+        [
+            BulletItem(text="行動" * 8, children=["承諾" * 20, "檢核" * 20]),
+            BulletItem(text="第二項行動", children=["說明" * 25]),
+            BulletItem(text="第三項行動", children=["補充" * 25]),
+        ]
+    )
+    spills = _overflowing_text(root, page)
+    assert spills == [], f"detail spilling onto the inverted page: {spills}"
+    escapes = _card_bound_escapes(page)
+    assert escapes == [], f"detail frame dropping below its card: {escapes}"
+
+
+# closing:動作數沒有 IR 上限,count ≥ 20 時 text_w 變成負數(svg:width="-0.03cm"
+# 是非法幾何),count ≥ 10 起卡片早已不堪用。上限之外是大綱階段該擋的內容錯誤,
+# 但 renderer 無論如何不得輸出負寬。
+def test_closing_many_actions_never_emit_negative_geometry():
+    _, page = _closing_root([f"行動項目{i:02d}" for i in range(1, 21)])
+    for element in page.iter():
+        for attr in ("width", "height"):
+            value = element.get(_q("svg", attr))
+            if value is not None and value.endswith("cm"):
+                assert float(value.removesuffix("cm")) > 0, (
+                    f"negative geometry: svg:{attr}={value}"
+                )
+    # 只畫前五張;多出來的是內容錯誤,不是幾何錯誤。
+    assert len(_visual_cards(page)) == 5
+
+
+# metrics:label/value/detail 原用固定 y 偏移(0.75/2.65/3.65)假設各佔一行;
+# 14+ 字的 label(IR 上限 24)換行就印進 detail,且 fact_font_size_pt 被餵
+# 未扣除 2×0.25 內縮的寬度,量出「一行」的字級實際上會換行。
+def test_metrics_ir_max_label_never_prints_into_the_detail():
+    theme = THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="metrics",
+                title="指標",
+                metrics=[
+                    {"value": "值" * 18, "label": "標" * 24, "detail": "說" * 56}
+                    for _ in range(4)
+                ],
+            )
+        ],
+    )
+    root = _content_root(p, theme)
+    page = root.find(".//draw:page", NS)
+    spills = _overflowing_text(root, page)
+    assert spills == [], f"label/value/detail spilling: {spills}"
+    escapes = _card_bound_escapes(page)
+    assert escapes == [], f"metric text escaping its card: {escapes}"
+    # 同一張卡上 label 框與 detail 框不得相交(偏移由量測高度推出)。
+    frames = _page_text_frames(page)
+
+    def _inside(card, fx, fy):
+        cx, cy, cw, ch = card
+        return cx - 0.05 <= fx <= cx + cw and cy - 0.05 <= fy <= cy + ch
+
+    cards = [
+        (
+            float(c.get(_q("svg", "x")).removesuffix("cm")),
+            float(c.get(_q("svg", "y")).removesuffix("cm")),
+            float(c.get(_q("svg", "width")).removesuffix("cm")),
+            float(c.get(_q("svg", "height")).removesuffix("cm")),
+        )
+        for c in _visual_cards(page)
+    ]
+    for card in cards:
+        labels = [(y, h) for x, y, w, h, t in frames if t.startswith("標") and _inside(card, x, y)]
+        details = [(y, h) for x, y, w, h, t in frames if t.startswith("說") and _inside(card, x, y)]
+        assert len(labels) == 1 and len(details) == 1
+        (ly, lh), (dy, _dh) = labels[0], details[0]
+        assert ly + lh <= dy + 0.01, (
+            f"label bottom {ly + lh:.2f} crosses detail top {dy:.2f}"
+        )
+
+
+# diagram:節點標題原用原始 estimate + 錯的換行寬(w-0.7 而非 _wrap_width(w-0.7)),
+# LibreOffice 實際多折一行,第四行印進下方 detail;節點盒在 12pt 下限仍裝不下時
+# 應截斷加「…」而非印穿。
+def test_diagram_ir_max_node_title_meets_detail_cleanly():
+    theme = THEMES["academic"]
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="diagram",
+                title="架構",
+                diagram={
+                    "kind": "hub",
+                    "nodes": [
+                        {"id": f"n{i}", "title": "節" * 24, "detail": "述" * 48}
+                        for i in range(4)
+                    ],
+                    "edges": [
+                        {"source": "n0", "target": f"n{i}"} for i in range(1, 4)
+                    ],
+                },
+            )
+        ],
+    )
+    root = _content_root(p, theme)
+    page = root.find(".//draw:page", NS)
+    spills = _overflowing_text(root, page)
+    assert spills == [], f"node text spilling: {spills}"
+    escapes = _card_bound_escapes(page)
+    assert escapes == [], f"node text escaping its box: {escapes}"
+    # 標題塞不下即截斷 —— 頁面上要看得到刪節號,而非印穿 detail 的墨水。
+    assert "…" in "".join(page.itertext())
+
+
+def test_timeline_long_label_truncates_to_one_line():
+    # 標籤框只有一行高,標題緊貼其下:會換行的標籤直接印進標題。日期/季度
+    # 這類標籤截斷無損語意,換行才是災難。
+    from odforge.ir import TimelineEvent
+
+    long_label = "二〇二四年首季至次季之間的過渡期間"  # 18 字,IR 上限的合法輸入
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="timeline",
+                title="演進",
+                events=[
+                    TimelineEvent(label=long_label, title="起點", detail="d"),
+                    TimelineEvent(label="Q2", title="中點", detail="d"),
+                ],
+            )
+        ],
+    )
+    root = _content_root(p, THEMES["academic"])
+    texts = [t for t in root.itertext()]
+    assert not any(long_label in t for t in texts), "full label must not render"
+    assert any("…" in t for t in texts), "truncated label keeps a visible ellipsis"
+
+
+def test_cards_budget_warns_only_when_truncation_is_inevitable():
+    # 自救優先、回饋殿後:字級還降得下去就不該警告;降到底仍要截斷才警告,
+    # 讓 retry loop 換來更短的內容而不是成品裡的省略號。
+    from odforge.textmetrics import check_budget
+
+    fits = Slide(layout="cards", title="重點", bullets=["短句一", "短句二"])
+    assert check_budget(fits, THEMES["academic"]) == []
+
+    huge = "這是一段極長的卡片標題文字" * 12  # ~150+ 字,2×2 卡在字級地板也放不下
+    overflow = Slide(
+        layout="cards",
+        title="重點",
+        bullets=[huge, huge, huge, huge],
+    )
+    messages = check_budget(overflow, THEMES["academic"])
+    assert messages, "floor-exhausted cards must warn"
+    assert any("截斷" in m for m in messages)
+
+
+def test_chart_long_labels_shrink_to_one_line_and_never_cross_rows():
+    # 溝槽每列只有一行的位置(8 根條時列距 ~1.4cm),標籤沒有 IR 長度上限:
+    # 換行的第二行會直接印在鄰列的字上。整欄取同一個縮小後字級,地板仍放不下
+    # 的截成單行 — 欄位讀起來才像同一欄。
+    from odforge.ir import ChartSpec
+
+    long_label = "行政院國家科學及技術委員會補助專題"
+    p = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="chart",
+                title="比較",
+                chart=ChartSpec(
+                    labels=[long_label] + [f"項目{i}" for i in range(7)],
+                    values=[80.0, 10, 20, 30, 40, 50, 60, 70],
+                    unit="百萬新臺幣",
+                ),
+            )
+        ],
+    )
+    root = _content_root(p, THEMES["academic"])
+    page = root.find(".//draw:page", NS)
+    spills = _overflowing_text(root, page)
+    assert spills == [], f"chart gutter text crossing rows: {spills}"
+
+
+@pytest.mark.skipif(find_soffice() is None, reason="LibreOffice not installed")
+def test_a_blank_bulleted_page_cannot_reach_libreoffice(tmp_path):
+    """R2-02, end to end: the deck LibreOffice happily opened and nobody could read.
+
+    Before the strip-based invariants this rendered, passed all three format
+    gates, and opened cleanly — a heading with nothing under it, certified.
+    """
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Presentation(
+            title="空白頁",
+            slides=[Slide(layout="title-content", title="標題", bullets=["   "])],
+        )
+
+
+# ---------------------------------------------------------------------------
+# Cover branding — 封面署名與校徽 (ir.Branding)
+#
+# The byline and the logo are app-owned furniture: the user typed and uploaded
+# them, so unlike page content they must appear verbatim, on exactly the pages
+# the user chose, and their absence must never be able to fail a render.
+# ---------------------------------------------------------------------------
+
+_LOGO_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d494844520000000100000001080600000"
+    "01f15c4890000000a49444154789c6360000002000154a24f3b0000000049454e44ae426082"
+)
+
+
+def _branded_deck(**branding):
+    return Presentation(
+        title="測試簡報",
+        slides=[
+            Slide(layout="title", title="封面", subtitle="副標"),
+            Slide(layout="title-content", title="內頁", bullets=["甲", "乙"]),
+            Slide(layout="section", title="章節"),
+            Slide(layout="closing", title="結語", bullets=["下一步"]),
+        ],
+        branding=branding,
+    )
+
+
+def _logo_frames(root):
+    return [
+        image
+        for image in root.findall(".//draw:image", NS)
+        if (image.get(_q("xlink", "href")) or "").startswith("Pictures/logo-")
+    ]
+
+
+def _logo_asset(width: int = 240, height: int = 80) -> AssetBlob:
+    """The uploaded bytes, as ``render_odp`` receives them."""
+    return AssetBlob(_LOGO_PNG, "image/png", ".png", width, height)
+
+
+def _logo_part(width: int = 240, height: int = 80) -> _LogoAsset:
+    """The packaged part, as ``build_content_xml`` receives it."""
+    return _LogoAsset("Pictures/logo-test.png", width, height)
+
+
+def test_byline_is_drawn_on_the_cover_verbatim():
+    deck = _branded_deck(byline="輔仁大學資訊工程學系 · 王小明 · 2026/08")
+    root = _content_root(deck, THEMES["academic"])
+    pages = root.findall(".//draw:page", NS)
+    assert _text_p_with(pages[0], "輔仁大學資訊工程學系 · 王小明 · 2026/08") is not None
+    # Only the cover carries it — a署名 repeated on every page is a watermark.
+    for page in pages[1:]:
+        assert not [x for x in page.findall(".//text:p", NS) if x.text and "王小明" in x.text]
+
+
+def test_no_branding_renders_exactly_as_before():
+    plain = _branded_deck()
+    plain = Presentation(title=plain.title, slides=plain.slides)
+    with_empty = Presentation(
+        title=plain.title, slides=plain.slides, branding={"byline": "", "logo": ""}
+    )
+    assert build_content_xml(with_empty, THEMES["academic"]) == build_content_xml(
+        plain, THEMES["academic"]
+    )
+
+
+@pytest.mark.parametrize(
+    "placement,expected",
+    [("cover", 1), ("cover-closing", 2), ("all", 4)],
+)
+def test_logo_placement_decides_which_pages_carry_the_mark(
+    tmp_path, placement, expected
+):
+    deck = _branded_deck(logo="asset://logo", placement=placement)
+    out = render_odp(deck, tmp_path / "p.odp", assets={"logo": _logo_asset()})
+    with zipfile.ZipFile(out) as z:
+        root = etree.fromstring(z.read("content.xml"))
+        parts = [n for n in z.namelist() if n.startswith("Pictures/logo-")]
+    assert len(_logo_frames(root)) == expected
+    # One packaged copy no matter how many pages reference it.
+    assert len(parts) == 1
+
+
+def test_logo_keeps_its_aspect_ratio():
+    deck = _branded_deck(logo="asset://logo", placement="cover")
+    xml = build_content_xml(deck, THEMES["academic"], None, _logo_part(240, 80))
+    root = etree.fromstring(xml.encode("utf-8"))
+    frame = _logo_frames(root)[0].getparent()
+    width = float(frame.get(_q("svg", "width")).removesuffix("cm"))
+    height = float(frame.get(_q("svg", "height")).removesuffix("cm"))
+    assert width / height == pytest.approx(3.0, rel=0.01)
+    # …and it stays inside the box the cover reserves for it.
+    assert width <= 5.0 and height <= 1.6
+
+
+def test_a_tall_logo_is_bounded_by_height_not_width():
+    deck = _branded_deck(logo="asset://logo", placement="cover")
+    xml = build_content_xml(deck, THEMES["academic"], None, _logo_part(80, 240))
+    root = etree.fromstring(xml.encode("utf-8"))
+    frame = _logo_frames(root)[0].getparent()
+    height = float(frame.get(_q("svg", "height")).removesuffix("cm"))
+    assert height <= 1.6
+
+
+def test_inverted_pages_get_a_plate_behind_the_mark():
+    # section/closing paint the accent edge to edge; a dark crest on that ground
+    # would simply vanish, so it sits on a bg-coloured plate.
+    theme = THEMES["academic"]
+    deck = _branded_deck(logo="asset://logo", placement="all")
+    root = etree.fromstring(
+        build_content_xml(deck, theme, None, _logo_part()).encode("utf-8")
+    )
+    pages = root.findall(".//draw:page", NS)
+    styles = {
+        style.get(_q("style", "name")): style
+        for style in root.findall(".//style:style", NS)
+    }
+
+    def has_bg_plate(page):
+        for rect in page.findall(".//draw:rect", NS):
+            style = styles.get(rect.get(_q("draw", "style-name")))
+            props = (
+                style.find(".//style:graphic-properties", NS)
+                if style is not None
+                else None
+            )
+            if props is not None and props.get(_q("draw", "fill-color")) == theme.bg:
+                return True
+        return False
+
+    assert has_bg_plate(pages[2])  # section
+    assert has_bg_plate(pages[3])  # closing
+    assert not has_bg_plate(pages[1])  # ordinary content page needs no plate
+
+
+def test_an_unresolvable_logo_never_fails_the_render(tmp_path):
+    deck = _branded_deck(byline="系上公版", logo="asset://logo")
+    out = render_odp(deck, tmp_path / "p.odp", assets={})  # upload went missing
+    with zipfile.ZipFile(out) as z:
+        assert not [n for n in z.namelist() if n.startswith("Pictures/logo-")]
+        assert "系上公版" in z.read("content.xml").decode("utf-8")
+
+
+def test_a_logo_reference_must_be_an_asset():
+    # A model-authored deck naming https:// here would turn every render into an
+    # outbound fetch. Branding is app-owned; only asset:// is accepted.
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _branded_deck(logo="https://example.org/crest.png")

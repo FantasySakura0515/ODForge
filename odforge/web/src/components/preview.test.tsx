@@ -27,9 +27,14 @@ test("submitting 且尚無 units:顯示等待卡(階段時間軸 + 取消鈕),�
   const { container } = render(
     <PreviewStage units={[]} docType="odp" jobId={undefined} dispatch={() => {}} submitting onCancel={() => {}} />,
   );
-  expect(screen.getByText(/構思大綱/)).toBeInTheDocument();
+  expect(screen.getAllByText(/構思大綱/).length).toBeGreaterThan(0);
   expect(screen.getByRole("button", { name: /取消/ })).toBeInTheDocument();
-  expect(container.querySelector(".waitclock")?.getAttribute("aria-live")).toBe("off");
+  // 計時器完全退出無障礙樹:它每秒變一次,播報它只會蓋掉真正的階段訊息。
+  expect(container.querySelector(".waitclock")?.getAttribute("aria-hidden")).toBe("true");
+  expect(container.querySelector(".waitcard")?.getAttribute("aria-live")).toBeNull();
+  expect(
+    container.querySelector('.waitcard [role="status"][aria-live="polite"]')?.textContent,
+  ).toMatch(/構思大綱/);
   expect(container.querySelector(".grid")).toBeNull();
 });
 

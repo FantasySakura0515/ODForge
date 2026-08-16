@@ -52,6 +52,7 @@ from __future__ import annotations
 import re
 import zipfile
 from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
 from typing import Dict, List, Sequence
 
@@ -342,7 +343,7 @@ def _evenness(page: PageMeasure) -> str:
         if len(row) < 3:
             continue
         xs = sorted(b.x for b in row)
-        gaps = [b - a for a, b in zip(xs, xs[1:])]
+        gaps = [b - a for a, b in pairwise(xs)]
         gap_spread = max(gaps) - min(gaps)
         parts.append(
             f"同一列 {len(row)} 個色塊的水平間距差 {gap_spread:.2f}cm"

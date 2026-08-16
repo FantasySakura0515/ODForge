@@ -28,6 +28,13 @@ export interface ThrottledDispatch {
   push: (e: SseEvent) => void;
   /** Drop the pending queue and stop the timer (on cancel / reset / unmount). */
   cancel: () => void;
+  /**
+   * 清空去重集合與待播佇列(等同 cancel),供「新連線開啟」時呼叫。後端每次
+   * (重)連線都從 cursor 0 重播全部事件:重播的 outline 會把牆重設回 skeleton,
+   * 若 seenUnitN 仍記著上一條連線看過的頁碼,重播的 slide_done 會被當成別名
+   * 重複丟棄 → 牆永遠停在 skeleton。重設後讓重播完整走一遍,reducer 冪等重建。
+   */
+  reset: () => void;
 }
 
 /**
@@ -72,6 +79,15 @@ export function createThrottledDispatch(
     while (queue.length) dispatch(queue.shift()!);
   }
 
+  function clear() {
+    queue.length = 0;
+    seenUnitN.clear();
+    if (timer != null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  }
+
   return {
     push(e) {
       if (THROTTLED.has(e.type)) {
@@ -93,13 +109,7 @@ export function createThrottledDispatch(
       if (DRAIN_FIRST.has(e.type)) drain();
       dispatch(e);
     },
-    cancel() {
-      queue.length = 0;
-      seenUnitN.clear();
-      if (timer != null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-    },
+    cancel: clear,
+    reset: clear,
   };
 }

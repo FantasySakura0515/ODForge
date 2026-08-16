@@ -16,7 +16,7 @@ import socket
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Protocol, TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping, Protocol
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -336,11 +336,11 @@ def resolve_image(
 
 
 __all__ = [
+    "MAX_IMAGE_BYTES",
     "AssetBlob",
     "AssetInput",
     "HttpImageProvider",
     "ImageProvider",
-    "MAX_IMAGE_BYTES",
     "MediaError",
     "configured_image_provider",
     "decode_data_uri",

@@ -16,11 +16,12 @@ from __future__ import annotations
 import hashlib
 import math
 from collections.abc import Mapping, MutableMapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from xml.sax.saxutils import escape
 
 from odforge.ir import (
+    Branding,
     BulletItem,
     ChartSpec,
     DiagramSpec,
@@ -40,7 +41,12 @@ from odforge.media import (
     resolve_image,
 )
 from odforge.package import ODP_MIMETYPE, write_odf_package
-from odforge.textmetrics import estimate_height_cm, fact_font_size_pt, text_width_cm
+from odforge.textmetrics import (
+    PT_TO_CM,
+    estimate_height_cm,
+    fact_font_size_pt,
+    text_width_cm,
+)
 from odforge.themes import (
     LAYOUTS,
     LIST_ROLES,
@@ -220,6 +226,45 @@ _PROCESS_PAD_BOTTOM = 0.5
 _PROCESS_MIN_H = 3.4
 _PROCESS_MAX_H = 7.0
 
+# Closing action cards — the same badge → title → detail stack, and the last
+# layout still drawing it at a flat height. A three-line action ran past the card
+# and printed onto the inverted background in near-black ink: illegible, on the
+# one page the audience is left looking at. Measured like the others now, and
+# fitted through the shared _fit_stacked_texts loop when even the full area
+# cannot hold it, because a smaller word beats an invisible one.
+_CLOSING_TITLE_TOP = 1.15
+_CLOSING_TITLE_LINE_HEIGHT = 1.2  # matches the title's line-height="120%"
+_CLOSING_DETAIL_GAP = 0.3
+_CLOSING_DETAIL_LINE_HEIGHT = 1.25
+_CLOSING_PAD_BOTTOM = 0.45
+_CLOSING_MIN_H = 3.35  # short actions keep the compact card they have today
+_CLOSING_MAX_H = 6.6
+# Closing bullets carry no IR count cap. Six-plus cards squeezed card_w until
+# text_w crossed zero at count ≥ 20 (svg:width="-0.03cm" — invalid geometry);
+# the row was unreadable long before that. Five is where a card still holds a
+# legible action; anything past it is rendered off.
+_CLOSING_MAX_ACTIONS = 5
+
+# Metric cards stack value → label → detail. The offsets used to be constants
+# (0.75 / 2.65 / 3.65) that assumed one line each: a 14+-char label (IR allows
+# 24) wrapped and printed straight through the detail beneath it. The offsets
+# derive from the same measurements the boxes are drawn at now; the gaps are
+# small on purpose because _measured_text_h already carries the box's own
+# 0.15cm vertical inset (0.1 + 0.15 ≈ the 0.25cm the constants implied).
+_METRIC_VALUE_TOP = 0.75
+_METRIC_VALUE_LINE_HEIGHT = 1.0  # pinned on the value style so measure == draw
+_METRIC_VALUE_GAP = 0.1
+_METRIC_LABEL_LINE_HEIGHT = 1.2  # matches the label's line-height="120%"
+_METRIC_LABEL_GAP = 0.05
+_METRIC_DETAIL_LINE_HEIGHT = 1.3  # matches the detail's line-height="130%"
+_METRIC_PAD_BOTTOM = 0.45
+
+# Font floors shared by every stacked-card layout (_fit_stacked_texts): below
+# 12pt a card title stops reading as a title, below 10pt a caption is squint
+# territory. Reaching both floors hands over to truncation.
+_TITLE_MIN_PT = 12
+_DETAIL_MIN_PT = 10
+
 # Diagram edge labels. The chip is sized to its text; the clearance is the
 # run of connector that must stay visible either side of it, and decides
 # whether the chip can sit on the line at all.
@@ -237,6 +282,32 @@ _FRAME_INSET_X = 0.25
 def _wrap_width(frame_w: float) -> float:
     """Usable text width inside a frame of ``frame_w`` (cm)."""
     return max(0.1, frame_w - 2 * _FRAME_INSET_X)
+
+
+# ``estimate_height_cm`` models a line as ``size_pt * line_height``, but ODF's
+# ``fo:line-height`` percentage is relative to the *font's own* line height —
+# itself ~1.1em for the fonts here — so LibreOffice renders every line taller
+# than the model says. Measured off a real render: a 17pt line at
+# ``line-height="120%"`` came out 0.79cm, not the modelled 0.72cm. Boxes sized to
+# their own text carry the ratio plus the box's top inset, or the last line of a
+# three-line card prints past the card edge (on the closing page, onto the
+# inverted background in near-black ink — the defect this exists to prevent).
+_LO_LINE_SPACING_SLACK = 1.12
+_TEXT_BOX_INSET_Y = 0.15
+# ``estimate_height_cm``'s own default, named here so a caller that wants it can
+# pass it explicitly instead of relying on the argument order.
+_LINE_HEIGHT_DEFAULT = 1.45
+
+
+def _measured_text_h(
+    text: str, size_pt: int, wrap_w: float, line_height: float
+) -> float:
+    """Height (cm) a box must have to actually contain ``text`` in LibreOffice."""
+    return (
+        estimate_height_cm(text, size_pt, wrap_w, line_height)
+        * _LO_LINE_SPACING_SLACK
+        + _TEXT_BOX_INSET_Y
+    )
 _CARD_CORNER = 0.3  # cm corner radius
 
 # Task 13.5: shape-drawn horizontal bar charts. The "chart" layout that drops
@@ -250,6 +321,11 @@ _CHART_LABEL_W_FRAC = 0.22  # left gutter (fraction of area width) holding label
 _CHART_VALUE_W_FRAC = 0.14  # right gutter reserved so value text fits past bars
 _CHART_GAP = 0.2  # cm — breathing space before a bar and before its value text
 _CHART_BAR_H_FRAC = 0.42  # bar thickness as a fraction of its row's height
+# Floor for the one-line label/value gutter texts. Below this a chart annotation
+# stops being readable from the back of a room; whatever still wraps here is
+# truncated to its single line instead (the gutter rows sit ~1.4cm apart at 8
+# bars — a second line prints straight over the neighbouring row's text).
+_CHART_TEXT_MIN_PT = 11
 _CHART_BAR_CORNER = 0.08  # cm — bars are barely rounded
 _CHART_OTHER_BLEND = 0.55  # non-highlight bars: _blend(muted, bg, this amount)
 
@@ -723,6 +799,132 @@ def _svg_decoration(theme: Theme) -> bytes:
     return svg.encode("utf-8")
 
 
+# ---------------------------------------------------------------------------
+# Cover branding: byline + organisation logo (ir.Branding)
+#
+# App-owned furniture, drawn outside the LAYOUTS frame loop: the byline and the
+# logo belong to the deck, not to any one slide's content model, and neither is
+# charged to the layout budget (which measures what the model wrote).
+# ---------------------------------------------------------------------------
+
+# Cover: one muted line under the subtitle. The title-page decoration lives at
+# (21.0, 10.75) and its dots are faint there, so a centred line at this y clears
+# the dense corner of the lattice.
+_BYLINE_Y = 11.45
+_BYLINE_BOX = (2.0, _BYLINE_Y, 24.0, 1.0)
+
+# (x, y, max_w, max_h) per placement. The cover mark is generous; the in-deck
+# marks are deliberately small — a logo repeated on 12 pages is furniture, not a
+# statement, and it must never crowd the content frames.
+_LOGO_COVER_BOX = (1.8, 1.15, 5.0, 1.6)
+# Closing pages carry no footer furniture, so the strip under the action row is
+# free. Right-aligned to the same 26.5 the footer line ends at.
+_LOGO_CLOSING_RIGHT = 26.5
+_LOGO_CLOSING_Y = 14.35
+_LOGO_CLOSING_MAX = (3.4, 0.95)
+# Section dividers: same corner, but they have no action row above.
+_LOGO_SECTION_Y = 14.35
+# Content pages: inside the master's footer band, to the LEFT of the page number
+# (which starts at _PAGENUM_X = 24.0). Nothing else is drawn in that strip, so a
+# mark here can never collide with a content frame.
+_LOGO_FOOTER_RIGHT = 23.6
+_LOGO_FOOTER_Y = 14.98
+_LOGO_FOOTER_MAX = (3.0, 0.6)
+# Padding around a logo sitting on its own plate (inverted pages only).
+_LOGO_PLATE_PAD = 0.16
+_LOGO_PLATE_CORNER = 0.12
+
+
+@dataclass(frozen=True)
+class _LogoAsset:
+    """A resolved cover mark: its package part plus its natural pixel size."""
+
+    href: str
+    width: int
+    height: int
+
+    def fit(self, max_w: float, max_h: float) -> tuple[float, float]:
+        """Scale to fit ``max_w`` × ``max_h`` cm, preserving aspect ratio."""
+        if self.width <= 0 or self.height <= 0:
+            return max_w, max_h
+        ratio = self.width / self.height
+        w, h = max_w, max_w / ratio
+        if h > max_h:
+            w, h = max_h * ratio, max_h
+        return w, h
+
+
+def _logo_image_xml(href: str, x: float, y: float, w: float, h: float) -> str:
+    """One positioned ``draw:frame`` holding the packaged logo image."""
+    return (
+        f'<draw:frame draw:style-name="{_GRAPHIC_STYLE}"'
+        f' svg:x="{_cm(x)}" svg:y="{_cm(y)}"'
+        f' svg:width="{_cm(w)}" svg:height="{_cm(h)}">'
+        f'<draw:image xlink:href="{_attr(href)}" xlink:type="simple"'
+        f' xlink:show="embed" xlink:actuate="onLoad"/>'
+        f"</draw:frame>"
+    )
+
+
+def _logo_xml(
+    logo: _LogoAsset,
+    layout: str,
+    theme: Theme,
+    graphics: _GraphicStyles,
+) -> str:
+    """Draw the logo for one page, or "" when this layout carries no mark.
+
+    Inverted pages (section / closing) paint the accent fill edge to edge, and a
+    raster mark is usually dark ink on transparency — on that ground it would
+    disappear. Those two get a small ``theme.bg`` plate behind them, which is how
+    a real logo lockup is handled on a dark ground anyway.
+    """
+    if layout == "title":
+        x, y, max_w, max_h = _LOGO_COVER_BOX
+        w, h = logo.fit(max_w, max_h)
+        return _logo_image_xml(logo.href, x, y, w, h)
+
+    if layout in ("closing", "section"):
+        max_w, max_h = _LOGO_CLOSING_MAX
+        w, h = logo.fit(max_w, max_h)
+        y = _LOGO_CLOSING_Y if layout == "closing" else _LOGO_SECTION_Y
+        x = _LOGO_CLOSING_RIGHT - w
+        plate = _rect_xml(
+            x - _LOGO_PLATE_PAD,
+            y - _LOGO_PLATE_PAD,
+            w + 2 * _LOGO_PLATE_PAD,
+            h + 2 * _LOGO_PLATE_PAD,
+            fill=theme.bg,
+            corner_radius_cm=_LOGO_PLATE_CORNER,
+            style_name=graphics.name_for_fill(theme.bg),
+        )
+        return plate + _logo_image_xml(logo.href, x, y, w, h)
+
+    max_w, max_h = _LOGO_FOOTER_MAX
+    w, h = logo.fit(max_w, max_h)
+    return _logo_image_xml(logo.href, _LOGO_FOOTER_RIGHT - w, _LOGO_FOOTER_Y, w, h)
+
+
+def _page_shows_logo(layout: str, placement: str) -> bool:
+    """Whether ``layout`` carries the mark under the user's placement choice."""
+    if placement == "cover":
+        return layout == "title"
+    if placement == "cover-closing":
+        return layout in ("title", "closing")
+    return True
+
+
+def _byline_xml(byline: str, theme: Theme, styles: _ParagraphStyles) -> str:
+    """The cover's muted署名 line (單位／講者／日期), centred under the subtitle."""
+    x, y, w, h = _BYLINE_BOX
+    frame = Frame("byline", x, y, w, h, theme.caption_pt, center=True)
+    style = styles.name_for(theme.caption_pt, False, True, theme.muted)
+    return _frame_box_xml(
+        frame,
+        f'<text:p text:style-name="{_attr(style)}">{escape(byline)}</text:p>',
+    )
+
+
 def _deco_frame_xml() -> str:
     """Build the ``draw:frame`` linking the title-page decoration SVG.
 
@@ -981,17 +1183,51 @@ def _chart_xml(
     bar_x = area_x + label_w
     # Non-highlight bars share one muted-toned fill (deduped in ``graphics``).
     other_fill = _blend(theme.muted, theme.bg, _CHART_OTHER_BLEND)
-    line_h = _text_line_h_cm(theme.body_pt)
+
+    # The gutters hold exactly one text line per row — a wrapping label prints
+    # its extra lines straight over the neighbouring rows (6–8 bars leave
+    # ~1.4cm per row) and labels/values carry no IR length cap. One size per
+    # column, set by the row that needs the smallest, so the column reads as a
+    # column; whatever still wraps at the floor is cut to its one line.
+    # Fit and cut against the *inset* width (LibreOffice takes 0.25cm each side
+    # off the frame) — against the full frame width a "one-line" text still
+    # wraps in the real render.
+    label_wrap = _wrap_width(label_w - _CHART_GAP)
+    label_pt = min(
+        (
+            fact_font_size_pt(label, label_wrap, theme.body_pt, _CHART_TEXT_MIN_PT)
+            for label in chart.labels
+        ),
+        default=theme.body_pt,
+    )
+    value_texts = [f"{_fmt_number(v)}{chart.unit}" for v in chart.values]
+    value_widths = [
+        max(
+            (area_x + area_w)
+            - (bar_x + (track_w * (v / max_v) if max_v > 0 else 0.0) + _CHART_GAP),
+            _CHART_GAP,
+        )
+        for v in chart.values
+    ]
+    value_pt = min(
+        (
+            fact_font_size_pt(
+                text, _wrap_width(w), theme.body_pt, _CHART_TEXT_MIN_PT
+            )
+            for text, w in zip(value_texts, value_widths, strict=True)
+        ),
+        default=theme.body_pt,
+    )
+    label_line_h = _text_line_h_cm(label_pt)
+    value_line_h = _text_line_h_cm(value_pt)
 
     parts: list[str] = []
-    for i, (label, value) in enumerate(zip(chart.labels, chart.values)):
+    for i, (label, value) in enumerate(zip(chart.labels, chart.values, strict=True)):
         highlighted = i == chart.highlight
         bar_w = track_w * (value / max_v) if max_v > 0 else 0.0
         row_y = area_y + i * row_h
         bar_h = row_h * _CHART_BAR_H_FRAC
         bar_y = row_y + (row_h - bar_h) / 2.0
-        # Vertically centre one text line on the bar.
-        text_y = bar_y + (bar_h - line_h) / 2.0
 
         fill = theme.accent if highlighted else other_fill
         bar_style = graphics.name_for_fill(fill)
@@ -1008,41 +1244,46 @@ def _chart_xml(
         )
 
         # Label in the left gutter (the highlighted row's label is bolded too).
+        # Vertically centre the column's one text line on the bar.
         label_style = para_styles.name_for(
-            theme.body_pt, highlighted, False, theme.text_color
+            label_pt, highlighted, False, theme.text_color
         )
+        label_text = _truncate_to_h(label, label_pt, label_wrap, 1.0, 0.3)
         parts.append(
             _frame_box_xml(
                 Frame(
                     "chart-label",
                     area_x,
-                    text_y,
+                    bar_y + (bar_h - label_line_h) / 2.0,
                     label_w - _CHART_GAP,
-                    line_h,
-                    theme.body_pt,
+                    label_line_h,
+                    label_pt,
                 ),
                 f'<text:p text:style-name="{_attr(label_style)}">'
-                f"{escape(label)}</text:p>",
+                f"{escape(label_text)}</text:p>",
             )
         )
 
         # Value + unit just past the bar's end; the frame runs to the area edge.
         value_x = bar_x + bar_w + _CHART_GAP
-        value_frame_w = max((area_x + area_w) - value_x, _CHART_GAP)
+        value_frame_w = value_widths[i]
         value_color = theme.accent if highlighted else theme.muted
         value_style = para_styles.name_for(
-            theme.body_pt, highlighted, False, value_color
+            value_pt, highlighted, False, value_color
         )
-        value_text = f"{_fmt_number(value)}{chart.unit}"
+        # allow_h=0.3 forces the one-line budget regardless of point size.
+        value_text = _truncate_to_h(
+            value_texts[i], value_pt, _wrap_width(value_frame_w), 1.0, 0.3
+        )
         parts.append(
             _frame_box_xml(
                 Frame(
                     "chart-value",
                     value_x,
-                    text_y,
+                    bar_y + (bar_h - value_line_h) / 2.0,
                     value_frame_w,
-                    line_h,
-                    theme.body_pt,
+                    value_line_h,
+                    value_pt,
                 ),
                 f'<text:p text:style-name="{_attr(value_style)}">'
                 f"{escape(value_text)}</text:p>",
@@ -1156,6 +1397,190 @@ def _stacked_card_h(
     return max(min_h, min(needed, max_h, available)), detail_y
 
 
+def _truncate_to_h(
+    text: str,
+    size_pt: int,
+    wrap_w: float,
+    line_height: float,
+    allow_h: float,
+) -> str:
+    """Cut ``text`` (trailing "…") to the wrapped lines an ``allow_h`` box holds.
+
+    LibreOffice does not clip text to its frame: whatever outgrows the box
+    prints straight past it — over the neighbouring card (later card rects
+    paint OVER earlier text, ODF z-order being document order) or off the page.
+    Once the font floors are reached, a visible ellipsis is the only honest
+    option left; ink outside the card is never one.
+
+    Uses the same em-width model as :func:`estimate_height_cm`: ``n`` lines
+    hold an em-run of ``n * wrap_w`` cm, so the cut is the longest prefix whose
+    run plus the ellipsis still fits that budget. Always keeps at least one
+    line — a lone "…" tells the reader nothing.
+    """
+    line_cm = size_pt * PT_TO_CM * line_height
+    max_lines = max(
+        1,
+        math.floor(
+            (allow_h - _TEXT_BOX_INSET_Y) / (_LO_LINE_SPACING_SLACK * line_cm) + 1e-6
+        ),
+    )
+    if text_width_cm(text, size_pt) <= max_lines * wrap_w:
+        return text
+    budget = max_lines * wrap_w - text_width_cm("…", size_pt)
+    kept = 0
+    used = 0.0
+    for ch in text:
+        used += text_width_cm(ch, size_pt)
+        if used > budget:
+            break
+        kept += 1
+    return text[:kept].rstrip() + "…"
+
+
+@dataclass(frozen=True)
+class _FittedStack:
+    """What :func:`_fit_stacked_texts` settled on: the (possibly truncated)
+    texts, the sizes they fit at, and the shared card geometry they fit into."""
+
+    titles: list
+    details: list
+    title_pt: int
+    detail_pt: int
+    title_h: float
+    detail_h: float
+    card_h: float
+    detail_offset: float
+
+
+def _fit_stacked_texts(
+    titles: list,
+    details: list,
+    *,
+    title_pt: int,
+    detail_pt: int,
+    wrap_w: float,
+    title_line_height: float,
+    detail_line_height: float,
+    title_top: float,
+    detail_gap: float,
+    pad_bottom: float,
+    min_h: float,
+    max_h: float,
+    available: float,
+) -> _FittedStack:
+    """Fit a row of badge → title → detail cards so no text outgrows its card.
+
+    The systemic defect this closes: :func:`_stacked_card_h` clamps the card at
+    ``max_h`` / ``available`` while the text boxes inside kept their full
+    measured heights and offsets — at IR-max CJK lengths the detail printed
+    past the card, over the neighbouring card, or off the page. One shared loop
+    now guarantees ``detail_offset + detail_h + pad_bottom <= card_h`` through
+    three escalating concessions, in order:
+
+    1. step ``title_pt`` down 1pt at a time to :data:`_TITLE_MIN_PT`,
+    2. then ``detail_pt`` down to :data:`_DETAIL_MIN_PT`,
+    3. then truncate the offending texts with a trailing "…" to the lines that
+       fit (:func:`_truncate_to_h` — LibreOffice does not clip, so once the
+       fonts have bottomed out truncation is the only honest option left). The
+       titles keep as many lines as leave room for one detail line; the
+       details keep whatever the titles then leave them.
+
+    One degenerate exception: when even a single title line plus a single
+    detail line cannot share the clamped card, both keep their one line and the
+    bottom padding absorbs the residue — the ink still stays on the card.
+    Text that already fits comes back untouched at its starting sizes, so
+    short content keeps today's exact geometry (compact closing cards, even
+    card rows).
+    """
+    while True:
+        title_h = max(
+            _measured_text_h(t, title_pt, wrap_w, title_line_height) for t in titles
+        )
+        detail_h = max(
+            (
+                _measured_text_h(d, detail_pt, wrap_w, detail_line_height)
+                for d in details
+                if d
+            ),
+            default=0.0,
+        )
+        card_h, detail_offset = _stacked_card_h(
+            title_h,
+            detail_h,
+            title_top=title_top,
+            detail_gap=detail_gap,
+            pad_bottom=pad_bottom,
+            min_h=min_h,
+            max_h=max_h,
+            available=available,
+        )
+        if detail_offset + detail_h + pad_bottom <= card_h + 0.01:
+            break
+        if title_pt > _TITLE_MIN_PT:
+            title_pt -= 1
+            continue
+        if detail_pt > _DETAIL_MIN_PT:
+            detail_pt -= 1
+            continue
+        # Both floors reached: cut the text itself against the clamped card.
+        has_detail = any(details)
+        reserve = (
+            detail_gap
+            + _measured_text_h("字", detail_pt, wrap_w, detail_line_height)
+            if has_detail
+            else 0.0
+        )
+        title_allow = card_h - title_top - pad_bottom - reserve
+        titles = [
+            _truncate_to_h(t, title_pt, wrap_w, title_line_height, title_allow)
+            for t in titles
+        ]
+        title_h = max(
+            _measured_text_h(t, title_pt, wrap_w, title_line_height) for t in titles
+        )
+        # Mirrors _stacked_card_h's detail_y with the truncated title height.
+        detail_offset = title_top + title_h + (detail_gap if has_detail else 0.0)
+        detail_allow = card_h - detail_offset - pad_bottom
+        details = [
+            _truncate_to_h(d, detail_pt, wrap_w, detail_line_height, detail_allow)
+            if d
+            else d
+            for d in details
+        ]
+        detail_h = max(
+            (
+                _measured_text_h(d, detail_pt, wrap_w, detail_line_height)
+                for d in details
+                if d
+            ),
+            default=0.0,
+        )
+        # Re-derive the card from the truncated text: needed can only have
+        # shrunk, so the clamp cannot re-trigger, and the min-height floor
+        # keeps a short row reading as cards.
+        card_h, detail_offset = _stacked_card_h(
+            title_h,
+            detail_h,
+            title_top=title_top,
+            detail_gap=detail_gap,
+            pad_bottom=pad_bottom,
+            min_h=min_h,
+            max_h=max_h,
+            available=available,
+        )
+        break
+    return _FittedStack(
+        titles,
+        details,
+        title_pt,
+        detail_pt,
+        title_h,
+        detail_h,
+        card_h,
+        detail_offset,
+    )
+
+
 def _visual_card_xml(
     x: float,
     y: float,
@@ -1190,27 +1615,17 @@ def _process_xml(
     card_w = (area.w - gap * (n - 1)) / n
 
     text_w = card_w - 0.96
-    title_pt = min(theme.body_pt, 17)
-    detail_pt = min(theme.caption_pt, 13)
-    title_h = max(
-        estimate_height_cm(
-            s.title, title_pt, _wrap_width(text_w), _PROCESS_TITLE_LINE_HEIGHT
-        )
-        for s in steps
-    )
-    detail_h = max(
-        (
-            estimate_height_cm(
-                s.detail, detail_pt, _wrap_width(text_w), _PROCESS_DETAIL_LINE_HEIGHT
-            )
-            for s in steps
-            if s.detail
-        ),
-        default=0.0,
-    )
-    card_h, detail_offset = _stacked_card_h(
-        title_h,
-        detail_h,
+    # Five 24-char CJK titles with 56-char details need ≈13cm of stack against
+    # a 7cm card clamp — the shared fit loop shrinks, then truncates, so the
+    # detail can no longer print past the page bottom.
+    fitted = _fit_stacked_texts(
+        [s.title for s in steps],
+        [s.detail for s in steps],
+        title_pt=min(theme.body_pt, 17),
+        detail_pt=min(theme.caption_pt, 13),
+        wrap_w=_wrap_width(text_w),
+        title_line_height=_PROCESS_TITLE_LINE_HEIGHT,
+        detail_line_height=_PROCESS_DETAIL_LINE_HEIGHT,
         title_top=_PROCESS_TITLE_TOP,
         detail_gap=_PROCESS_DETAIL_GAP,
         pad_bottom=_PROCESS_PAD_BOTTOM,
@@ -1218,6 +1633,7 @@ def _process_xml(
         max_h=_PROCESS_MAX_H,
         available=area.h - 0.8,
     )
+    card_h, detail_offset = fitted.card_h, fitted.detail_offset
     card_y = area.y + (area.h - card_h) / 2
     badge_y = card_y + 0.55
     badge_center_y = badge_y + _PROCESS_BADGE_SIZE / 2
@@ -1241,7 +1657,7 @@ def _process_xml(
     )
 
     badge_style = graphics.name_for_fill(theme.accent)
-    for i, step in enumerate(steps):
+    for i, _step in enumerate(steps):
         card_x = area.x + i * (card_w + gap)
         parts.append(_visual_card_xml(card_x, card_y, card_w, card_h, theme, graphics))
         parts.append(
@@ -1270,29 +1686,29 @@ def _process_xml(
         )
         parts.append(
             _visual_text_xml(
-                step.title,
+                fitted.titles[i],
                 card_x + 0.48,
                 card_y + _PROCESS_TITLE_TOP,
                 text_w,
-                title_h,
+                fitted.title_h,
                 styles,
-                size_pt=title_pt,
+                size_pt=fitted.title_pt,
                 color=theme.text,
                 bold=True,
                 font=theme.font_display,
                 line_height="115%",
             )
         )
-        if step.detail:
+        if fitted.details[i]:
             parts.append(
                 _visual_text_xml(
-                    step.detail,
+                    fitted.details[i],
                     card_x + 0.48,
                     card_y + detail_offset,
                     text_w,
                     max(0.4, card_h - detail_offset - _PROCESS_PAD_BOTTOM),
                     styles,
-                    size_pt=detail_pt,
+                    size_pt=fitted.detail_pt,
                     color=theme.muted,
                     line_height="135%",
                 )
@@ -1317,28 +1733,22 @@ def _timeline_xml(
     # fixed stem: cards above it grow *upward* so a taller row can never reach
     # down and collide with the line it is supposed to hang from.
     text_w = card_w - 0.7
-    title_pt = min(theme.body_pt, 17)
-    detail_pt = min(theme.caption_pt, 12)
-    title_h = max(
-        estimate_height_cm(e.title, title_pt, _wrap_width(text_w)) for e in events
-    )
-    detail_h = max(
-        (
-            estimate_height_cm(
-                e.detail, detail_pt, _wrap_width(text_w), _TIMELINE_DETAIL_LINE_HEIGHT
-            )
-            for e in events
-            if e.detail
-        ),
-        default=0.0,
-    )
     room = min(
         line_y - _TIMELINE_STEM - area.y,
         area.y + area.h - (line_y + _TIMELINE_STEM),
     ) - 0.1
-    card_h, detail_offset = _stacked_card_h(
-        title_h,
-        detail_h,
+    # The row's `room` clamp used to cap the card while detail_offset kept the
+    # unclamped title height — a top-row detail then landed exactly on the
+    # bottom-row cards and was painted over by them. The shared fit loop keeps
+    # the stack inside the clamp instead.
+    fitted = _fit_stacked_texts(
+        [e.title for e in events],
+        [e.detail for e in events],
+        title_pt=min(theme.body_pt, 17),
+        detail_pt=min(theme.caption_pt, 12),
+        wrap_w=_wrap_width(text_w),
+        title_line_height=_LINE_HEIGHT_DEFAULT,
+        detail_line_height=_TIMELINE_DETAIL_LINE_HEIGHT,
         title_top=_TIMELINE_TITLE_TOP,
         detail_gap=_TIMELINE_DETAIL_GAP,
         pad_bottom=_TIMELINE_PAD_BOTTOM,
@@ -1346,6 +1756,7 @@ def _timeline_xml(
         max_h=_TIMELINE_MAX_H,
         available=max(_TIMELINE_MIN_H, room),
     )
+    card_h, detail_offset = fitted.card_h, fitted.detail_offset
     top_y = max(area.y + 0.1, line_y - _TIMELINE_STEM - card_h)
     bottom_y = line_y + _TIMELINE_STEM
     line_color = _blend(theme.accent, theme.bg, _VISUAL_LINE_BLEND)
@@ -1394,7 +1805,13 @@ def _timeline_xml(
         )
         parts.append(
             _visual_text_xml(
-                event.label,
+                # The label box is one line tall and the title starts right
+                # under it — a wrapping label prints through the title, so it
+                # keeps one line and truncates (dates/quarter tags, not prose).
+                _truncate_to_h(
+                    event.label, theme.caption_pt, _wrap_width(card_w - 0.7),
+                    1.0, 0.55,
+                ),
                 card_x + 0.35,
                 card_y + 0.3,
                 card_w - 0.7,
@@ -1407,28 +1824,28 @@ def _timeline_xml(
         )
         parts.append(
             _visual_text_xml(
-                event.title,
+                fitted.titles[i],
                 card_x + 0.35,
                 card_y + _TIMELINE_TITLE_TOP,
                 text_w,
-                title_h,
+                fitted.title_h,
                 styles,
-                size_pt=title_pt,
+                size_pt=fitted.title_pt,
                 color=theme.text,
                 bold=True,
                 font=theme.font_display,
             )
         )
-        if event.detail:
+        if fitted.details[i]:
             parts.append(
                 _visual_text_xml(
-                    event.detail,
+                    fitted.details[i],
                     card_x + 0.35,
                     card_y + detail_offset,
                     text_w,
                     max(0.4, card_h - detail_offset - _TIMELINE_PAD_BOTTOM),
                     styles,
-                    size_pt=detail_pt,
+                    size_pt=fitted.detail_pt,
                     color=theme.muted,
                     line_height="130%",
                 )
@@ -1443,7 +1860,14 @@ def _metrics_xml(
     graphics: _GraphicStyles,
     styles: _ParagraphStyles,
 ) -> str:
-    """Render 2–4 metrics as a balanced one- or two-row card grid."""
+    """Render 2–4 metrics as a balanced one- or two-row card grid.
+
+    The value → label → detail y-offsets used to be constants (0.75/2.65/3.65)
+    that assumed one line each: a 14+-char label (IR allows 24) wrapped and
+    printed straight through the detail. The offsets derive from the same
+    measurements the boxes are drawn at now, and the label/detail pair fits
+    through the shared loop inside the fixed card the grid assigns.
+    """
     n = len(metrics)
     cols = 2 if n == 4 else n
     rows = 2 if n == 4 else 1
@@ -1454,6 +1878,38 @@ def _metrics_xml(
     grid_h = card_h * rows + gap * (rows - 1)
     start_y = area.y + (area.h - grid_h) / 2
     accent_style = graphics.name_for_fill(theme.accent)
+
+    text_w = card_w - 0.9
+    # Fit the value against the *inset* width — fed the raw frame width, an
+    # 18-char value kept a size at which LibreOffice actually wrapped it.
+    wrap_w = _wrap_width(text_w)
+    value_sizes = [
+        fact_font_size_pt(m.value, wrap_w, min(theme.display_pt, 44), theme.h1_pt)
+        for m in metrics
+    ]
+    # Row-shared offsets from the tallest value, so labels align across cards.
+    value_h = max(
+        _measured_text_h(m.value, size, wrap_w, _METRIC_VALUE_LINE_HEIGHT)
+        for m, size in zip(metrics, value_sizes, strict=True)
+    )
+    label_top = _METRIC_VALUE_TOP + value_h + _METRIC_VALUE_GAP
+    # min == max == available pins _stacked_card_h to the grid's card height:
+    # the fit loop concedes fonts (then text), never the card.
+    fitted = _fit_stacked_texts(
+        [m.label for m in metrics],
+        [m.detail for m in metrics],
+        title_pt=min(theme.body_pt, 17),
+        detail_pt=min(theme.caption_pt, 12),
+        wrap_w=wrap_w,
+        title_line_height=_METRIC_LABEL_LINE_HEIGHT,
+        detail_line_height=_METRIC_DETAIL_LINE_HEIGHT,
+        title_top=label_top,
+        detail_gap=_METRIC_LABEL_GAP,
+        pad_bottom=_METRIC_PAD_BOTTOM,
+        min_h=card_h,
+        max_h=card_h,
+        available=card_h,
+    )
 
     parts: list[str] = []
     for i, metric in enumerate(metrics):
@@ -1471,54 +1927,132 @@ def _metrics_xml(
                 style_name=accent_style,
             )
         )
-        value_size = fact_font_size_pt(
-            metric.value,
-            card_w - 0.9,
-            min(theme.display_pt, 44),
-            theme.h1_pt,
-        )
         parts.append(
             _visual_text_xml(
                 metric.value,
                 card_x + 0.45,
-                card_y + 0.75,
-                card_w - 0.9,
-                1.65,
+                card_y + _METRIC_VALUE_TOP,
+                text_w,
+                value_h,
                 styles,
-                size_pt=value_size,
+                size_pt=value_sizes[i],
                 color=theme.accent,
                 bold=True,
                 font=theme.font_display,
+                line_height="100%",
             )
         )
         parts.append(
             _visual_text_xml(
-                metric.label,
+                fitted.titles[i],
                 card_x + 0.45,
-                card_y + 2.65,
-                card_w - 0.9,
-                0.8,
+                card_y + label_top,
+                text_w,
+                fitted.title_h,
                 styles,
-                size_pt=min(theme.body_pt, 17),
+                size_pt=fitted.title_pt,
                 color=theme.text,
                 bold=True,
+                line_height="120%",
             )
         )
-        if metric.detail:
+        if fitted.details[i]:
             parts.append(
                 _visual_text_xml(
-                    metric.detail,
+                    fitted.details[i],
                     card_x + 0.45,
-                    card_y + 3.65,
-                    card_w - 0.9,
-                    card_h - 4.1,
+                    card_y + fitted.detail_offset,
+                    text_w,
+                    max(0.4, card_h - fitted.detail_offset - _METRIC_PAD_BOTTOM),
                     styles,
-                    size_pt=min(theme.caption_pt, 12),
+                    size_pt=fitted.detail_pt,
                     color=theme.muted,
                     line_height="130%",
                 )
             )
     return "".join(parts)
+
+
+def _fit_cards(items: list, area: Frame, theme: Theme):
+    """The card grid's shared fit: geometry + the settled texts/sizes.
+
+    Split out of :func:`_cards_xml` so :func:`cards_budget_warnings` can dry-run
+    the *exact* fit the renderer performs instead of mirroring its constants —
+    two copies of this arithmetic would drift.
+    """
+    n = len(items)
+    cols = 2 if n in (2, 4) else 3
+    rows = 2 if n == 4 else 1
+    gap = _VISUAL_GAP
+    card_w = (area.w - gap * (cols - 1)) / cols
+    raw_h = (area.h - gap * (rows - 1)) / rows
+
+    text_w = card_w - 2 * _CARD_PAD_X
+    title_pt = min(theme.body_pt, 18)
+    child_pt = min(theme.caption_pt, 12)
+    title_top = _CARD_PAD_TOP + _CARD_BADGE_H + _CARD_BADGE_GAP
+
+    normalised = [
+        item if isinstance(item, tuple) else (str(item), []) for item in items
+    ]
+    # One title height for the row so every card's children start on the same
+    # baseline; one card height so the row stays visually even. The shared fit
+    # loop also closes the 2×2 defect where a ~60-char title pushed the child
+    # offset past the clamped card and the children landed under (and were
+    # painted over by) the second row.
+    fitted = _fit_stacked_texts(
+        [text for text, _ in normalised],
+        [
+            " · ".join(str(child) for child in children)
+            for _, children in normalised
+        ],
+        title_pt=title_pt,
+        detail_pt=child_pt,
+        wrap_w=_wrap_width(text_w),
+        title_line_height=_CARD_TITLE_LINE_HEIGHT,
+        detail_line_height=_CARD_CHILD_LINE_HEIGHT,
+        title_top=title_top,
+        detail_gap=_CARD_TITLE_GAP,
+        pad_bottom=_CARD_PAD_BOTTOM,
+        min_h=_CARD_MIN_H,
+        max_h=_CARD_MAX_H,
+        available=raw_h,
+    )
+    return cols, rows, gap, card_w, text_w, title_top, normalised, fitted
+
+
+def cards_budget_warnings(slide, theme: Theme) -> list[str]:
+    """Budget check for the cards layout — closes its ``check_budget`` blind spot.
+
+    ``cards-area`` is shape-rendered, so textmetrics charges it nothing — yet
+    ``Slide.bullets`` carry no IR length cap, making cards the one layout whose
+    overflow rode on unbounded input. Only the renderer knows when its fit loop
+    bottoms out at the font floors and starts cutting text, so this dry-runs the
+    exact fit :func:`_cards_xml` performs and reports every card whose text
+    would be truncated — feedback the retry loop turns into shorter content,
+    which beats shipping an ellipsis. Self-rescue first, feedback last: fonts
+    stepping down is rescue, not a warning.
+    """
+    if slide.layout != "cards" or not slide.bullets:
+        return []
+    area = next(f for f in LAYOUTS["cards"] if f.role == "cards-area")
+    items = _coerce_bullet_items(slide.bullets)
+    _cols, _rows, _gap, _cw, _tw, _tt, normalised, fitted = _fit_cards(
+        items, area, theme
+    )
+    label = slide.title or "(未命名投影片)"
+    warnings = []
+    for i, (text, children) in enumerate(normalised):
+        detail = " · ".join(str(child) for child in children)
+        truncated = fitted.titles[i] != text or (
+            bool(detail) and fitted.details[i] != detail
+        )
+        if truncated:
+            warnings.append(
+                f"投影片「{label}」的第 {i + 1} 張卡片文字過長：即使縮到最小字級"
+                f"仍放不下，將被截斷 — 請精簡卡片標題或子項文字。"
+            )
+    return warnings
 
 
 def _cards_xml(
@@ -1538,50 +2072,16 @@ def _cards_xml(
     fit it (plus any children), and the tallest card sets the height for the
     whole row — uniform, but never larger than its content needs.
     """
-    n = len(items)
-    cols = 2 if n in (2, 4) else 3
-    rows = 2 if n == 4 else 1
-    gap = _VISUAL_GAP
-    card_w = (area.w - gap * (cols - 1)) / cols
-    raw_h = (area.h - gap * (rows - 1)) / rows
-
-    text_w = card_w - 2 * _CARD_PAD_X
-    title_pt = min(theme.body_pt, 18)
-    child_pt = min(theme.caption_pt, 12)
-    title_top = _CARD_PAD_TOP + _CARD_BADGE_H + _CARD_BADGE_GAP
-
-    normalised = [
-        item if isinstance(item, tuple) else (str(item), []) for item in items
-    ]
-    # One title height for the row so every card's children start on the same
-    # baseline; one card height so the row stays visually even.
-    title_h = max(
-        estimate_height_cm(text, title_pt, _wrap_width(text_w), _CARD_TITLE_LINE_HEIGHT)
-        for text, _ in normalised
+    cols, rows, gap, card_w, text_w, title_top, normalised, fitted = _fit_cards(
+        items, area, theme
     )
-    child_texts = {
-        i: " · ".join(str(child) for child in children)
-        for i, (_, children) in enumerate(normalised)
-        if children
-    }
-    child_h = max(
-        (
-            estimate_height_cm(text, child_pt, _wrap_width(text_w), _CARD_CHILD_LINE_HEIGHT)
-            for text in child_texts.values()
-        ),
-        default=0.0,
-    )
-    needed = title_top + title_h + _CARD_PAD_BOTTOM
-    if child_texts:
-        needed += _CARD_TITLE_GAP + child_h
-    card_h = max(_CARD_MIN_H, min(needed, _CARD_MAX_H, raw_h))
-
+    card_h = fitted.card_h
     grid_h = rows * card_h + gap * (rows - 1)
     start_y = area.y + (area.h - grid_h) / 2
-    child_y_offset = title_top + title_h + _CARD_TITLE_GAP
+    child_y_offset = fitted.detail_offset
 
     parts: list[str] = []
-    for i, (text, _children) in enumerate(normalised):
+    for i in range(len(normalised)):
         row, col = divmod(i, cols)
         card_x = area.x + col * (card_w + gap)
         card_y = start_y + row * (card_h + gap)
@@ -1601,30 +2101,29 @@ def _cards_xml(
         )
         parts.append(
             _visual_text_xml(
-                text,
+                fitted.titles[i],
                 card_x + _CARD_PAD_X,
                 card_y + title_top,
                 text_w,
-                title_h,
+                fitted.title_h,
                 styles,
-                size_pt=title_pt,
+                size_pt=fitted.title_pt,
                 color=theme.text,
                 bold=True,
                 font=theme.font_display,
                 line_height="120%",
             )
         )
-        child_text = child_texts.get(i)
-        if child_text:
+        if fitted.details[i]:
             parts.append(
                 _visual_text_xml(
-                    child_text,
+                    fitted.details[i],
                     card_x + _CARD_PAD_X,
                     card_y + child_y_offset,
                     text_w,
                     max(0.4, card_h - child_y_offset - _CARD_PAD_BOTTOM),
                     styles,
-                    size_pt=child_pt,
+                    size_pt=fitted.detail_pt,
                     color=theme.muted,
                     line_height="135%",
                 )
@@ -1639,22 +2138,61 @@ def _closing_actions_xml(
     graphics: _GraphicStyles,
     styles: _ParagraphStyles,
 ) -> str:
-    """Render concrete closing actions as compact cards on the inverted page."""
+    """Render concrete closing actions as cards sized to their own text.
+
+    Every box on the card derives from one measured ``title_h`` (see
+    :func:`_stacked_card_h`), so the title can never end above the words it was
+    drawn to hold and the detail can never be pinned where the title already is.
+    """
     if not items:
         return ""
 
+    # A closing page with more actions than this is a content failure the
+    # outline stage should prevent — but the renderer must never emit invalid
+    # geometry regardless (six-plus cards squeezed text_w toward zero, and at
+    # count ≥ 20 produced a negative svg:width). Render the first five.
+    items = items[:_CLOSING_MAX_ACTIONS]
     count = len(items)
     gap = 0.45
     card_w = min(10.0, (area.w - gap * (count - 1)) / count)
     grid_w = card_w * count + gap * (count - 1)
     start_x = area.x + (area.w - grid_w) / 2
-    card_h = min(3.35, area.h)
+
+    # Belt over the count cap: a text frame must never be ≤ 0 wide.
+    text_w = max(0.5, card_w - 0.8)
+    wrap_w = _wrap_width(text_w)
+    entries = [
+        item if isinstance(item, tuple) else (str(item), []) for item in items
+    ]
+    # Children strings carry no IR length cap, so the joined detail can be
+    # arbitrarily long: the old loop shrank only the title and let the detail
+    # spill onto the inverted background at the 12pt floor. The shared fit
+    # loop steps the detail down too, then truncates.
+    fitted = _fit_stacked_texts(
+        [text for text, _children in entries],
+        [
+            " · ".join(str(child) for child in children)
+            for _text, children in entries
+        ],
+        title_pt=min(theme.body_pt, 17),
+        detail_pt=min(theme.caption_pt, 12),
+        wrap_w=wrap_w,
+        title_line_height=_CLOSING_TITLE_LINE_HEIGHT,
+        detail_line_height=_CLOSING_DETAIL_LINE_HEIGHT,
+        title_top=_CLOSING_TITLE_TOP,
+        detail_gap=_CLOSING_DETAIL_GAP,
+        pad_bottom=_CLOSING_PAD_BOTTOM,
+        min_h=_CLOSING_MIN_H,
+        max_h=_CLOSING_MAX_H,
+        available=area.h,
+    )
+    card_h, detail_offset = fitted.card_h, fitted.detail_offset
+
     start_y = area.y + (area.h - card_h) / 2
 
     parts: list[str] = []
-    for index, item in enumerate(items):
+    for index in range(count):
         card_x = start_x + index * (card_w + gap)
-        text, children = item if isinstance(item, tuple) else (str(item), [])
         parts.append(
             _visual_card_xml(card_x, start_y, card_w, card_h, theme, graphics)
         )
@@ -1663,7 +2201,7 @@ def _closing_actions_xml(
                 f"{index + 1:02d}",
                 card_x + 0.4,
                 start_y + 0.38,
-                card_w - 0.8,
+                text_w,
                 0.5,
                 styles,
                 size_pt=theme.caption_pt,
@@ -1673,29 +2211,29 @@ def _closing_actions_xml(
         )
         parts.append(
             _visual_text_xml(
-                text,
+                fitted.titles[index],
                 card_x + 0.4,
-                start_y + 1.15,
-                card_w - 0.8,
-                1.25 if children else 1.65,
+                start_y + _CLOSING_TITLE_TOP,
+                text_w,
+                fitted.title_h,
                 styles,
-                size_pt=min(theme.body_pt, 17),
+                size_pt=fitted.title_pt,
                 color=theme.text,
                 bold=True,
                 font=theme.font_display,
                 line_height="120%",
             )
         )
-        if children:
+        if fitted.details[index]:
             parts.append(
                 _visual_text_xml(
-                    " · ".join(str(child) for child in children),
+                    fitted.details[index],
                     card_x + 0.4,
-                    start_y + 2.35,
-                    card_w - 0.8,
-                    0.65,
+                    start_y + detail_offset,
+                    text_w,
+                    max(0.4, card_h - detail_offset - _CLOSING_PAD_BOTTOM),
                     styles,
-                    size_pt=min(theme.caption_pt, 12),
+                    size_pt=fitted.detail_pt,
                     color=theme.muted,
                     line_height="125%",
                 )
@@ -1736,13 +2274,13 @@ def _diagram_positions(
         return positions
 
     node_ids = [node.id for node in diagram.nodes]
-    indegree = {node_id: 0 for node_id in node_ids}
+    indegree = dict.fromkeys(node_ids, 0)
     for edge in diagram.edges:
         indegree[edge.target] += 1
     roots = [node_id for node_id in node_ids if indegree[node_id] == 0]
     if not roots:
         roots = [node_ids[0]]
-    levels = {root: 0 for root in roots}
+    levels = dict.fromkeys(roots, 0)
     for _ in node_ids:
         changed = False
         for edge in diagram.edges:
@@ -1760,7 +2298,7 @@ def _diagram_positions(
     # A cycle can make the relaxation above grow indefinitely. Collapse such a
     # graph to a single balanced row rather than drawing outside the page.
     if max_level >= len(node_ids):
-        levels = {node_id: 0 for node_id in node_ids}
+        levels = dict.fromkeys(node_ids, 0)
         max_level = 0
     groups: dict[int, list[str]] = {}
     for node_id in node_ids:
@@ -1907,17 +2445,27 @@ def _diagram_xml(
             min(theme.body_pt, 17),
             min(theme.caption_pt, 12),
         )
-        title_text_h = estimate_height_cm(
-            node.title,
-            title_size,
-            max(w - 0.7, 0.5),
-            line_height=1.15,
-        )
-        title_h = min(max(title_text_h + 0.1, 0.62), max(h - 0.75, 0.62))
+        # Measured like every other sized-to-text box (LO slack + inset), and
+        # wrapped at the *inset* width — the raw estimate against `w-0.7` let
+        # LibreOffice wrap one line more than modelled, and a 24-char title's
+        # fourth line printed straight through the detail below.
+        node_wrap_w = _wrap_width(max(w - 0.7, 0.5))
+        title_cap = max(h - 0.75, 0.62)
+        title_text = node.title
+        title_h = _measured_text_h(title_text, title_size, node_wrap_w, 1.15)
+        if title_h > title_cap:
+            # The capped node box cannot hold the title even at the 12pt floor
+            # fact_font_size_pt bottomed out at — truncate (LibreOffice does
+            # not clip; see _truncate_to_h) instead of printing into the detail.
+            title_text = _truncate_to_h(
+                node.title, title_size, node_wrap_w, 1.15, title_cap
+            )
+            title_h = _measured_text_h(title_text, title_size, node_wrap_w, 1.15)
+        title_h = min(max(title_h, 0.62), title_cap)
         title_y = y + 0.28
         parts.append(
             _visual_text_xml(
-                node.title,
+                title_text,
                 x + 0.35,
                 title_y,
                 w - 0.7,
@@ -1933,15 +2481,21 @@ def _diagram_xml(
         detail_y = title_y + title_h + 0.12
         detail_h = y + h - 0.22 - detail_y
         if node.detail and detail_h >= 0.45:
+            detail_pt = min(theme.caption_pt, 11)
             parts.append(
                 _visual_text_xml(
-                    node.detail,
+                    # A 48-char detail can never fit the remaining sliver of a
+                    # 2.45cm node — truncated to the box for the same reason
+                    # as the title.
+                    _truncate_to_h(
+                        node.detail, detail_pt, node_wrap_w, 1.25, detail_h
+                    ),
                     x + 0.35,
                     detail_y,
                     w - 0.7,
                     detail_h,
                     styles,
-                    size_pt=min(theme.caption_pt, 11),
+                    size_pt=detail_pt,
                     color=detail_color,
                     center=True,
                     line_height="125%",
@@ -1956,7 +2510,14 @@ def _sources_xml(
     styles: _ParagraphStyles,
     spans: _SpanStyles,
 ) -> str:
-    """Render concise, clickable source references above the master footer."""
+    """Render concise source references above the master footer.
+
+    Labelled 「來源(未查證)」, deliberately. ODForge does not check that a cited
+    URL resolves, that its title matches, or that the page says what the slide
+    claims it says — the model produced these strings and nothing downstream
+    verified them. A bare 「來源」 label on a deck that also carries four green
+    quality gates reads as a claim the product cannot back up.
+    """
     paragraph_style = styles.name_for(
         _SOURCE_FRAME.size_pt,
         False,
@@ -1966,7 +2527,7 @@ def _sources_xml(
     label_style = spans.name_for(_SOURCE_FRAME.size_pt, True, theme.accent)
     source_style = spans.name_for(_SOURCE_FRAME.size_pt, False, theme.muted)
     body = (
-        f'<text:span text:style-name="{_attr(label_style)}">來源</text:span>'
+        f'<text:span text:style-name="{_attr(label_style)}">來源(未查證)</text:span>'
         f'<text:span text:style-name="{_attr(source_style)}">  </text:span>'
     )
     rendered = []
@@ -2181,6 +2742,8 @@ def _page_xml(
     spans: _SpanStyles,
     section_ordinal: int | None,
     resolved_image: tuple[str, AssetBlob] | None = None,
+    branding: Branding | None = None,
+    logo: _LogoAsset | None = None,
 ) -> str:
     """Build one ``draw:page`` for a slide, registering its paragraph styles.
 
@@ -2202,6 +2765,15 @@ def _page_xml(
         parts.append(_section_number_xml(section_ordinal, theme, styles))
     if layout == "quote":
         parts.append(_quote_mark_xml(theme, styles))
+
+    # Deck-level branding, drawn with the decorations so page content stays on
+    # top of it. Both pieces are optional and independent: a deck may carry a
+    # byline with no logo, or the reverse.
+    if branding is not None:
+        if layout == "title" and branding.byline:
+            parts.append(_byline_xml(branding.byline, theme, styles))
+        if logo is not None and _page_shows_logo(layout, branding.placement):
+            parts.append(_logo_xml(logo, layout, theme, graphics))
 
     # big-fact fit-to-width (deterministic engine guarantee, not prompt advice):
     # shrink the fact toward one line (floor = theme.h1_pt) and, if it still
@@ -2486,8 +3058,15 @@ def build_content_xml(
     p: Presentation,
     theme: Theme,
     resolved_images: Mapping[int, tuple[str, AssetBlob]] | None = None,
+    logo: _LogoAsset | None = None,
 ) -> str:
-    """Build ``content.xml`` for a presentation. Pure function."""
+    """Build ``content.xml`` for a presentation. Pure function.
+
+    ``logo`` is the resolved cover mark (``render_odp`` packages the bytes and
+    passes the part reference in); ``None`` means the deck carries no logo, or
+    the one it named could not be resolved — either way the pages render exactly
+    as they did before branding existed.
+    """
     styles = _ParagraphStyles(theme.font)
     # Graphic styles for shapes drawn on pages (accent bars, etc.).
     graphics = _GraphicStyles()
@@ -2514,6 +3093,8 @@ def build_content_xml(
             spans,
             section_ordinal.get(i),
             (resolved_images or {}).get(i),
+            p.branding,
+            logo,
         )
         for i, slide in enumerate(p.slides)
     )
@@ -2777,8 +3358,21 @@ def render_odp(
         image_parts[href] = blob.data
         resolved_images[index] = (href, blob)
 
+    # Cover mark. An unresolvable reference (asset dropped, bytes rejected) is
+    # NOT an error: the deck renders without the mark rather than failing a
+    # whole generation over a logo. It is app-owned, so this only happens when
+    # the upload itself went missing.
+    logo: _LogoAsset | None = None
+    if p.branding is not None and p.branding.logo:
+        blob = normalized_assets.get(p.branding.logo.removeprefix("asset://"))
+        if blob is not None:
+            digest = hashlib.sha256(blob.data).hexdigest()[:16]
+            href = f"Pictures/logo-{digest}{blob.extension}"
+            image_parts[href] = blob.data
+            logo = _LogoAsset(href, blob.width, blob.height)
+
     parts: dict[str, str | bytes] = {
-        "content.xml": build_content_xml(p, theme, resolved_images),
+        "content.xml": build_content_xml(p, theme, resolved_images, logo),
         "styles.xml": build_styles_xml(theme, p.title),
         "meta.xml": build_meta_xml(p.title),
     }

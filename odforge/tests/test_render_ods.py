@@ -1,9 +1,12 @@
 import zipfile
+
 import lxml.etree as etree
 import pytest
-from odforge.ir import Spreadsheet, Sheet
-from odforge.render.ods import render_ods
+from pydantic import ValidationError
+
+from odforge.ir import Sheet, Spreadsheet
 from odforge.render import render
+from odforge.render.ods import render_ods
 
 NS = {"office": "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
       "table": "urn:oasis:names:tc:opendocument:xmlns:table:1.0",
@@ -43,10 +46,77 @@ def test_formula_attribute_set(tmp_path, sample_spreadsheet):
     assert any(expected in f for f in formulas)
 
 def test_bad_cell_ref_raises(tmp_path):
-    s = Spreadsheet(title="t", sheets=[Sheet(name="s", columns=["a"], rows=[[1]],
-        formulas=[{"cell": "!!", "formula": "of:=SUM([.A1:.A2])"}])])
+    # 現在攔在契約層(IR),而不是等到算圖時才炸 —— 錯誤訊息裡照樣有闖禍的 ref。
+    with pytest.raises(ValidationError, match="!!"):
+        Sheet(name="s", columns=["a"], rows=[[1]],
+              formulas=[{"cell": "!!", "formula": "of:=SUM([.A1:.A2])"}])
+    # 算圖層的防線保留(有人繞過契約直接構造物件時仍要擋)。
+    s = Spreadsheet(title="t", sheets=[
+        Sheet(name="s", columns=["a"], rows=[[1]],
+              formulas=[{"cell": "A2", "formula": "of:=SUM([.A1:.A2])"}])
+    ])
+    s.sheets[0].formulas[0].__dict__["cell"] = "!!"
     with pytest.raises(ValueError, match="!!"):
         render_ods(s, tmp_path / "s.ods")
+
+
+# ---------------------------------------------------------------------------
+# P1-04 — numeric and formula semantics, not just "the zip opens".
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_numbers_are_rejected(bad):
+    """ODF 沒有 NaN/Infinity 的表示法;寫出去 LibreOffice 顯示 #VALUE!。"""
+    with pytest.raises(ValidationError, match="finite"):
+        Sheet(name="s", columns=["a", "b"], rows=[[1, bad]])
+
+
+def test_duplicate_formula_target_is_rejected():
+    with pytest.raises(ValidationError, match="duplicate formula target"):
+        Sheet(
+            name="s", columns=["a"], rows=[[1], [2]],
+            formulas=[
+                {"cell": "A4", "formula": "of:=SUM([.A2:.A3])"},
+                {"cell": "A4", "formula": "of:=MAX([.A2:.A3])"},
+            ],
+        )
+
+
+def test_out_of_bounds_formula_target_is_rejected():
+    with pytest.raises(ValidationError, match="outside sheet"):
+        Sheet(name="s", columns=["a"], rows=[[1]],
+              formulas=[{"cell": "Z99", "formula": "of:=SUM([.A1:.A2])"}])
+
+
+def test_out_of_bounds_reference_is_rejected():
+    with pytest.raises(ValidationError, match="outside sheet"):
+        Sheet(name="s", columns=["a"], rows=[[1]],
+              formulas=[{"cell": "A3", "formula": "of:=SUM([.A1:.A99])"}])
+
+
+def test_unbalanced_parentheses_are_rejected():
+    with pytest.raises(ValidationError, match="unbalanced parentheses"):
+        Sheet(name="s", columns=["a"], rows=[[1]],
+              formulas=[{"cell": "A3", "formula": "of:=SUM([.A1:.A2]"}])
+
+
+def test_unsupported_function_is_refused_rather_than_shipped_broken():
+    """不支援就閉嘴:與其寫出一個在使用者機器上顯示 #NAME? 的公式,不如當場拒絕。"""
+    with pytest.raises(ValidationError, match="unsupported spreadsheet function"):
+        Sheet(name="s", columns=["a"], rows=[[1]],
+              formulas=[{"cell": "A3", "formula": "of:=XLOOKUP([.A1];[.A1];[.A1])"}])
+
+
+def test_supported_functions_still_pass():
+    sheet = Sheet(
+        name="s", columns=["月份", "金額"], rows=[["一月", 100], ["二月", 200]],
+        formulas=[
+            {"cell": "B4", "formula": "of:=SUM([.B2:.B3])"},
+            {"cell": "A4", "formula": "of:=IF(SUM([.B2:.B3])>0;\"有\";\"無\")"},
+        ],
+    )
+    assert len(sheet.formulas) == 2
 
 def test_dispatch_spreadsheet(tmp_path, sample_spreadsheet):
     out = render(sample_spreadsheet, tmp_path / "s.ods")

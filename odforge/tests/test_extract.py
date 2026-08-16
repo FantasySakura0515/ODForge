@@ -18,8 +18,7 @@ import zipfile
 import pytest
 
 from odforge.extract import TemplateExtractionError, extract_design
-from odforge.ir import DesignSpec, FontPair, Palette
-from odforge.ir import Presentation, Slide
+from odforge.ir import DesignSpec, FontPair, Palette, Presentation, Slide
 from odforge.package import ODP_MIMETYPE, write_odf_package
 from odforge.render.odp import render_odp
 from odforge.themes import THEMES

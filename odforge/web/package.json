@@ -7,12 +7,18 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "typecheck": "tsc -b",
+    "typecheck:tests": "tsc -p tsconfig.test.json --noEmit"
   },
-  "dependencies": { "react": "^18.3.1", "react-dom": "^18.3.1" },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.4.8",
     "@testing-library/react": "^16.0.1",
+    "@types/node": "^26.2.0",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^6.0.3",
@@ -20,5 +26,9 @@
     "typescript": "^5.5.4",
     "vite": "^8.1.4",
     "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=20.19 <25",
+    "npm": ">=10"
   }
 }

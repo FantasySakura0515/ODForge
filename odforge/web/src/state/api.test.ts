@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import {
+  ApiHttpError,
   buildGenerateBody,
   downloadUrl,
   eventsUrl,
@@ -74,6 +75,31 @@ test("getSessions 讀取首頁工作紀錄", async () => {
 test("postGenerate 非 2xx 拋錯", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500 }));
   await expect(postGenerate({ prompt: "x", doc_type: "odp" })).rejects.toThrow();
+});
+
+test("postGenerate 非 2xx:轉述後端 detail 與狀態碼(429 上限不是連線問題)", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+    ok: false,
+    status: 429,
+    json: async () => ({ detail: "too many active jobs; limit is 2" }),
+  }));
+  const err = await postGenerate({ prompt: "x", doc_type: "odp" }).catch((e) => e);
+  expect(err).toBeInstanceOf(ApiHttpError);
+  expect(err.status).toBe(429);
+  expect(err.message).toContain("too many active jobs");
+  expect(err.message).toContain("429");
+});
+
+test("postGenerate 非 2xx 無 detail(或非 JSON)→ 後備訊息仍帶狀態碼", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+    ok: false,
+    status: 422,
+    json: async () => ({ detail: [{ loc: ["body", "pages"], msg: "invalid" }] }), // FastAPI 驗證陣列
+  }));
+  const err = await postGenerate({ prompt: "x", doc_type: "odp" }).catch((e) => e);
+  expect(err).toBeInstanceOf(ApiHttpError);
+  expect(err.message).toContain("generate 失敗");
+  expect(err.message).toContain("422");
 });
 
 test("postDiscoveryQuestions 只送素材描述，不送 base64 圖片 bytes", async () => {
@@ -283,6 +309,20 @@ test("buildGenerateBody 受眾與語氣附加進 prompt 尾端", () => {
   expect(body.prompt).toContain("語氣:親切");
   // 只填一個時只附加那一個
   expect(buildGenerateBody("樹", "odp", { ...DEFAULT_OPTS, audience: "老師" }).prompt).not.toContain("語氣");
+});
+
+test("buildGenerateBody 場合與講述時間同樣附加進 prompt 尾端", () => {
+  const body = buildGenerateBody("樹", "odp", {
+    ...DEFAULT_OPTS,
+    purpose: "專題提案",
+    duration: "15 分鐘",
+  });
+  expect(body.prompt).toContain("場合:專題提案");
+  expect(body.prompt).toContain("講述時間:15 分鐘");
+  // 空字串等同留白:不得留下一個「場合:」的空承諾。
+  expect(
+    buildGenerateBody("樹", "odp", { ...DEFAULT_OPTS, purpose: "  ", duration: "" }).prompt,
+  ).toBe("樹");
 });
 
 test("postOutlineAction approve 打對端點與 body", async () => {

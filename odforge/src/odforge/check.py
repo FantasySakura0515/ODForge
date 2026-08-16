@@ -27,8 +27,8 @@ from lxml import etree
 from .validate import find_soffice, run_soffice_convert, validate_odf
 from .xmlsafe import safe_fromstring
 from .zipguard import (
-    ArchiveLimitError,
     MAX_XML_MEMBER,
+    ArchiveLimitError,
     inspect_archive,
     read_xml_member,
 )
@@ -177,26 +177,39 @@ def check_odf(path: Path) -> str:
     any unexpected exception while building the report becomes an ``error:``
     string (same outer guard as validate.py's gates).
     """
+    return check_odf_verdict(path)[0]
+
+
+def check_odf_verdict(path: Path) -> tuple[str, bool]:
+    """``(report, failed)`` — the verdict comes from the structured gate results.
+
+    The report's free text echoes the file name, part names and style names, so
+    a caller that greps it for "FAIL" flips its exit code on a perfectly valid
+    file that merely *contains* that substring (``q4-FAIL-review.odt``). The
+    boolean is derived from the gates themselves and immune to that.
+    """
     path = Path(path)
     if not path.exists():
-        return f"error: file not found: {path}"
+        return f"error: file not found: {path}", True
     try:
         return _check_odf_report(path)
-    except Exception as exc:  # noqa: BLE001 - never-raise contract
-        return f"error: check failed: {type(exc).__name__}: {exc}"
+    except Exception as exc:
+        return f"error: check failed: {type(exc).__name__}: {exc}", True
 
 
-def _check_odf_report(path: Path) -> str:
+def _check_odf_report(path: Path) -> tuple[str, bool]:
     """Build the markdown report for an existing file (may raise; guarded)."""
     report = validate_odf(path, with_soffice=find_soffice() is not None)
 
     lines: list[str] = [f"# ODF 檢測報告:{path.name}", ""]
 
+    failed = False
     lines.append("## 驗證結果")
     for name in ("structure", "xml", "soffice"):
         if name not in report.gates:
             continue
         passed, message = report.gates[name]
+        failed = failed or not passed
         status = "OK" if passed else "FAIL"
         lines.append(f"- {name}: {status} — {message}")
     lines.append("")
@@ -216,7 +229,9 @@ def _check_odf_report(path: Path) -> str:
         lines.extend(f"  - `{name}`" for name in undefined)
     lines.append("")
 
-    return "\n".join(lines).rstrip() + "\n"
+    # Style-reference issues stay informational (they never said FAIL either):
+    # only the three gates decide the verdict.
+    return "\n".join(lines).rstrip() + "\n", failed
 
 
 # ---------------------------------------------------------------------------
@@ -304,21 +319,31 @@ def diff_docx_odt(docx: Path) -> str:
     exception (e.g. a stale soffice path raising ``FileNotFoundError`` inside
     ``subprocess.run``) is likewise returned as an ``error:`` string.
     """
+    return diff_docx_odt_verdict(docx)[0]
+
+
+def diff_docx_odt_verdict(docx: Path) -> tuple[str, bool]:
+    """``(report, failed)`` — failed only when the comparison could not run.
+
+    Count mismatches are heuristic observations, not failures (they never
+    tripped the exit code before either); ``error:`` reports are.
+    """
     docx = Path(docx)
     soffice = find_soffice()
     if soffice is None:
         return (
             "error: 此比對需要 LibreOffice(soffice)把 .docx 轉成 .odt,"
             "但在本機找不到 soffice。請安裝 LibreOffice 後再試。"
-        )
+        ), True
 
     if not docx.exists():
-        return f"error: file not found: {docx}"
+        return f"error: file not found: {docx}", True
 
     try:
-        return _diff_report(docx, soffice)
-    except Exception as exc:  # noqa: BLE001 - never-raise contract
-        return f"error: conversion failed: {type(exc).__name__}: {exc}"
+        report = _diff_report(docx, soffice)
+    except Exception as exc:
+        return f"error: conversion failed: {type(exc).__name__}: {exc}", True
+    return report, report.startswith("error:")
 
 
 def _diff_report(docx: Path, soffice: Path) -> str:

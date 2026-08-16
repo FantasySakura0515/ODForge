@@ -1,15 +1,18 @@
 import subprocess
 import zipfile
-import pytest
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
 from odforge import validate
+from odforge.render.odp import render_odp
+from odforge.render.odt import render_odt
 from odforge.validate import (
-    validate_odf,
     find_soffice,
     run_soffice_convert,
+    validate_odf,
 )
-from odforge.render.odt import render_odt
-from odforge.render.odp import render_odp
 
 
 def test_soffice_gate_isolates_user_installation(tmp_path, monkeypatch):
@@ -222,8 +225,229 @@ def test_safe_parser_leaves_external_entity_unresolved(tmp_path):
         '<?xml version="1.0"?>'
         f'<!DOCTYPE r [<!ENTITY e SYSTEM "{secret.resolve().as_uri()}">]>'
         "<r><c>&e;</c></r>"
-    ).encode("utf-8")
+    ).encode()
 
     root = safe_fromstring(probe)  # must not raise or read the file
     assert root[0].text is None  # entity left unresolved
     assert marker not in etree.tostring(root).decode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# P1-04 — a spreadsheet that opens is not a spreadsheet that computes.
+# ---------------------------------------------------------------------------
+
+
+def test_scan_calc_errors_finds_every_error_token():
+    from odforge.validate import _scan_calc_errors
+
+    assert _scan_calc_errors("月份,金額\n一月,100\n總計,#NAME?\n") == ["#NAME?"]
+    found = _scan_calc_errors("a,#VALUE!\nb,Err:502\n")
+    assert "#VALUE!" in found and "Err:" in found
+    assert _scan_calc_errors("月份,金額\n一月,100\n總計,100\n") == []
+
+
+def _one_sheet_ods(tmp_path) -> Path:
+    """A real single-sheet .ods.
+
+    These tests fake the *conversion* but not the package: the gate now counts
+    the workbook's own sheets to know how many exports it must see, so a
+    ``b"not really an ods"`` placeholder can no longer stand in for one — and
+    should not, since "this file is not a spreadsheet" and "this spreadsheet
+    computes cleanly" are answers that must never look alike.
+    """
+    from odforge.ir import Sheet, Spreadsheet
+    from odforge.render import render
+
+    doc = Spreadsheet(title="t", sheets=[Sheet(
+        name="s", columns=["月份", "金額"], rows=[["一月", 100]],
+        formulas=[{"cell": "B3", "formula": "of:=SUM([.B2:.B2])"}],
+    )])
+    return render(doc, tmp_path / "s.ods")
+
+
+def test_formula_gate_fails_on_computed_errors(tmp_path, monkeypatch):
+    """轉出 PDF 成功 ≠ 公式算得出來:一整片 #NAME? 也能印出完美的 PDF。"""
+    from odforge import validate as V
+
+    ods = _one_sheet_ods(tmp_path)
+
+    def fake_convert(soffice, src, fmt, outdir, timeout=120):
+        # pdf leg keeps the plain name the gate looks for; the calc leg writes
+        # the per-sheet name the all-sheets export produces.
+        name = f"{Path(src).stem}.pdf" if fmt == "pdf" else f"{Path(src).stem}-s.csv"
+        out = Path(outdir) / name
+        out.write_text("月份,金額\n一月,100\n總計,#NAME?\n", encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(V, "run_soffice_convert", fake_convert)
+    ok, message = V._gate_soffice(ods, Path("soffice"))
+    assert ok is False
+    assert "#NAME?" in message
+
+
+def test_formula_gate_passes_when_values_compute(tmp_path, monkeypatch):
+    from odforge import validate as V
+
+    ods = _one_sheet_ods(tmp_path)
+
+    def fake_convert(soffice, src, fmt, outdir, timeout=120):
+        # pdf leg keeps the plain name the gate looks for; the calc leg writes
+        # the per-sheet name the all-sheets export produces.
+        name = f"{Path(src).stem}.pdf" if fmt == "pdf" else f"{Path(src).stem}-s.csv"
+        out = Path(outdir) / name
+        out.write_text("月份,金額\n一月,100\n總計,100\n", encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(V, "run_soffice_convert", fake_convert)
+    ok, message = V._gate_soffice(ods, Path("soffice"))
+    assert ok is True
+    assert "formulas evaluated" in message
+
+
+def test_formula_gate_refuses_a_package_it_cannot_read(tmp_path, monkeypatch):
+    """A file that is not a readable spreadsheet is 'cannot check', not 'ok'."""
+    from odforge import validate as V
+
+    ods = tmp_path / "broken.ods"
+    ods.write_bytes(b"not really an ods")
+    monkeypatch.setattr(
+        V, "run_soffice_convert",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    ok, message = V._gate_formulas(ods, Path("soffice"), tmp_path / "w")
+    assert ok is False
+    assert "sheet list" in message
+
+
+def test_odp_is_not_put_through_the_formula_gate(tmp_path, monkeypatch):
+    """簡報沒有公式可算;別為它多跑一次 soffice。"""
+    from odforge import validate as V
+
+    odp = tmp_path / "d.odp"
+    odp.write_bytes(b"x")
+    formats: list[str] = []
+
+    def fake_convert(soffice, src, fmt, outdir, timeout=120):
+        formats.append(fmt)
+        out = Path(outdir) / (Path(src).stem + "." + fmt)
+        out.write_bytes(b"%PDF-1.4")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(V, "run_soffice_convert", fake_convert)
+    ok, _ = V._gate_soffice(odp, Path("soffice"))
+    assert ok is True
+    assert formats == ["pdf"]
+
+
+@pytest.mark.skipif(find_soffice() is None, reason="LibreOffice not installed")
+def test_real_libreoffice_computes_the_same_numbers(tmp_path):
+    """真 LibreOffice 端到端:公式算出來的值必須與 Python 算的一致。"""
+    from odforge.ir import Sheet, Spreadsheet
+    from odforge.render.ods import render_ods
+
+    sheet = Sheet(
+        name="營收",
+        columns=["月份", "金額"],
+        rows=[["一月", 120], ["二月", 300], ["三月", 80], ["總計", None]],
+        formulas=[{"cell": "B5", "formula": "of:=SUM([.B2:.B4])"}],
+    )
+    out = render_ods(Spreadsheet(title="營收表", sheets=[sheet]), tmp_path / "s.ods")
+
+    report = validate_odf(out, with_soffice=True)
+    assert report.gates["soffice"][0], report.gates["soffice"][1]
+
+    outdir = tmp_path / "csv"
+    outdir.mkdir()
+    run_soffice_convert(find_soffice(), out, "csv", outdir)
+    text = (outdir / "s.csv").read_text(encoding="utf-8", errors="replace")
+    assert "500" in text  # 120 + 300 + 80,由 LibreOffice 自己算出來
+    assert "#" not in text
+
+
+# ---------------------------------------------------------------------------
+# R1-04 — the formula gate must read EVERY sheet
+#
+# ``--convert-to csv`` exports sheet 1 and stops. A workbook whose first sheet
+# totals cleanly and whose second sheet is solid ``#DIV/0!`` used to come back
+# "formulas evaluated without errors": the gate graded the cover page.
+# ---------------------------------------------------------------------------
+
+def _two_sheet_workbook(second_formula: str):
+    from odforge.ir import Spreadsheet
+
+    def sheet(name, formula):
+        return {
+            "name": name,
+            "columns": ["項目", "金額"],
+            "rows": [["甲", 120], ["乙", 300]],
+            "formulas": [{"cell": "B4", "formula": formula}],
+        }
+
+    return Spreadsheet(title="兩張工作表", sheets=[
+        sheet("Good", "of:=SUM([.B2:.B3])"),
+        sheet("Bad", second_formula),
+    ])
+
+
+def test_sheet_count_reads_the_package_itself(tmp_path):
+    from odforge.render import render
+
+    out = render(_two_sheet_workbook("of:=SUM([.B2:.B3])"), tmp_path / "two.ods")
+    assert validate._sheet_count(out) == 2
+    # An unreadable package is "cannot verify" (0), never a confident answer.
+    broken = tmp_path / "broken.ods"
+    broken.write_bytes(b"not a zip")
+    assert validate._sheet_count(broken) == 0
+
+
+@pytest.mark.skipif(find_soffice() is None, reason="LibreOffice not installed")
+def test_formula_error_on_the_second_sheet_fails_the_gate(tmp_path):
+    from odforge.render import render
+
+    out = render(_two_sheet_workbook("of:=1/0"), tmp_path / "bad-second.ods")
+    report = validate_odf(out, with_soffice=True)
+
+    passed, message = report.gates["soffice"]
+    assert not passed, message
+    assert "#DIV/0!" in message
+    # The message must name WHICH sheet, or the user has to hunt for it.
+    assert "Bad" in message
+    assert not report.ok
+
+
+@pytest.mark.skipif(find_soffice() is None, reason="LibreOffice not installed")
+def test_clean_multi_sheet_workbook_reports_how_many_it_checked(tmp_path):
+    from odforge.render import render
+
+    out = render(_two_sheet_workbook("of:=SUM([.B2:.B3])"), tmp_path / "ok.ods")
+    report = validate_odf(out, with_soffice=True)
+
+    passed, message = report.gates["soffice"]
+    assert passed, message
+    # "evaluated without errors" is only worth reading if it says over how much.
+    assert "2 sheet(s)" in message
+
+
+@pytest.mark.skipif(find_soffice() is None, reason="LibreOffice not installed")
+def test_gate_fails_when_fewer_sheets_are_exported_than_the_file_declares(
+    tmp_path, monkeypatch
+):
+    # Simulates a LibreOffice too old for the all-sheets token AND an HTML
+    # export that also fails: the honest answer is "could not check", never a
+    # pass earned by the sheets that happened to come back.
+    from odforge.render import render
+
+    out = render(_two_sheet_workbook("of:=SUM([.B2:.B3])"), tmp_path / "partial.ods")
+    real = validate.run_soffice_convert
+
+    def only_first_sheet(soffice, src, fmt, outdir, timeout=120):
+        if fmt == "html":
+            return SimpleNamespace(returncode=1, stdout="", stderr="no html filter")
+        return real(soffice, src, "csv", outdir, timeout)
+
+    monkeypatch.setattr(validate, "run_soffice_convert", only_first_sheet)
+    passed, message = validate._gate_formulas(
+        out, find_soffice(), tmp_path / "work"
+    )
+    assert not passed
+    assert "1 of 2 sheets" in message or "1 of 2" in message

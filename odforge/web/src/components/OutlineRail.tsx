@@ -1,7 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { OutlineActionBody } from "../state/api";
 import type { Outline, OutlineRow, Phase } from "../state/types";
 import { ConfirmBar } from "./ConfirmBar";
+
+// 草稿種子的內容指紋(頁標題+角色)。SSE 重連會從頭重播事件:重播的 outline 內容
+// 相同但物件身分是新的,不能拿身分變化當「該重設草稿」的訊號,要比內容。
+const outlineKey = (o: Outline) => JSON.stringify(o.pages.map((p) => [p.role, p.title]));
 
 const ROLE_ZH: Record<string, string> = {
   title: "封面", agenda: "議程", section: "分節", "two-col": "雙欄", "big-fact": "關鍵數字",
@@ -21,13 +25,23 @@ export function OutlineRail({
 }) {
   const [draft, setDraft] = useState<OutlineRow[]>([]);
   const [submitted, setSubmitted] = useState(false);
+  // 草稿是從哪份大綱內容播下的。undefined = 尚未播種。
+  const seededFrom = useRef<string>();
 
-  // Snapshot a fresh draft each time we (re-)enter the approval gate.
+  // Snapshot a fresh draft each time we (re-)enter the approval gate — but only
+  // when the outline CONTENT actually differs from what the draft was seeded
+  // from. 重連重播會送來一份內容相同、身分全新的 outline;若無條件重播種,
+  // 使用者在確認站改到一半的標題會被整個抹掉。
   useEffect(() => {
     if (phase === "await" && outline) {
+      const key = outlineKey(outline);
+      if (seededFrom.current === key) return; // 內容沒變(如重播)→ 保留編輯中草稿
+      seededFrom.current = key;
       setDraft(outline.pages.map((r) => ({ ...r })));
       setSubmitted(false);
     }
+    // 大綱被清掉(reset / 再鍛一份)→ 忘掉種子,下一輪即使內容碰巧相同也重播種。
+    if (!outline) seededFrom.current = undefined;
   }, [phase, outline]);
 
   if (!outline) return null;
@@ -66,6 +80,9 @@ export function OutlineRail({
         </div>
         <span className="railcount" aria-label={`${rows.length} 頁`}>{String(rows.length).padStart(2, "0")}</span>
       </div>
+      {/* Above the palette and the page list on purpose: this gate blocks the run,
+          so it has to be the first thing in the rail, not a footer nobody scrolls to. */}
+      {editing && <ConfirmBar onConfirm={confirm} />}
       {outline.design && p && (
         <div className="palette">
           <div className="cap"><span>Palette</span> AI 建議配色</div>
@@ -102,7 +119,6 @@ export function OutlineRail({
           </div>
         ))}
       </div>
-      {editing && <ConfirmBar onConfirm={confirm} />}
     </aside>
   );
 }

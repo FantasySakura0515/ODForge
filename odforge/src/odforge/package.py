@@ -8,6 +8,9 @@ META-INF/manifest.xml.
 
 from __future__ import annotations
 
+import os
+import time
+import uuid
 import zipfile
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -51,12 +54,14 @@ def build_manifest(mimetype: str, parts: dict[str, str | bytes]) -> str:
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         f'<manifest:manifest xmlns:manifest="{_MANIFEST_NS}" manifest:version="1.2">',
-        f' <manifest:file-entry manifest:full-path="/" manifest:media-type="{escape(mimetype, {chr(34): "&quot;"})}"/>',
+        ' <manifest:file-entry manifest:full-path="/" '
+        f'manifest:media-type="{escape(mimetype, {chr(34): "&quot;"})}"/>',
     ]
     for name, content in parts.items():
         media_type = _media_type(name, content)
         lines.append(
-            f' <manifest:file-entry manifest:full-path="{escape(name, {chr(34): "&quot;"})}" manifest:media-type="{media_type}"/>'
+            f' <manifest:file-entry manifest:full-path="{escape(name, {chr(34): "&quot;"})}"'
+            f' manifest:media-type="{media_type}"/>'
         )
     lines.append("</manifest:manifest>")
     return "\n".join(lines)
@@ -69,18 +74,39 @@ def write_odf_package(path: Path, mimetype: str, parts: dict[str, str | bytes]) 
     as required by the ODF spec. Remaining ``parts`` and the generated
     manifest are written with ZIP_DEFLATED. str parts are encoded as UTF-8;
     bytes parts (e.g. images) are written verbatim.
+
+    The zip is assembled in a sibling temp file and moved into place with
+    ``os.replace``: QA repair and per-slide 重生 re-render the same path a
+    reader may be streaming at that moment (the web download endpoint), and a
+    truncate-in-place ``ZipFile(path, "w")`` hands that reader a half-written
+    archive with a 200. Windows refuses the replace while such a handle is
+    open, so it is retried briefly — a corrupt download is the one outcome
+    that must stay impossible.
     """
     path = Path(path)
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as z:
-        mimetype_info = zipfile.ZipInfo("mimetype")
-        mimetype_info.compress_type = zipfile.ZIP_STORED
-        z.writestr(mimetype_info, mimetype.encode("utf-8"))
+    tmp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.part")
+    try:
+        with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            mimetype_info = zipfile.ZipInfo("mimetype")
+            mimetype_info.compress_type = zipfile.ZIP_STORED
+            z.writestr(mimetype_info, mimetype.encode("utf-8"))
 
-        for name, content in parts.items():
-            data = content.encode("utf-8") if isinstance(content, str) else content
-            z.writestr(name, data)
+            for name, content in parts.items():
+                data = content.encode("utf-8") if isinstance(content, str) else content
+                z.writestr(name, data)
 
-        manifest = build_manifest(mimetype, parts)
-        z.writestr("META-INF/manifest.xml", manifest.encode("utf-8"))
+            manifest = build_manifest(mimetype, parts)
+            z.writestr("META-INF/manifest.xml", manifest.encode("utf-8"))
 
-    return path
+        last_error: OSError | None = None
+        for _ in range(5):
+            try:
+                os.replace(tmp_path, path)
+                return path
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.2)
+        raise last_error  # a reader held the file for >1s; keep the old copy intact
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)

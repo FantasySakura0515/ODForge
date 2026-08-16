@@ -1,3 +1,4 @@
+import { TemplateGallery } from "./TemplateGallery";
 import type { SessionSummary } from "../state/api";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -77,7 +78,7 @@ export function HomeDashboard({
         ) : sessions.length === 0 ? (
           <div className="archive-state archive-empty">
             <span aria-hidden="true">00</span>
-            <h3>還沒有簡報</h3>
+            <h2>還沒有簡報</h2>
             <p>建立第一份後，會保留在這裡。</p>
             <button type="button" className="text-action" onClick={onNew}>新增簡報</button>
           </div>
@@ -125,6 +126,8 @@ export function HomeDashboard({
           </div>
         )}
       </section>
+
+      <TemplateGallery />
     </main>
   );
 }

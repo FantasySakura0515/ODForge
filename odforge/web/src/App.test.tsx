@@ -1,7 +1,8 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
 import {
+  ApiHttpError,
   getSessions,
   postCancel,
   postDiscoveryQuestions,
@@ -26,6 +27,7 @@ class FakeEventSource {
   static instances: FakeEventSource[] = [];
   listeners: Record<string, (e: { data: string }) => void> = {};
   onerror: ((e: unknown) => void) | null = null;
+  onopen: (() => void) | null = null;
   closed = false;
   // 0 CONNECTING · 1 OPEN · 2 CLOSED,鏡射真實 EventSource.readyState。
   readyState = 0;
@@ -34,6 +36,12 @@ class FakeEventSource {
   close() { this.closed = true; this.readyState = 2; }
   emit(type: string, data: unknown) {
     act(() => this.listeners[type]?.({ data: JSON.stringify(data) }));
+  }
+  // 連線(重)開啟。真實 EventSource 自動重連成功時會在同一實例上再次觸發 onopen,
+  // 後端接著從 cursor 0 重播——測試以 open()+重 emit 模擬整段重連重播。
+  open() {
+    this.readyState = 1;
+    act(() => this.onopen?.());
   }
   // 預設以 CLOSED(2)失敗(已放棄重連 → 視為過期);傳 0 模擬自動重連中的暫時錯誤。
   fail(readyState = 2) {
@@ -111,10 +119,19 @@ test("首頁顯示新增入口與過去 session", async () => {
   expect(new URLSearchParams(window.location.search).get("new")).toBe("1");
 });
 
-test("?mock 模式:mock 流跑到完成,格式閘依序點亮、設計閘顯示未啟用、下載鈕誠實 disabled", async () => {
+// D3 修正後行為改變:展示模式沒有後端可訪談,按「繼續」跳過訪談直接進 mock 生成流
+//(修前這裡會走 submitThroughDiscovery 的訪談步驟——但真環境無後端,第一下點擊就死)。
+test("?mock 模式:送出即進 mock 流(跳過訪談、零網路),格式閘依序點亮、設計閘顯示未啟用、下載鈕誠實 disabled", async () => {
   window.history.replaceState({}, "", "/?mock=1&mockStep=5");
   const { container } = render(<App />);
-  await submitThroughDiscovery("樹與二元樹");
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), {
+    target: { value: "樹與二元樹" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "繼續" }));
+
+  // 零網路:不打訪談、不打 generate,直接播 mock 事件流。
+  expect(postDiscoveryQuestions).not.toHaveBeenCalled();
+  expect(postGenerate).not.toHaveBeenCalled();
 
   await waitFor(() => expect(screen.getAllByText("樹與二元樹").length).toBeGreaterThan(0));
   // 完成訊號:頂欄「再鍛一份」出現(mock 產物非真檔,不再以假下載連結當完成證據)。
@@ -203,7 +220,12 @@ test("AI 讀題串流會即時更新工作軌跡，取消時中止請求", async
   fireEvent.click(screen.getByRole("button", { name: "繼續" }));
 
   expect(await screen.findByText("正在產生關鍵問題")).toBeInTheDocument();
-  expect(screen.getByText("產生追問").closest("li")).toHaveAttribute(
+  // 「產生追問」同時出現在可見的進度清單與 sr-only live region;要驗的是清單那個。
+  expect(
+    within(screen.getByRole("list", { name: "AI 讀題進度" }))
+      .getByText("產生追問")
+      .closest("li"),
+  ).toHaveAttribute(
     "data-status",
     "active",
   );
@@ -232,7 +254,7 @@ test("非 mock 模式且後端連不上:顯示「無法連上後端」、不出�
   expect(screen.queryByText("本章路線圖")).toBeNull();
   expect(screen.queryByRole("link", { name: /下載/ })).toBeNull();
   // PromptBar 回來,可重試
-  expect(screen.getByRole("textbox")).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: /主題/ })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "繼續" })).toBeInTheDocument();
   // 頂欄「後端未連線」chip
   expect(screen.getByText("後端未連線")).toBeInTheDocument();
@@ -247,7 +269,7 @@ test("正常(非 mock、未失敗)頂欄不顯示狀態 chip", () => {
   expect(screen.queryByText("後端未連線")).toBeNull();
 });
 
-test("生成中頂欄顯示真實 prompt(帶 title 全文),非佔位字", async () => {
+test("目前任務用模型定的文件標題;大綱到之前才顯示原始需求", async () => {
   window.history.replaceState({}, "", "/");
   vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
   vi.mocked(postGenerate).mockResolvedValue({ job_id: "j1" });
@@ -256,14 +278,22 @@ test("生成中頂欄顯示真實 prompt(帶 title 全文),非佔位字", async 
   await submitThroughDiscovery("資結第三章教學");
 
   await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+  // PromptBar 收起(生成中);大綱還沒到 → 先顯示使用者那句需求,不是佔位字。
+  await waitFor(() => expect(screen.queryByRole("button", { name: "繼續" })).toBeNull());
+  expect(document.querySelector(".promptline")?.textContent).toContain("資結第三章教學");
+
   FakeEventSource.instances[0].emit("outline", {
-    design: null, mode: "presenter", pages: [{ role: "title", title: "封面", gist: "g" }],
+    design: null,
+    mode: "presenter",
+    pages: [{ role: "title", title: "資料結構：樹與走訪", gist: "g" }],
   });
 
-  // PromptBar 收起(生成中),頂欄 promptline 顯示原 prompt 且 title 給全文。
-  await waitFor(() => expect(screen.queryByRole("button", { name: "繼續" })).toBeNull());
-  const line = document.querySelector(".promptline");
-  expect(line?.textContent).toContain("資結第三章教學");
+  // 大綱到了 → 換成模型讀完需求後定的標題;原始需求仍留在 title 供 hover 查證。
+  const line = await waitFor(() => {
+    const el = document.querySelector(".promptline");
+    expect(el?.textContent).toContain("資料結構：樹與走訪");
+    return el;
+  });
   expect(line?.getAttribute("title")).toBe("資結第三章教學");
 });
 
@@ -426,7 +456,7 @@ test("?job= 但 job 不存在(傳輸錯誤/404):顯示過期文案並清掉 URL 
   // 尚未收到任何事件即傳輸失敗 → 視為過期。
   FakeEventSource.instances[0].fail();
 
-  await waitFor(() => expect(screen.getByText(/任務不存在或已過期/)).toBeInTheDocument());
+  await waitFor(() => expect(screen.getAllByText(/任務不存在或已過期/).length).toBeGreaterThan(0));
   // URL 的 ?job= 已清掉,回到輸入畫面。
   expect(new URLSearchParams(window.location.search).get("job")).toBeNull();
   expect(screen.getByRole("button", { name: "繼續" })).toBeInTheDocument();
@@ -442,7 +472,7 @@ test("?job= 復原:自動重連中(readyState=CONNECTING)的暫時錯誤不誤�
   FakeEventSource.instances[0].fail(0);
 
   // 不顯示過期文案,?job= 仍保留(繼續等重連)。
-  expect(screen.queryByText(/任務不存在或已過期/)).toBeNull();
+  expect(screen.queryAllByText(/任務不存在或已過期/)).toHaveLength(0);
   expect(new URLSearchParams(window.location.search).get("job")).toBe("reconnecting");
 });
 
@@ -532,4 +562,168 @@ test("大綱刪 1 頁 → 確認成功 → units 隨編輯後大綱重同步,com
   // 縮圖牆兩格標題為編輯後大綱。
   const titles = Array.from(container.querySelectorAll(".cell .ptitle")).map((e) => e.textContent);
   expect(titles).toEqual(["議程", "結語"]);
+});
+
+test("重連重播重建牆:onopen 重設節流去重,重播的 slide_done 不再被吞", async () => {
+  window.history.replaceState({}, "", "/?job=replayWall");
+  vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+
+  const { container } = render(<App />);
+  await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+  const es = FakeEventSource.instances[0];
+  const outline = {
+    design: null, mode: "presenter",
+    pages: [{ role: "title", title: "封面", gist: "g" }, { role: "closing", title: "結語", gist: "g2" }],
+  };
+  es.emit("outline", outline);
+  es.emit("slide_done", { n: 1, slide: { layout: "title", title: "封面", bullets: [] } });
+  es.emit("slide_done", { n: 2, slide: { layout: "closing", title: "結語", bullets: [] } });
+  await waitFor(() => expect(container.querySelectorAll('.cell[data-status="filling"]')).toHaveLength(2));
+
+  // 傳輸小斷線後 EventSource 自動重連:同一實例再次 onopen,後端從 cursor 0 重播。
+  es.open();
+  // 重播的 outline 把牆重設回 skeleton;重播的 slide_done(同 n、新物件)必須能再次
+  // 點亮——修前節流器 seenUnitN 還記著 1/2,重播被當成別名重複吞掉,牆永遠 skeleton。
+  es.emit("outline", { ...outline, pages: outline.pages.map((p) => ({ ...p })) });
+  es.emit("slide_done", { n: 1, slide: { layout: "title", title: "封面", bullets: [] } });
+  es.emit("slide_done", { n: 2, slide: { layout: "closing", title: "結語", bullets: [] } });
+
+  await waitFor(() => expect(container.querySelectorAll('.cell[data-status="filling"]')).toHaveLength(2));
+  // 進度計數也復原(重播回填 ir),不是掉回 0。
+  expect(container.querySelector(".prog b")?.textContent).toBe("2");
+});
+
+test("確認站編輯到一半遇重連重播(同內容大綱):牆重建但草稿編輯保留", async () => {
+  window.history.replaceState({}, "", "/?job=replayEdit");
+  vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+
+  render(<App />);
+  await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+  const es = FakeEventSource.instances[0];
+  const pages = [{ role: "title", title: "封面", gist: "g" }, { role: "closing", title: "結語", gist: "g2" }];
+  es.emit("outline", { design: null, mode: "presenter", pages });
+  es.emit("awaiting_approval", {});
+
+  const box = (await screen.findAllByRole("textbox", { name: /頁標題/ }))[0] as HTMLInputElement;
+  fireEvent.change(box, { target: { value: "使用者改到一半" } });
+
+  // 重連重播:同內容、全新物件身分的 outline + awaiting_approval 再來一輪。
+  es.open();
+  es.emit("outline", { design: null, mode: "presenter", pages: pages.map((p) => ({ ...p })) });
+  es.emit("awaiting_approval", {});
+
+  // 修前:OutlineRail 以物件身分變化重播種草稿 → 編輯中的標題被抹掉。
+  expect((screen.getAllByRole("textbox", { name: /頁標題/ })[0] as HTMLInputElement).value).toBe("使用者改到一半");
+});
+
+test("生成中途後端報錯:工作台就地顯示可重試的錯誤面板,牆不卸載", async () => {
+  window.history.replaceState({}, "", "/");
+  vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+  vi.mocked(postGenerate).mockResolvedValue({ job_id: "jerr" });
+
+  const { container } = render(<App />);
+  await submitThroughDiscovery("中途出錯");
+
+  await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+  const es = FakeEventSource.instances[0];
+  es.emit("outline", {
+    design: null, mode: "presenter",
+    pages: [{ role: "title", title: "封面", gist: "g" }, { role: "closing", title: "結語", gist: "g2" }],
+  });
+  es.emit("slide_done", { n: 1, slide: { layout: "title", title: "封面", bullets: [] } });
+  es.emit("error", { message: "LLM 供應商 500", stage: "slides" });
+
+  // 修前:ErrorPanel 只長在輸入畫面分支,工作台只剩凍住的牆+hover 訊息死路。
+  await waitFor(() => expect(container.querySelector(".stage-error")).not.toBeNull());
+  // 白話標題出現在錯誤面板本體(narrator 那份是 hover 訊息,不算)。
+  expect(container.querySelector(".stage-error .errhead")?.textContent).toBe("AI 填充內容時出錯");
+  // 牆沒被卸載:縮圖格仍在(已生成內容看得到)。
+  expect(container.querySelectorAll(".cell")).toHaveLength(2);
+
+  // 重試接上既有 retryGenerate/lastBodyRef 機制:同參數重送。
+  fireEvent.click(screen.getByRole("button", { name: "重試" }));
+  await waitFor(() => expect(postGenerate).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(postGenerate).mock.calls[1][0]).toEqual(vi.mocked(postGenerate).mock.calls[0][0]);
+});
+
+test("生成中傳輸層死亡(server 重啟後 404 → CLOSED):收線報錯可重試,不再永遠轉圈", async () => {
+  window.history.replaceState({}, "", "/");
+  vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+  vi.mocked(postGenerate).mockResolvedValue({ job_id: "jdead" });
+
+  render(<App />);
+  await submitThroughDiscovery("斷線測試");
+
+  await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+  const es = FakeEventSource.instances[0];
+  es.emit("outline", { design: null, mode: "presenter", pages: [{ role: "title", title: "封面", gist: "g" }] });
+
+  // 自動重連中(CONNECTING)的暫時錯誤:不動,交給瀏覽器續試。
+  es.fail(0);
+  expect(screen.queryByRole("button", { name: "重試" })).toBeNull();
+
+  // 放棄重連(CLOSED,如 server 重啟後 job 404):收線並以 error 收尾。
+  es.fail(2);
+  await waitFor(() => expect(screen.getByRole("button", { name: "重試" })).toBeInTheDocument());
+  expect(es.closed).toBe(true);
+  expect(screen.getAllByText(/事件串流已中斷/).length).toBeGreaterThan(0);
+});
+
+test("?mock 不因 URL 重寫而丟失:再鍛一份/回首頁後仍在展示模式", async () => {
+  window.history.replaceState({}, "", "/?mock=1&mockStep=5");
+  render(<App />);
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
+  fireEvent.click(screen.getByRole("button", { name: "繼續" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: /再鍛一份/ })).toBeInTheDocument(), { timeout: 4000 });
+
+  // 再鍛一份重寫 URL(?new=1)也要帶著 mock/mockStep 走,demo 不得中途退出展示模式。
+  fireEvent.click(screen.getByRole("button", { name: /再鍛一份/ }));
+  let params = new URLSearchParams(window.location.search);
+  expect(params.get("mock")).toBe("1");
+  expect(params.get("mockStep")).toBe("5");
+  expect(params.get("new")).toBe("1");
+  expect(screen.getByText("展示模式")).toBeInTheDocument();
+
+  // 回首頁(清參數的重寫)同樣保留 mock。
+  fireEvent.click(screen.getByRole("button", { name: "回到首頁" }));
+  params = new URLSearchParams(window.location.search);
+  expect(params.get("mock")).toBe("1");
+  expect(params.get("mockStep")).toBe("5");
+  expect(screen.getByText("展示模式")).toBeInTheDocument();
+});
+
+test("429 之類「後端有回應但拒絕」:轉述真實原因與狀態碼,不誤導成連線失敗", async () => {
+  window.history.replaceState({}, "", "/");
+  vi.mocked(postGenerate).mockRejectedValue(
+    new ApiHttpError("too many active jobs; limit is 2(HTTP 429)", 429),
+  );
+
+  render(<App />);
+  await submitThroughDiscovery("上限測試");
+
+  // 白話標題說「被拒絕」,細節帶後端 detail 與狀態碼。
+  await waitFor(() => expect(screen.getByText("後端拒絕了這次請求")).toBeInTheDocument());
+  expect(screen.getByText(/too many active jobs.*429/)).toBeInTheDocument();
+  // 不是連線問題:連線提示與「後端未連線」chip 都不該出現(叫人重啟伺服器是誤導)。
+  expect(screen.queryByText(/無法連上後端/)).toBeNull();
+  expect(screen.queryByText("後端未連線")).toBeNull();
+});
+
+test("工作台有且只有一個 h1,說得出正在看的是哪一份文件", async () => {
+  // R2-06:工作台原本完全沒有 h1。讀屏使用者用「跳到標題 1」會直接掠過整個
+  // 工作台,而首頁與輸入頁各有自己的 h1 —— 只有真正在做事的那一頁沒有。
+  window.history.replaceState({}, "", "/");
+  vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+  vi.mocked(postGenerate).mockResolvedValue({ job_id: "j-h1" });
+
+  render(<App />);
+  await submitThroughDiscovery("資結第三章教學");
+  await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+
+  const h1s = await waitFor(() => {
+    const found = screen.getAllByRole("heading", { level: 1 });
+    expect(found).toHaveLength(1);
+    return found;
+  });
+  expect(h1s[0].textContent).toContain("資結第三章教學");
 });

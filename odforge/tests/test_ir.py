@@ -508,3 +508,262 @@ def test_source_rejects_non_http_url():
             bullets=["a"],
             sources=[{"label": "本機檔案", "url": "file:///tmp/a"}],
         )
+
+
+def test_table_rows_accept_numeric_cells():
+    # 年度、金額、數量是 LLM 最常放進表格的東西;pydantic v2 lax mode 不會把
+    # int/float 轉成 str,舊的 List[List[str]] 讓整份文件因一個數字儲存格報廢。
+    from odforge.ir import TableBlock, TextDoc
+
+    block = TableBlock(header=["年度", "金額"], rows=[["2024", 1500], [2025, 1800.5]])
+    assert block.rows[0][1] == 1500
+    doc = TextDoc(title="t", blocks=[block])
+    assert doc.blocks[0].rows[1][0] == 2025
+
+
+def test_chart_rejects_non_finite_values():
+    # NaN < 0 與 inf < 0 都是 False,舊的符號檢查放它們過,渲染時才炸出
+    # 「cannot convert float NaN to integer」。要在驗證層用講得清楚的訊息擋下。
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValidationError, match="finite"):
+            ChartSpec(labels=["a", "b"], values=[1.0, bad])
+
+
+def test_palette_checks_contrast_against_surface_too():
+    # 卡片、數據磚、結尾行動卡都把字畫在 surface 上;只檢查 bg 會放行
+    # 「淺底頁 + 深色卡 + 深色字」——每張卡上的字全部隱形。
+    from odforge.ir import Palette
+
+    with pytest.raises(ValidationError, match="surface"):
+        Palette(
+            bg="#FFFFFF",
+            surface="#111111",
+            text="#111111",
+            muted="#555555",
+            accent="#1A4B8C",
+        )
+
+
+# ---------------------------------------------------------------------------
+# P1-03 — the IR contract refuses to guess. An unknown field, a missing minimum
+# or an absurd size is a message the caller can act on, never a silent default.
+# ---------------------------------------------------------------------------
+
+
+def test_misspelt_bullet_field_is_rejected_not_dropped():
+    """``bullet`` (singular) used to validate and render a blank page.
+
+    Pydantic dropped the key, the layout drew an empty frame under a heading, and
+    nothing anywhere said why. The name of the offending field is the single most
+    useful thing we can return here — it is what a retry needs.
+    """
+    from odforge.ir import Slide
+
+    with pytest.raises(ValidationError, match="bullet"):
+        Slide(layout="title-content", title="標題", bullet=["甲", "乙"])
+
+
+def test_misspelt_page_field_is_rejected_not_defaulted():
+    from odforge.ir import Slide
+
+    with pytest.raises(ValidationError, match="page"):
+        Slide(layout="title-content", title="標題", bullets=["甲"], page="big-fact")
+
+
+def test_unknown_field_on_outline_and_presentation_is_rejected():
+    from odforge.ir import Outline
+
+    with pytest.raises(ValidationError, match="paegs|extra"):
+        Outline(mode="presenter", pages=[PageRole(role="title", title="t", gist="g")],
+                paegs=3)
+    with pytest.raises(ValidationError, match="slide|extra"):
+        Presentation(title="t", slides=[{"layout": "title", "title": "封面"}], slide=[])
+
+
+@pytest.mark.parametrize(
+    "layout,payload,needle",
+    [
+        ("title-content", {}, "bullets"),
+        ("agenda", {}, "bullets"),
+        ("two-col", {"left": ["甲"]}, "right"),
+        ("comparison", {"left": ["甲"]}, "right"),
+        ("big-fact", {}, "fact"),
+        ("title", {"title": "  "}, "title"),
+        ("section", {"title": ""}, "title"),
+        ("closing", {"title": ""}, "title"),
+    ],
+)
+def test_layout_requires_the_content_it_draws(layout, payload, needle):
+    """一個宣告了版型卻沒帶內容的頁面,渲染出來是標題底下一片空白。"""
+    from odforge.ir import Slide
+
+    data = {"layout": layout, "title": "標題", **payload}
+    with pytest.raises(ValidationError, match=needle):
+        Slide(**data)
+
+
+def test_valid_minimal_slides_for_each_layout_still_pass():
+    """守門不能變成擋門:每個版型的最小合法內容仍要通過。"""
+    from odforge.ir import Slide
+
+    assert Slide(layout="title-content", title="t", bullets=["甲"]).bullets == ["甲"]
+    assert Slide(layout="two-col", title="t", left=["甲"], right=["乙"]).left == ["甲"]
+    assert Slide(layout="big-fact", title="t", fact="93%").fact == "93%"
+    assert Slide(layout="title", title="封面").title == "封面"
+
+
+def test_absurd_content_sizes_are_bounded():
+    from odforge.ir import MAX_BULLETS, MAX_NOTES_CHARS, MAX_SLIDES, Slide
+
+    with pytest.raises(ValidationError, match="too_long|at most"):
+        Slide(layout="title-content", title="t", bullets=["點"] * (MAX_BULLETS + 1))
+    with pytest.raises(ValidationError, match="too_long|at most"):
+        Slide(layout="title-content", title="t", bullets=["甲"],
+              notes="字" * (MAX_NOTES_CHARS + 1))
+    with pytest.raises(ValidationError, match="too_long|at most"):
+        Presentation(
+            title="t",
+            slides=[{"layout": "title", "title": "封面"}] * (MAX_SLIDES + 1),
+        )
+
+
+def test_outline_page_count_is_capped_at_the_product_limit():
+    """模型回 80 頁時要當場擋下,而不是先花掉 80 次第二階段生成。"""
+    from odforge.ir import MAX_OUTLINE_PAGES, Outline
+
+    rows = [PageRole(role="title-content", title="t", gist="g")]
+    Outline(mode="presenter", pages=rows * MAX_OUTLINE_PAGES)  # 上限本身合法
+    with pytest.raises(ValidationError, match="too_long|at most"):
+        Outline(mode="presenter", pages=rows * (MAX_OUTLINE_PAGES + 1))
+
+
+def test_empty_deck_is_rejected():
+    with pytest.raises(ValidationError, match="too_short|at least"):
+        Presentation(title="t", slides=[])
+
+
+def test_v1_shaped_documents_still_parse(sample_presentation):
+    """向後相容:v1 形狀(全字串 bullets、無 design)一字不改仍要過。"""
+    data = sample_presentation.model_dump()
+    again = parse_ir(data)
+    assert again.type == "presentation"
+    assert len(again.slides) == len(sample_presentation.slides)
+
+
+# ---------------------------------------------------------------------------
+# R1-05 — bare A1 / range / cross-sheet references reach the bounds check
+#
+# The scanner used to understand only OpenFormula's bracketed ``[.B2]`` form.
+# Every bare reference a model emits — and models emit them constantly — was
+# invisible, so ``of:=SUM(A1:A999)`` on a seven-row sheet was "verified".
+# ---------------------------------------------------------------------------
+
+def _sheet_with(formula: str, name: str = "s") -> dict:
+    return {
+        "name": name,
+        "columns": ["月份", "金額"],
+        "rows": [["一月", 100], ["二月", 200]],
+        "formulas": [{"cell": "B4", "formula": formula}],
+    }
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "of:=SUM(A1:A999)",   # bare range, far end out of bounds
+        "of:=SUM(Z999)",      # bare single cell, both axes out of bounds
+        "of:=SUM($A$1:$A$99)",  # absolute refs are refs too
+        "of:=SUM([.B2:.B99])",  # the bracketed form still works
+    ],
+)
+def test_out_of_range_reference_is_rejected(formula):
+    with pytest.raises(ValidationError, match="outside sheet"):
+        Spreadsheet(title="t", sheets=[Sheet(**_sheet_with(formula))])
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "of:=SUM(B2:B3)",
+        "of:=SUM($B$2:$B$3)",
+        "of:=ROUND(B2*2,2)",
+        # A function whose NAME looks like a cell reference must not be read as
+        # one: LOG10( is a call, not column LOG row 10.
+        "of:=ROUND(LOG10(B2),2)",
+        # Quoted text is data, not a reference — "B5" here names nothing.
+        'of:=CONCATENATE(B2,"B5")',
+    ],
+)
+def test_in_range_and_lookalike_references_are_accepted(formula):
+    Spreadsheet(title="t", sheets=[Sheet(**_sheet_with(formula))])
+
+
+def test_cross_sheet_reference_is_bounds_checked_against_that_sheet():
+    # In range on the sheet it names…
+    Spreadsheet(title="t", sheets=[
+        Sheet(**_sheet_with("of:=SUM(Second.B2:Second.B3)", name="First")),
+        Sheet(**_sheet_with("of:=SUM(B2:B3)", name="Second")),
+    ])
+    # …and out of range on it, which only the spreadsheet scope can tell.
+    with pytest.raises(ValidationError, match="outside that sheet"):
+        Spreadsheet(title="t", sheets=[
+            Sheet(**_sheet_with("of:=SUM(Second.B2:Second.B99)", name="First")),
+            Sheet(**_sheet_with("of:=SUM(B2:B3)", name="Second")),
+        ])
+
+
+def test_reference_to_a_sheet_that_does_not_exist_is_rejected():
+    with pytest.raises(ValidationError, match="unknown sheet"):
+        Spreadsheet(title="t", sheets=[
+            Sheet(**_sheet_with("of:=SUM(Nowhere.B2)", name="First")),
+        ])
+
+
+def test_bracketed_range_end_inherits_the_start_sheet():
+    from odforge.ir import FormulaSpec
+
+    refs = FormulaSpec(cell="B4", formula="of:=SUM([Second.B2:.B9])").references()
+    assert [r.sheet for r in refs] == ["Second", "Second"]
+
+
+# ---------------------------------------------------------------------------
+# R2-02 — "not empty" must mean "carries content", not "carries a keystroke".
+#
+# ``min_length=1`` counts characters and a space is one. ``bullets=["   "]``
+# satisfied every content invariant, rendered a heading over a blank page, and
+# opened in LibreOffice without complaint — the deck was certified valid and
+# was visually empty.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "slide",
+    [
+        {"layout": "title-content", "title": "t", "bullets": ["   "]},
+        {"layout": "title-content", "title": "t", "bullets": ["\t\n"]},
+        {"layout": "agenda", "title": "t", "bullets": [" "]},
+        {"layout": "cards", "title": "t", "bullets": ["實在", "  "]},
+        {"layout": "two-col", "title": "t", "left": ["實在"], "right": ["  "]},
+        {"layout": "comparison", "title": "t", "left": ["  "], "right": ["實在"]},
+        {"layout": "big-fact", "title": "t", "fact": "   "},
+        {"layout": "quote", "title": "t", "quote": "  "},
+        {"layout": "title", "title": "   "},
+        {"layout": "process", "title": "t",
+         "steps": [{"title": "  "}, {"title": "第二步"}]},
+        {"layout": "metrics", "title": "t",
+         "metrics": [{"value": " ", "label": "營收"}, {"value": "3", "label": "成長"}]},
+        {"layout": "timeline", "title": "t",
+         "events": [{"label": " ", "title": "起"}, {"label": "2025", "title": "承"}]},
+    ],
+)
+def test_whitespace_only_content_is_rejected(slide):
+    from odforge.ir import Slide
+
+    with pytest.raises(ValidationError):
+        Slide(**slide)
+
+
+def test_real_content_with_incidental_whitespace_still_passes():
+    from odforge.ir import Slide
+
+    # Padding around real text is not the failure mode; emptiness is.
+    Slide(layout="title-content", title=" 標題 ", bullets=[" 有內容 ", "另一點"])

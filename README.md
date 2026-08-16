@@ -6,7 +6,7 @@
 
 [English](README.en.md) | 繁體中文
 
-![tests](https://img.shields.io/badge/tests-500%2B%20passed-brightgreen) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![format](https://img.shields.io/badge/output-native%20ODF-orange)
+![tests](https://img.shields.io/badge/tests-711%20python%20%2B%20244%20web-brightgreen) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![format](https://img.shields.io/badge/output-native%20ODF-orange)
 
 ```powershell
 odforge new "幫我做一份資料結構第三章:樹與二元樹的教學簡報" -o tree.odp
@@ -41,15 +41,21 @@ AI 時代的文件工具幾乎全部輸出 PPTX / DOCX——主流開源 AI 簡�
 │              │   .odt / .ods → odfdo;.odp → 手寫 XML
 └────┬─────────┘   (主題系統、五種版面、講者備忘稿、完整 CJK 支援)
      │ 原生 ODF 檔案
-┌────▼─────────┐   1. zip 結構(mimetype 為首且未壓縮、manifest 齊全)
-│  三道驗證閘   │   2. XML 正確性(每個部件 well-formed)
-│              │   3. LibreOffice 實際转檔(headless 轉 PDF 成功)
-└────┬─────────┘
+┌────▼─────────┐   1. zip 結構(mimetype 為首且未壓縮、manifest 齊全)  ← 阻斷
+│  四道品質閘   │   2. XML 正確性(每個部件 well-formed)              ← 阻斷
+│              │   3. LibreOffice 實際轉檔(headless 轉 PDF 成功)     ← 觀察
+└────┬─────────┘   4. 設計品質(視覺模型逐頁審閱 + 重生)              ← 觀察
      ▼
   交付檔案(CLI)或回報結果(MCP)
 ```
 
-每一份產出都必須通過三道驗證閘才會交到你手上——**你拿到的檔案保證開得起來**。
+前兩道是**阻斷閘**:沒過就不交付。後兩道是**觀察訊號**:結果一律如實回報
+(`pass` / `fail` / `未啟用` / `無法判定`),既不會被略過,也不會在沒跑的情況下
+蓋一個綠勾——**無法檢查不等於通過**。完整定義見 [`odforge/docs/gates.md`](odforge/docs/gates.md)。
+
+> **範圍聲明:** 這四道閘保證的是「格式正確、打得開、版面看過」。
+> **它們不驗證內容的真偽**——數字、日期、引言與來源連結都可能是模型生成的,
+> 請自行查證。詳見 gates.md 第四節。
 
 ## 快速開始
 
@@ -146,8 +152,22 @@ odforge/src/odforge/
 
 ```powershell
 cd odforge
-.\.venv\Scripts\python.exe -m pytest -q    # 402 passed
+
+# Python
+.\.venv\Scripts\python.exe -m pytest -q --cov --cov-report=term   # 711 passed, 87% branch
+.\.venv\Scripts\ruff.exe check .                                  # All checks passed
+
+# 前端
+npm.cmd --prefix web ci                    # 依 lockfile 安裝
+npm.cmd --prefix web test                  # 244 passed
+npm.cmd --prefix web run typecheck         # src
+npm.cmd --prefix web run typecheck:tests   # 含測試
+npm.cmd --prefix web run build
 ```
+
+相依版本會漂移,而開發機的舊版本會把問題蓋住(mcp 2.0 移除了我們 import 的模組、
+PyMuPDF 1.28.2 開始往 stdout 印字,兩者都只在乾淨環境才會炸)。CI 因此跑兩條線:
+不釘版本的一條當作上游變動的早期警報,`constraints.txt` 釘死的一條保證可重現。
 
 全程 TDD:每個模組先寫失敗測試再實作;渲染器測試直接用 zipfile + lxml 驗證 XML,與實作庫解耦。
 

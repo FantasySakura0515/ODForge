@@ -15,8 +15,8 @@ from typer.testing import CliRunner
 
 from odforge.check import check_odf, diff_docx_odt
 from odforge.cli import app
-from odforge.render.odt import render_odt
 from odforge.render.odp import render_odp
+from odforge.render.odt import render_odt
 from odforge.validate import find_soffice
 
 runner = CliRunner()
@@ -119,9 +119,35 @@ def test_cli_check_exit_codes(tmp_path, sample_text_doc, monkeypatch):
     result = runner.invoke(app, ["check", str(out)])
     assert result.exit_code == 0, _out(result)
 
-    monkeypatch.setattr("odforge.cli.check_odf", lambda path: "error: x")
+    monkeypatch.setattr(
+        "odforge.cli.check_odf_verdict", lambda path: ("error: x", True)
+    )
     result = runner.invoke(app, ["check", str(out)])
     assert result.exit_code == 1, _out(result)
+
+
+def test_cli_check_exit_code_ignores_fail_substring_in_filename(
+    tmp_path, sample_text_doc, monkeypatch
+):
+    # 判定必須來自結構化 verdict:報告開頭就是檔名,舊的 `"FAIL" in report`
+    # 讓一份完全合格、只是檔名帶 FAIL 的檔案 exit 1,搞壞所有靠 exit code 的腳本。
+    monkeypatch.setattr("odforge.check.find_soffice", lambda: None)
+    out = render_odt(sample_text_doc, tmp_path / "q4-FAIL-review.odt")
+    result = runner.invoke(app, ["check", str(out)])
+    assert result.exit_code == 0, _out(result)
+
+
+def test_cli_check_out_creates_missing_parent_dir(
+    tmp_path, sample_text_doc, monkeypatch
+):
+    # `new` 會替 -o 補目錄,`check -o` 以前不會:直接把 FileNotFoundError
+    # traceback 丟給使用者。
+    monkeypatch.setattr("odforge.check.find_soffice", lambda: None)
+    out = render_odt(sample_text_doc, tmp_path / "d.odt")
+    report_path = tmp_path / "reports" / "r.md"
+    result = runner.invoke(app, ["check", str(out), "-o", str(report_path)])
+    assert result.exit_code == 0, _out(result)
+    assert report_path.exists()
 
 
 def test_cli_check_writes_report(tmp_path, sample_text_doc, monkeypatch):

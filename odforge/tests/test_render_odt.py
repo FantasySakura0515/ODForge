@@ -3,9 +3,9 @@ import zipfile
 import lxml.etree as etree
 import pytest
 
-from odforge.ir import TextDoc, TableBlock
-from odforge.render.odt import render_odt
+from odforge.ir import TableBlock, TextDoc
 from odforge.render import render
+from odforge.render.odt import render_odt
 
 NS = {"text": "urn:oasis:names:tc:opendocument:xmlns:text:1.0",
       "table": "urn:oasis:names:tc:opendocument:xmlns:table:1.0",

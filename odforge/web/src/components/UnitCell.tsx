@@ -1,12 +1,18 @@
 import type { Unit } from "../state/types";
 
+// 品檢維度獨立於生成維度:一頁可以「生成完成」同時「品檢未過」。徽章把後者說出來,
+// 而不是靠塗掉前者。
+const QA_ZH = { flagged: "品檢未過", warned: "品檢有建議", clear: "" } as const;
+
 export function UnitCell({ unit, jobId, onOpen }: { unit: Unit; jobId?: string; onOpen?: (n: number) => void }) {
   const realPreview = unit.previewUrl && !unit.previewUrl.startsWith("mock:") && jobId;
   const clickable = Boolean(realPreview && onOpen);
+  const qaLabel = unit.qa && unit.qa !== "clear" ? QA_ZH[unit.qa] : "";
 
   const content = (
     <>
       <span className="cn">{String(unit.n).padStart(2, "0")}</span>
+      {qaLabel && <span className="cqa" data-qa={unit.qa}>{qaLabel}</span>}
       {realPreview ? (
         <img className="thumb" alt={`第 ${unit.n} 頁預覽`} src={unit.previewUrl} loading="lazy" decoding="async" />
       ) : (
@@ -29,8 +35,9 @@ export function UnitCell({ unit, jobId, onOpen }: { unit: Unit; jobId?: string; 
         type="button"
         className="cell clickable"
         data-status={unit.status}
+        data-qa={unit.qa}
         data-n={unit.n}
-        aria-label={`開啟第 ${unit.n} 頁預覽:${unit.title}`}
+        aria-label={`開啟第 ${unit.n} 頁預覽:${unit.title}${qaLabel ? `(${qaLabel})` : ""}`}
         onClick={() => onOpen!(unit.n)}
       >
         {content}
@@ -39,7 +46,14 @@ export function UnitCell({ unit, jobId, onOpen }: { unit: Unit; jobId?: string; 
   }
 
   return (
-    <div className="cell" data-status={unit.status} data-n={unit.n} role="img" aria-label={`第 ${unit.n} 頁:${unit.title}`}>
+    <div
+      className="cell"
+      data-status={unit.status}
+      data-qa={unit.qa}
+      data-n={unit.n}
+      role="img"
+      aria-label={`第 ${unit.n} 頁:${unit.title}${qaLabel ? `(${qaLabel})` : ""}`}
+    >
       {content}
     </div>
   );

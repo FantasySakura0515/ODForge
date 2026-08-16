@@ -12,8 +12,14 @@ import pytest
 from pydantic import ValidationError
 
 from odforge import llm
-from odforge.ir import BulletItem, MediaAssetRef, Outline, PageRole, Presentation
-
+from odforge.ir import (
+    BulletItem,
+    MediaAssetRef,
+    Outline,
+    PageRole,
+    Presentation,
+    Slide,
+)
 
 # ---------------------------------------------------------------------------
 # Mock helpers
@@ -204,9 +210,128 @@ def test_discovery_question_removes_other_and_duplicate_options():
         id="topic",
         question="專題屬於哪個領域？",
         why="用來安排內容。",
-        options=["Web 應用", "其他領域", "Web 應用", "資料分析"],
+        options=["Web 應用", "其他", "Web 應用", "資料分析"],
     )
     assert question.options == ["Web 應用", "資料分析"]
+
+
+def test_discovery_option_starting_with_other_is_a_real_answer():
+    """只剔除「其他」本身(含「其他（請說明）」);「其他部門主導」是真實答案,不能誤刪。"""
+    question = llm.DiscoveryQuestion(
+        id="owner",
+        question="這項工作由誰主導？",
+        why="決定敘事觀點。",
+        options=["本部門主導", "其他部門主導", "其他", "其他（請說明）"],
+    )
+    assert question.options == ["本部門主導", "其他部門主導"]
+
+
+def _question(id_: str, question: str) -> llm.DiscoveryQuestion:
+    return llm.DiscoveryQuestion(
+        id=id_, question=question, why="測試用。", options=["A", "B"]
+    )
+
+
+def _plan(*questions: llm.DiscoveryQuestion) -> llm.DiscoveryPlan:
+    return llm.DiscoveryPlan(
+        summary="測試需求。", known_context=[], questions=list(questions), completeness=50
+    )
+
+
+def test_discovery_drops_delivery_deadline_questions(monkeypatch):
+    """簡報是即時生成的:問它何時要用、期限、緊急程度都改變不了任何一頁內容。"""
+    plan = _plan(
+        _question("deadline", "這份簡報預計何時需要使用？"),
+        _question("urgency", "這次的緊急程度如何？"),
+        _question("decision", "希望老師提供什麼？"),
+        _question("progress", "目前完成到哪個階段？"),
+    )
+    monkeypatch.setattr(llm, "get_backend", lambda name: _FakeDiscovery(plan))
+
+    result = llm.generate_discovery_questions("畢業專題進度報告")
+
+    assert [q.id for q in result.questions] == ["decision", "progress"]
+
+
+def test_discovery_keeps_project_timeline_and_stage_time_questions(monkeypatch):
+    """簡報「內容裡」要講的專案時程,以及台上有多久(決定頁數),都是該問的。"""
+    plan = _plan(
+        _question("milestone", "專案目前的時程與里程碑是什麼？"),
+        _question("length", "這場簡報預計要講多久？"),
+    )
+    monkeypatch.setattr(llm, "get_backend", lambda name: _FakeDiscovery(plan))
+
+    result = llm.generate_discovery_questions("x")
+
+    assert [q.id for q in result.questions] == ["milestone", "length"]
+
+
+def test_discovery_keeps_emergency_response_content_questions(monkeypatch):
+    """「緊急」也可能是主題本身:緊急應變教材的內容問題不能被誤殺。"""
+    plan = _plan(
+        _question("scope", "簡報要涵蓋哪些緊急應變流程？"),
+        _question("audience", "受訓對象是哪些人？"),
+    )
+    monkeypatch.setattr(llm, "get_backend", lambda name: _FakeDiscovery(plan))
+
+    result = llm.generate_discovery_questions("緊急應變訓練教材")
+
+    assert [q.id for q in result.questions] == ["scope", "audience"]
+
+
+def test_discovery_keeps_subject_timing_questions_about_deck_content(monkeypatch):
+    """主詞＋時間詞若在問簡報「內容裡」的時程(交付時程規劃、涵蓋期間),是內容問題。"""
+    plan = _plan(
+        _question("rollout", "這份系統的交付時程規劃是什麼？"),
+        _question("period", "報告涵蓋的期間到何時？"),
+    )
+    monkeypatch.setattr(llm, "get_backend", lambda name: _FakeDiscovery(plan))
+
+    result = llm.generate_discovery_questions("專案導入計畫簡報")
+
+    assert [q.id for q in result.questions] == ["rollout", "period"]
+
+
+def test_discovery_partial_filter_keeps_floor_but_drops_what_it_can(monkeypatch):
+    """守住兩題下限只需要留一題交期問題時,另一題仍然要刪,不多浪費任何一題。"""
+    plan = _plan(
+        _question("deadline", "這份簡報什麼時候要交？"),
+        _question("urgency", "這次有多緊急？"),
+        _question("decision", "希望老師提供什麼？"),
+    )
+    monkeypatch.setattr(llm, "get_backend", lambda name: _FakeDiscovery(plan))
+
+    result = llm.generate_discovery_questions("x")
+
+    assert [q.id for q in result.questions] == ["deadline", "decision"]
+
+
+def test_discovery_keeps_plan_when_filtering_would_break_the_schema(monkeypatch):
+    """全部都是交期問題時只能整份保留:兩題浪費,好過訪談直接失效。"""
+    plan = _plan(
+        _question("deadline", "這份簡報什麼時候要交？"),
+        _question("urgency", "這次有多緊急？"),
+    )
+    monkeypatch.setattr(llm, "get_backend", lambda name: _FakeDiscovery(plan))
+
+    result = llm.generate_discovery_questions("x")
+
+    assert [q.id for q in result.questions] == ["deadline", "urgency"]
+
+
+class _FakeDiscovery:
+    def __init__(self, plan: llm.DiscoveryPlan):
+        self._plan = plan
+
+    def discover_questions(self, prompt, context="", progress=None):
+        if progress is not None:
+            progress("complete")
+        return self._plan
+
+
+def test_discovery_prompt_forbids_delivery_deadline_questions():
+    assert "交期不存在" in llm.DISCOVERY_SYSTEM_PROMPT
+    assert "緊急程度" in llm.DISCOVERY_SYSTEM_PROMPT
 
 
 def test_prompts_forbid_invented_technology_stack_and_probe_architecture_gap():
@@ -828,7 +953,7 @@ def test_generate_slides_both_over_budget_degrades(monkeypatch):
     assert len(client.completions.calls) == 2  # one budget retry, no more
     slide = result.slides[1]
     assert 1 <= len(slide.bullets) < 10  # truncated from the end, ≥1 kept
-    assert "部分要點因版面限制省略" in slide.notes
+    assert "因版面限制省略" in slide.notes
     # degradation actually resolved the overflow
     assert check_budget(slide, resolve_design(result)) == []
 
@@ -848,7 +973,7 @@ def test_generate_slides_degrade_drops_children_first(monkeypatch):
     assert len(slide.bullets) == 1
     assert isinstance(slide.bullets[0], BulletItem)
     assert len(slide.bullets[0].children) < 8
-    assert "部分要點因版面限制省略" in slide.notes
+    assert "因版面限制省略" in slide.notes
 
 
 # layout-mismatch: retry once, then raise
@@ -1041,7 +1166,7 @@ def test_generate_slides_worst_case_three_calls(monkeypatch):
     assert len(client.completions.calls) == 3
     assert [s.layout for s in result.slides] == ["title", "title-content"]
     assert result.slides[1].bullets == ["光反應", "暗反應"]
-    assert "部分要點因版面限制省略" not in result.slides[1].notes  # no degrade
+    assert "因版面限制省略" not in result.slides[1].notes  # no degrade
     # call 2's user turn carries the structural feedback, call 3's the budget one
     assert "版型" in _user_text(client.completions.calls[1]["messages"])
     assert "超載" in _user_text(client.completions.calls[2]["messages"])
@@ -1138,3 +1263,144 @@ def test_custom_extra_body_requires_json_object(monkeypatch):
     monkeypatch.setenv("ODFORGE_CUSTOM_EXTRA_BODY", "[]")
     with pytest.raises(RuntimeError, match="JSON object"):
         llm._custom_extra_body()
+
+
+# ---------------------------------------------------------------------------
+# P2-04 — information may be dropped, but never SILENTLY. Whatever the layout
+# budget removes has to come back to the caller, verbatim.
+# ---------------------------------------------------------------------------
+
+
+def test_degrade_reports_exactly_what_it_removed():
+    from odforge.llm import _degrade_slide
+    from odforge.themes import THEMES
+
+    theme = THEMES["academic"]
+    slide = Slide(
+        layout="title-content",
+        title="細節",
+        bullets=[f"這是第 {i} 條相當長的重點,長到一定會超出版面預算限制" for i in range(1, 13)],
+    )
+    kept_before = list(slide.bullets)
+
+    record = _degrade_slide(slide, theme, slide_no=4)
+
+    assert record is not None
+    assert record.slide_no == 4
+    assert record.title == "細節"
+    # 每一條被拿掉的內容都必須出現在回報裡 —— 一條都不能無聲消失。
+    removed = [b for b in kept_before if b not in slide.bullets]
+    assert record.items == removed
+    # 而且也寫進了備忘稿,連下載後的檔案裡都留有紀錄。
+    for item in record.items:
+        assert item in slide.notes
+
+
+def test_nothing_removed_means_nothing_reported():
+    from odforge.llm import _degrade_slide
+    from odforge.themes import THEMES
+
+    slide = Slide(layout="title-content", title="剛好", bullets=["短", "也短"])
+    assert _degrade_slide(slide, THEMES["academic"], slide_no=1) is None
+    assert "省略" not in slide.notes
+
+
+def test_generate_slides_hands_dropped_content_back_to_the_caller(monkeypatch):
+    """內容守恆:generate_slides 丟掉的東西,呼叫端一定拿得到清單。"""
+    from odforge.llm import DroppedContent
+
+    outline = Outline(
+        design=None,
+        mode="presenter",
+        pages=[PageRole(role="title-content", title="細節", gist="很多重點")],
+    )
+    overloaded = Presentation(
+        title="t",
+        slides=[
+            Slide(
+                layout="title-content",
+                title="細節",
+                bullets=[
+                    f"第 {i} 條非常長的重點,長到一定會超出這一頁的版面預算" for i in range(1, 13)
+                ],
+            )
+        ],
+    )
+    backend = _backend(
+        monkeypatch,
+        [
+            _make_response(overloaded.model_dump_json()),
+            _make_response(overloaded.model_dump_json()),
+        ],
+    )
+
+    dropped: list[DroppedContent] = []
+    deck = backend.generate_slides(outline, dropped)
+
+    assert dropped, "over-budget content vanished without a word"
+    assert dropped[0].slide_no == 1
+    assert dropped[0].items
+    # 留下來的那些條目沒有被動到。
+    assert len(deck.slides[0].bullets) + len(dropped[0].items) == 12
+
+
+# ---------------------------------------------------------------------------
+# Output language (zh-TW / en / bilingual)
+#
+# The three system prompts hard-code「一律繁體中文」; a non-default language is an
+# override block appended after that rule. What matters is that the override
+# actually reaches the provider call, and that the choice survives the handoff
+# from stage 1 to stage 2 — a deck whose cover is English and whose body is
+# Chinese is worse than either.
+# ---------------------------------------------------------------------------
+
+
+def test_zh_tw_leaves_every_prompt_untouched():
+    for base in (llm.SYSTEM_PROMPT, llm.OUTLINE_SYSTEM_PROMPT, llm.SLIDES_SYSTEM_PROMPT):
+        assert llm.system_prompt_for(base, "zh-TW") == base
+
+
+def test_english_override_is_sent_with_the_outline_call(monkeypatch):
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(json.dumps(_VALID_OUTLINE))]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "t", "m")
+    backend.generate_outline("photosynthesis for freshmen", language="en")
+
+    system = client.chat.completions.calls[0]["messages"][0]["content"]
+    assert "English" in system
+    assert "覆寫上面的語言規則" in system
+
+
+def test_the_outline_carries_the_language_to_stage_two(monkeypatch):
+    backend = _backend(monkeypatch, [_make_response(json.dumps(_VALID_OUTLINE))])
+    outline = backend.generate_outline("photosynthesis", language="en")
+    # Stage 2 takes no language argument — it reads this field, so losing it
+    # here is exactly how a deck ends up half-translated.
+    assert outline.language == "en"
+
+
+def test_stage_two_uses_the_outlines_language(monkeypatch):
+    outline = Outline.model_validate({**_VALID_OUTLINE, "language": "bilingual"})
+    deck = Presentation(
+        title="光合作用（Photosynthesis）",
+        slides=[
+            Slide(layout=page["role"], title=page["title"], bullets=["甲（A）"])
+            if page["role"] in ("title-content", "agenda")
+            else Slide(layout=page["role"], title=page["title"])
+            for page in _VALID_OUTLINE["pages"]
+        ],
+    )
+    client = _install_fake_openai(
+        monkeypatch, [_make_response(deck.model_dump_json())]
+    )
+    backend = llm.OpenAICompatBackend("https://example.test", "t", "m")
+    backend.generate_slides(outline)
+
+    system = client.chat.completions.calls[0]["messages"][0]["content"]
+    assert "中英對照" in system
+
+
+def test_a_model_invented_language_is_rejected_by_the_schema():
+    with pytest.raises(ValidationError):
+        Outline.model_validate({**_VALID_OUTLINE, "language": "klingon"})

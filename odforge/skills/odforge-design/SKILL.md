@@ -87,13 +87,20 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
   "title": "簡報標題",
   "theme": "academic",
   "design": { ... 見下方 DesignSpec，可省略 ... },
+  "branding": { "byline": "單位 · 講者 · 日期", "logo": "asset://logo",
+                "placement": "cover-closing" },
   "slides": [ { ...Slide... }, ... ]
 }
 ```
 
 - `theme`：`"academic"` | `"minimal"` | `"dark"` | `"teal"` | `"forest"` | `"navy"` |
-  `"violet"`（沒給 `design` 時就用這個內建主題；七套的定位見 ④）。
+  `"violet"` | `"crimson"` | `"slate"` | `"gold"` | `"sky"` | `"plum"` | `"clay"`
+  （沒給 `design` 時就用這個內建主題；十三套的定位見 ④）。
 - `slides`：至少 1 張。
+- `branding`：封面署名與機構標誌，可省略。`byline` 原樣印在封面標題下方；
+  `logo` 只接受 `asset://<id>`（呼叫端上傳的圖），`placement` 是
+  `"cover"` | `"cover-closing"`（預設）| `"all"`。這是版面家具，不是投影片內容：
+  不要把單位名稱或校徽再寫進任何一頁的 title / bullets。
 - `forge_presentation` 會把 `type` 強制成 `"presentation"`，你標錯也會被更正。
 
 ### Slide（每張投影片）
@@ -158,8 +165,8 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
 
 ## ④ 主題規格書（給 LLM 讀的鏡像）
 
-七套內建美術方向的完整 hex 表、字級刻度、字型與每個版型的使用時機，寫在下面。
-五套淺底、兩套暗底，挑最扣題的一套當 `theme`，或當自訂 `design` 的技術底：
+十三套內建美術方向的完整 hex 表、字級刻度、字型與每個版型的使用時機，寫在下面。
+九套淺底、四套暗底，挑最扣題的一套當 `theme`，或當自訂 `design` 的技術底：
 
 - [themes/academic.md](themes/academic.md) — 學術藍＋暖白，serif 標題，適合論文口試／研究報告。
 - [themes/minimal.md](themes/minimal.md) — 暖灰單色＋一點橘，克制留白，適合產品發表／pitch。
@@ -168,6 +175,12 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
 - [themes/navy.md](themes/navy.md) — 海軍藍＋冷白，最通用的商務配色，適合正式簡報／投資人場。
 - [themes/dark.md](themes/dark.md) — 深靛＋亮青，暗底舞台感，適合技術分享／demo。
 - [themes/violet.md](themes/violet.md) — 午夜紫＋電光紫，暗底創意戲劇感，適合創意提案／設計敘事。
+- [themes/crimson.md](themes/crimson.md) — 學院紅＋暖白，serif，典禮與人文重量，適合校慶／系所評鑑。
+- [themes/slate.md](themes/slate.md) — 石墨灰＋柔和冷藍，暗底不刺眼，適合工程／資安／長時間技術場。
+- [themes/gold.md](themes/gold.md) — 墨金，暗底最正式的一套，適合頒獎／成果發表／年度回顧。
+- [themes/sky.md](themes/sky.md) — 天青＋冷白，溫和好認，適合課堂教學／招生說明／公部門宣導。
+- [themes/plum.md](themes/plum.md) — 梅紫＋米白，serif，淺底最有個性，適合藝文／設計提案／展覽。
+- [themes/clay.md](themes/clay.md) — 陶土橘＋米色，土地與手作感，適合永續／地方創生／社區營造。
 
 配色方法論（60-30-10、配色配方、趨勢與色盲安全的圖表用色）另寫在
 [themes/color-system.md](themes/color-system.md)。這些數值與 `odforge.themes.THEMES` /

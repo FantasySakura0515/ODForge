@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { DiscoveryPlan } from "./api";
-import { buildRefinedPrompt, discoveryCompleteness } from "./discovery";
+import { buildRefinedPrompt } from "./discovery";
 
 const plan: DiscoveryPlan = {
   summary: "向老師報告專題進度。",
@@ -36,14 +36,11 @@ describe("discovery brief", () => {
     expect(prompt).toContain("不得自行捏造數據");
   });
 
-  test("完整度依回答比例增加但不超過 100", () => {
-    expect(discoveryCompleteness(plan, {})).toBe(40);
-    expect(discoveryCompleteness(plan, { decision: "確認進度" })).toBe(70);
-    expect(
-      discoveryCompleteness(plan, {
-        decision: "確認進度",
-        progress: "測試中",
-      }),
-    ).toBe(100);
+  test("未回答的題目在規格裡標成保守假設,不假裝有答案", () => {
+    const prompt = buildRefinedPrompt("畢業專題進度報告", plan, {
+      decision: "提供技術建議",
+    });
+
+    expect(prompt).toContain("尚未確認，請採保守假設並明確標示");
   });
 });

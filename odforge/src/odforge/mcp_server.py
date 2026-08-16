@@ -14,11 +14,25 @@ Tools registered on the ``mcp`` app:
 * ``inspect_odf(path)`` — validate an existing ODF file
 * ``preview_odf(path, out_dir)`` — rasterise an ODF file to one PNG per page
 
+What a caller gets, and what it is responsible for
+--------------------------------------------------
+ODForge guarantees the *format*: every ``forge_*`` call renders spec-compliant
+ODF XML and then runs the same three format gates the CLI runs (zip layout, XML
+well-formedness, and a real LibreOffice round-trip when LibreOffice is
+installed), plus the deterministic layout-budget check that reports text which
+will overrun its frame.
+
+The caller — the AI assistant — owns the *content*: it writes the Document IR,
+and when a budget warning comes back it is the one that shortens the text and
+forges again. ``preview_odf`` closes the loop by handing back one PNG per page,
+so an agent can look at what it made rather than assume.
+
 Every tool returns a plain string and **never raises**: any failure is reported
 as a string beginning with ``"error:"``. Raising inside an MCP tool would surface
 as a protocol-level error to the client, so all exceptions are converted to text.
 
-Run as a stdio MCP server with ``python -m odforge.mcp_server``.
+Run as a stdio MCP server with ``odforge-mcp`` (installed console script) or
+``python -m odforge.mcp_server``.
 """
 
 from __future__ import annotations
@@ -26,23 +40,64 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+try:  # mcp >= 2.0 renamed FastMCP to MCPServer and moved it.
+    from mcp.server.mcpserver import MCPServer as _Server
+except ModuleNotFoundError:  # pragma: no cover - exercised by the other major
+    from mcp.server.fastmcp import FastMCP as _Server
 
-from odforge.ir import parse_ir
+from odforge.ir import Presentation, parse_ir
 from odforge.preview import PreviewUnavailable, render_pages
 from odforge.render import render
+from odforge.textmetrics import check_budget
 from odforge.textutil import concise
+from odforge.themes import resolve_design
 from odforge.validate import find_soffice, validate_odf
 
-mcp = FastMCP("odforge")
+# One object either way: ``.tool()`` and ``.run()`` are identical across both
+# majors, so the shim above is the whole migration. Without it, `pip install
+# odforge` on a machine that resolves mcp 2.x installed an MCP server that
+# crashed on the first line of `odforge-mcp` — and the failure was invisible here
+# because this repo's venv happened to be pinned at 1.28 from an earlier install.
+mcp = _Server("odforge")
+
+
+def _budget_warnings(ir: object) -> list[str]:
+    """Layout-budget check: which frames will overrun their box, and by how much.
+
+    This is the deterministic half of the design gate, and until now it was
+    missing from the MCP path entirely — it lived only in ``llm.py`` (where it
+    drives a retry) and ``cli.py`` (where it prints a warning). An agent driving
+    ``forge_presentation`` could hand over twelve bullets, get back a cheerful
+    ``"ok:"``, and ship a deck with text running off the page.
+
+    The division of labour here is the whole point of MCP: **ODForge measures,
+    the calling agent rewrites.** So this returns actionable text naming the page
+    and the frame, not a pass/fail flag.
+
+    Presentations only — ``.odt`` reflows and ``.ods`` has no fixed frames, so
+    neither has a layout budget to blow.
+    """
+    if not isinstance(ir, Presentation):
+        return []
+    theme = resolve_design(ir)
+    warnings: list[str] = []
+    for n, slide in enumerate(ir.slides, start=1):
+        warnings.extend(f"第 {n} 頁:{message}" for message in check_budget(slide, theme))
+    return warnings
 
 
 def _forge(document: dict, out_path: str, doc_type: str) -> str:
-    """Shared pipeline: inject type -> parse_ir -> render -> validate.
+    """Shared pipeline: inject type -> parse_ir -> render -> validate -> budget.
 
     Returns a human-readable string. On success it starts with ``"ok"`` and
-    lists the absolute output path plus a one-line summary per validation gate.
+    lists the absolute output path plus a one-line summary per validation gate;
+    if any text overruns its frame, an explicit ``warning:`` block follows.
     On any failure it returns ``"error: <reason>"``. Never raises.
+
+    LibreOffice runs here when it is installed, so an MCP-forged file gets the
+    same three format gates as one made by the CLI. It previously ran only two
+    (``with_soffice=False`` was hard-coded), which meant "ok" from this tool was
+    a weaker claim than "ok" from ``odforge new`` while reading identically.
     """
     try:
         # Override the caller-supplied ``type`` to the type this tool renders,
@@ -57,15 +112,27 @@ def _forge(document: dict, out_path: str, doc_type: str) -> str:
 
         render(ir, out)
 
-        report = validate_odf(out, with_soffice=False)
+        report = validate_odf(out, with_soffice=find_soffice() is not None)
         gates = "; ".join(
             f"{name}: {'OK' if passed else 'FAIL'} — {message}"
             for name, (passed, message) in report.gates.items()
         )
         if not report.ok:
             return f"error: validation failed for {out.resolve()} — {gates}"
-        return f"ok: wrote {out.resolve()} — {gates}"
-    except Exception as exc:  # noqa: BLE001 - tools must never raise
+
+        result = f"ok: wrote {out.resolve()} — {gates}"
+        warnings = _budget_warnings(ir)
+        if warnings:
+            # Not an error: the file exists and is a valid ODF package. But
+            # "valid" and "readable" are different claims, and reporting only the
+            # first one is how an overset deck ships under a clean bill of health.
+            result += (
+                "\n\nwarning: 版面預算超載——檔案已產出且格式有效,但下列內容會溢出"
+                "版面。請縮短這些頁面的文字後重新 forge:\n"
+                + "\n".join(f"- {w}" for w in warnings)
+            )
+        return result
+    except Exception as exc:
         return f"error: {type(exc).__name__}: {concise(str(exc))}"
 
 
@@ -110,6 +177,11 @@ def forge_presentation(document: dict, out_path: str) -> str:
     file path; missing parent directories are created. Returns an ``"ok: ..."``
     string with the absolute path and per-gate validation summary, or
     ``"error: ..."``. See ``odforge.ir.Presentation.model_json_schema()``.
+
+    **If any text will overrun its frame**, the ``"ok: ..."`` string is followed
+    by a ``warning:`` block naming each page and frame. The file is valid ODF and
+    was written — but it will look wrong. Shorten the flagged pages and call this
+    tool again; do not present an overset deck as finished.
     """
     return _forge(document, out_path, "presentation")
 
@@ -155,7 +227,7 @@ def inspect_odf(path: str) -> str:
             for name, (passed, message) in report.gates.items()
         ]
         return "\n".join(lines)
-    except Exception as exc:  # noqa: BLE001 - tools must never raise
+    except Exception as exc:
         return f"error: {type(exc).__name__}: {concise(str(exc))}"
 
 
@@ -183,9 +255,20 @@ def preview_odf(path: str, out_dir: str) -> str:
         )
     except PreviewUnavailable as exc:
         return f"error: preview unavailable: {concise(str(exc))}"
-    except Exception as exc:  # noqa: BLE001 - tools must never raise
+    except Exception as exc:
         return f"error: {type(exc).__name__}: {concise(str(exc))}"
 
 
-if __name__ == "__main__":  # pragma: no cover
+def main() -> None:  # pragma: no cover
+    """Console-script entry point (``odforge-mcp``): run the stdio MCP server.
+
+    Exists so that ``pip install odforge`` yields a *command* an MCP host can be
+    pointed at. Without it, wiring ODForge into Claude Code / Cursor / any other
+    host meant knowing the module path and which interpreter to use — a barrier
+    that had nothing to do with the tool's capabilities.
+    """
     mcp.run()
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()

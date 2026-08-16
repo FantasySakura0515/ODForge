@@ -1,13 +1,16 @@
 import { describe, expect, test } from "vitest";
 import { cockpitReducer, initialState } from "./cockpit";
-import type { Outline, SseEvent } from "./types";
+import type { CockpitAction, Outline } from "./types";
 
 const outline: Outline = {
   design: { palette: { bg: "#fff", surface: "#eee", text: "#111", muted: "#888", accent: "#234e9e" }, fonts: { display: "Noto Serif TC", body: "Noto Sans TC" } },
   mode: "presenter",
   pages: [ { role: "title", title: "封面", gist: "開場" }, { role: "title-content", title: "內文", gist: "重點" } ],
 };
-const send = (s = initialState(), ...evs: SseEvent[]) => evs.reduce(cockpitReducer, s);
+// CockpitAction, not SseEvent:reducer 同時吃伺服器事件與本地動作
+// (reset / regen_*)。用 SseEvent 宣告時,測試裡的 regen_start 只是型別錯誤
+// 沒人看見 —— 因為 tsconfig.json 根本把 *.test.ts 排除在外。
+const send = (s = initialState(), ...evs: CockpitAction[]) => evs.reduce(cockpitReducer, s);
 
 describe("cockpitReducer", () => {
   test("初始狀態", () => {
@@ -106,9 +109,43 @@ describe("cockpitReducer", () => {
   test("qa_round 標記 error 單元並讓設計閘 active", () => {
     const s = send(initialState(), { type: "outline", data: outline }, { type: "qa_round", data: { round: 1, findings: [{ slide_no: 2, issue: "溢出", severity: "error", fix_hint: "減字" }] } });
     expect(s.phase).toBe("qa");
-    expect(s.units[1].status).toBe("flagged");
+    // 品檢維度獨立:被標紅的是 qa,不是生成用的 status(擠在同一欄位時,
+    // complete 會把兩者一起洗掉)。
+    expect(s.units[1].qa).toBe("flagged");
+    expect(s.units[1].status).toBe("skeleton");
+    expect(s.units[0].qa).toBe("clear");
     expect(s.gates.design).toBe("active");
     expect(s.qaRounds[0].round).toBe(1);
+  });
+
+  test("qa_round 每輪整批重算:第 2 輪修好的頁面不得繼續掛著紅記號", () => {
+    const s = send(
+      initialState(),
+      { type: "outline", data: outline },
+      { type: "qa_round", data: { round: 1, findings: [
+        { slide_no: 1, issue: "溢出", severity: "error", fix_hint: "減字" },
+        { slide_no: 2, issue: "留白", severity: "warn", fix_hint: "收緊" },
+      ] } },
+      { type: "qa_round", data: { round: 2, findings: [
+        { slide_no: 2, issue: "仍偏鬆", severity: "error", fix_hint: "再收" },
+      ] } },
+    );
+    expect(s.units[0].qa).toBe("clear");   // 第 1 頁第 2 輪已修好
+    expect(s.units[1].qa).toBe("flagged"); // warn -> error 升級
+    expect(s.qaRounds).toHaveLength(2);
+  });
+
+  test("complete 不得把品檢未過的頁面洗成一片乾淨", () => {
+    const s = send(
+      initialState(),
+      { type: "outline", data: outline },
+      { type: "qa_round", data: { round: 1, findings: [
+        { slide_no: 2, issue: "溢出", severity: "error", fix_hint: "減字" },
+      ] } },
+      { type: "complete", data: { download_url: "/d" } },
+    );
+    expect(s.units.every((u) => u.status === "done")).toBe(true);
+    expect(s.units[1].qa).toBe("flagged"); // 生成完成 != 品檢通過
   });
 
   test("error 進 error phase、存訊息,但不再用 stage 映射偽造 gate fail", () => {
@@ -151,7 +188,9 @@ describe("cockpitReducer", () => {
     expect(s.units[0].previewUrl).toMatch(/preview\/1\.png\?t=\d+/);
   });
 
-  test("regen_done preview_url 為 null 時,沿用舊 base 並仍 cache-bust", () => {
+  test("regen_done preview_url 為 null 時,清掉舊圖而不是沿用", () => {
+    // 舊行為是退回上一版的縮圖:新內容配舊圖片,看起來完全正常,而且是錯的。
+    // 算不出圖就是沒有圖 —— 後端此時也不會再供應上一版的 PNG(404)。
     const s = send(
       initialState(),
       { type: "outline", data: outline },
@@ -159,7 +198,58 @@ describe("cockpitReducer", () => {
       { type: "regen_start", data: { n: 1 } },
       { type: "regen_done", data: { n: 1, slide: { layout: "title", title: "新封面" }, preview_url: null } },
     );
-    expect(s.units[0].previewUrl).toMatch(/preview\/1\.png\?t=\d+/);
+    expect(s.units[0].previewUrl).toBeUndefined();
+    expect(s.units[0].title).toBe("新封面");
+  });
+
+  test("preview_ready 帶 url:null 代表這一頁沒有縮圖,不是沒有消息", () => {
+    const s = send(
+      initialState(),
+      { type: "outline", data: outline },
+      { type: "preview_ready", data: { n: 1, url: "/api/jobs/x/preview/1.png" } },
+      { type: "preview_ready", data: { n: 1, url: null } },
+    );
+    expect(s.units[0].previewUrl).toBeUndefined();
+  });
+
+  test("qa_invalidated 清空上一輪品檢:findings 指的內容已經不在了", () => {
+    const s = send(
+      initialState(),
+      { type: "outline", data: outline },
+      {
+        type: "qa_round",
+        data: {
+          round: 1,
+          findings: [{ slide_no: 1, issue: "文字溢出", severity: "error", fix_hint: "縮短" }],
+        },
+      },
+      { type: "qa_invalidated", data: { n: 1, reason: "重生後尚未品檢" } },
+    );
+    expect(s.units[0].qa).toBeUndefined();
+    expect(s.qaRounds).toEqual([]);
+  });
+
+  test("regen_done 也把整批品檢狀態作廢(HTTP 路徑沒有 SSE 可收)", () => {
+    // 重生是同步端點,回應直接進 reducer;live client 的 SSE 在 complete 就關了,
+    // 所以清理必須在這裡也發生一次,否則畫面留著上一版的紅記號與綠勾。
+    const s = send(
+      initialState(),
+      { type: "outline", data: outline },
+      {
+        type: "qa_round",
+        data: {
+          round: 1,
+          findings: [{ slide_no: 2, issue: "重疊", severity: "error", fix_hint: "移開" }],
+        },
+      },
+      { type: "regen_start", data: { n: 1 } },
+      {
+        type: "regen_done",
+        data: { n: 1, slide: { layout: "title", title: "新封面" }, preview_url: "/api/jobs/x/preview/1.png" },
+      },
+    );
+    expect(s.qaRounds).toEqual([]);
+    expect(s.units.every((u) => u.qa === undefined)).toBe(true);
   });
 
   test("regen_done 從 done 還原回 done", () => {
