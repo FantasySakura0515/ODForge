@@ -1634,10 +1634,13 @@ button { color: inherit; }
 .tpl-card-actions .text-action { padding: 0 7px; font-size: 10.5px; }
 .text-action.danger:hover { color: var(--crit); background: var(--crit-soft); }
 
-/* 迷你封面:用範本自己的顏色畫,所以卡片上看到的就是簡報上會出現的。 */
+/* 迷你封面:顏色來自範本的配色,**構圖來自它的版式**。兩張縮圖若長得一樣,
+   使用者就有理由說「這些根本是同一個範本」。 */
 .tpl-preview {
   position: relative;
-  display: block;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   padding: 14px 12px 16px;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -1645,15 +1648,8 @@ button { color: inherit; }
   aspect-ratio: 16 / 9;
 }
 
-.tpl-preview .tpl-rule {
-  display: block;
-  width: 28px;
-  height: 3px;
-  margin-bottom: 8px;
-  border-radius: 2px;
-}
-
 .tpl-preview b {
+  position: relative;
   display: block;
   font-size: 15px;
   font-weight: 750;
@@ -1661,6 +1657,7 @@ button { color: inherit; }
 }
 
 .tpl-preview em {
+  position: relative;
   display: block;
   margin-top: 3px;
   font-size: 9px;
@@ -1676,6 +1673,130 @@ button { color: inherit; }
   height: 26%;
   border-radius: 4px;
   text-decoration: none;
+}
+
+/* classic — 置中標題 + 右下角點陣 */
+.tpl-preview[data-style="classic"] { align-items: center; text-align: center; }
+.tpl-preview[data-style="classic"] .tpl-dots {
+  position: absolute;
+  right: 9px;
+  bottom: 9px;
+  width: 34px;
+  height: 22px;
+  opacity: 0.32;
+  text-decoration: none;
+  -webkit-mask-image: radial-gradient(circle at 2px 2px, #000 1.3px, transparent 1.6px);
+  mask-image: radial-gradient(circle at 2px 2px, #000 1.3px, transparent 1.6px);
+  -webkit-mask-size: 8px 7px;
+  mask-size: 8px 7px;
+}
+.tpl-preview[data-style="classic"] .tpl-card { width: 32%; height: 20%; left: 10px; right: auto; }
+
+/* editorial — 左切齊、標題上方粗線 */
+.tpl-preview[data-style="editorial"] { align-items: flex-start; }
+.tpl-preview[data-style="editorial"] .tpl-rule {
+  display: block;
+  width: 26px;
+  height: 3px;
+  margin-bottom: 7px;
+  border-radius: 2px;
+}
+
+/* stage — 滿版色帶反白 */
+.tpl-preview[data-style="stage"] { align-items: center; text-align: center; }
+.tpl-preview[data-style="stage"] .tpl-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 26%;
+  height: 48%;
+  text-decoration: none;
+}
+.tpl-preview[data-style="stage"] .tpl-card { display: none; }
+
+/* corporate — 頂部填色帶 + 左切齊 */
+.tpl-preview[data-style="corporate"] { align-items: flex-start; }
+.tpl-preview[data-style="corporate"] .tpl-topbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 16%;
+  text-decoration: none;
+}
+.tpl-preview[data-style="corporate"] .tpl-card { width: 34%; height: 22%; }
+
+/* zen — 只有字,置中偏下,沒有任何家具 */
+.tpl-preview[data-style="zen"] {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.tpl-preview[data-style="zen"] b { font-size: 13px; }
+
+.stylelist {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 7px;
+}
+
+.style-option {
+  position: relative;
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--line-interactive);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease, border-color 160ms ease;
+}
+
+.style-option::before {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  margin-top: 3px;
+  border: 1px solid var(--line-interactive);
+  border-radius: 50%;
+  content: "";
+  box-shadow: inset 0 0 0 2.5px var(--surface);
+}
+
+.style-option.on {
+  color: var(--text);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.style-option.on::before { background: var(--accent); border-color: var(--accent); }
+.style-option > span { display: grid; gap: 2px; }
+.style-option b { color: var(--text); font-size: 11px; }
+.style-option small { color: var(--muted); font-size: 9.5px; line-height: 1.45; }
+.style-option input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.style-option:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.home-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: stretch;
+}
+
+/* 次要入口:同一個形狀,但不跟「新增簡報」搶主色。 */
+.new-session.ghost {
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  box-shadow: none;
+}
+
+.new-session.ghost::after { border-color: var(--line); }
+.new-session.ghost small { color: var(--muted); }
+.new-session.ghost .new-session-mark {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .tpl-editor {

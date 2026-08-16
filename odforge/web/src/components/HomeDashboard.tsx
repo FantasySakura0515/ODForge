@@ -1,4 +1,3 @@
-import { TemplateGallery } from "./TemplateGallery";
 import type { SessionSummary } from "../state/api";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -27,12 +26,14 @@ export function HomeDashboard({
   loading,
   error,
   onNew,
+  onTemplates,
   onReload,
 }: {
   sessions: SessionSummary[];
   loading: boolean;
   error: string;
   onNew: () => void;
+  onTemplates: () => void;
   onReload: () => void;
 }) {
   return (
@@ -42,14 +43,24 @@ export function HomeDashboard({
           <span className="home-kicker">簡報工作台</span>
           <h1 id="home-title">最近工作</h1>
         </div>
-        <button type="button" className="new-session" onClick={onNew}>
-          <span className="new-session-mark" aria-hidden="true">＋</span>
-          <span>
-            <b>新增簡報</b>
-            <small>從需求或參考文件開始</small>
-          </span>
-          <i aria-hidden="true">→</i>
-        </button>
+        <div className="home-actions">
+          <button type="button" className="new-session" onClick={onNew}>
+            <span className="new-session-mark" aria-hidden="true">＋</span>
+            <span>
+              <b>新增簡報</b>
+              <small>從需求或參考文件開始</small>
+            </span>
+            <i aria-hidden="true">→</i>
+          </button>
+          <button type="button" className="new-session ghost" onClick={onTemplates}>
+            <span className="new-session-mark" aria-hidden="true">◧</span>
+            <span>
+              <b>範本庫</b>
+              <small>版式與配色，可自訂</small>
+            </span>
+            <i aria-hidden="true">→</i>
+          </button>
+        </div>
       </section>
 
       <section className="session-archive" aria-labelledby="session-title">
@@ -126,8 +137,6 @@ export function HomeDashboard({
           </div>
         )}
       </section>
-
-      <TemplateGallery />
     </main>
   );
 }

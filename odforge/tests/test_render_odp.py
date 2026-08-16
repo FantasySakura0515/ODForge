@@ -28,6 +28,7 @@ from odforge.render.odp import (
 )
 from odforge.themes import (
     LAYOUTS,
+    get_style,
     PAGE_H,
     PAGE_W,
     SCALES,
@@ -2518,3 +2519,215 @@ def test_a_logo_reference_must_be_an_asset():
 
     with pytest.raises(ValidationError):
         _branded_deck(logo="https://example.org/crest.png")
+
+
+# ---------------------------------------------------------------------------
+# 版式 (themes.Style) — the layout personality
+#
+# Recolouring alone produced thirteen decks that were recognisably one template.
+# These tests pin the parts that make two styles two different documents: where
+# the cover sits, what marks a heading, how a divider is treated, and how much
+# footer furniture survives.
+# ---------------------------------------------------------------------------
+
+
+def _styled(style: str, **kwargs) -> Presentation:
+    return Presentation(
+        title="版式測試",
+        style=style,
+        slides=[
+            Slide(layout="title", title="封面", subtitle="副標"),
+            Slide(layout="title-content", title="內頁", bullets=["甲", "乙"]),
+            Slide(layout="section", title="章節"),
+            Slide(layout="closing", title="結語", bullets=["下一步"]),
+        ],
+        **kwargs,
+    )
+
+
+def _rect_fills(page, root):
+    """Every fill colour painted as a rect on this page."""
+    styles = {
+        s.get(_q("style", "name")): s for s in root.findall(".//style:style", NS)
+    }
+    fills = []
+    for rect in page.findall(".//draw:rect", NS):
+        style = styles.get(rect.get(_q("draw", "style-name")))
+        props = (
+            style.find(".//style:graphic-properties", NS)
+            if style is not None
+            else None
+        )
+        if props is not None:
+            fills.append(props.get(_q("draw", "fill-color")))
+    return fills
+
+
+def test_every_style_is_selectable_and_renders(tmp_path):
+    from odforge.themes import STYLES
+
+    for style_id in STYLES:
+        out = render_odp(_styled(style_id), tmp_path / f"{style_id}.odp")
+        with zipfile.ZipFile(out) as z:
+            assert z.read("content.xml")
+
+
+def test_an_unknown_style_is_rejected():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _styled("bauhaus")
+
+
+def test_a_preset_without_an_explicit_style_uses_its_paired_default():
+    from odforge.themes import THEME_STYLE, resolve_style
+
+    # 「深夜藍」 ships as a stage deck and 「墨金」 as an editorial one; if the
+    # pairing were ignored, every preset would render as the same house style —
+    # which is exactly the complaint this layer answers.
+    assert THEME_STYLE["dark"] == "stage"
+    deck = Presentation(
+        title="t", theme="dark", slides=[Slide(layout="section", title="x")]
+    )
+    assert resolve_style(deck).id == "stage"
+    # An explicit style always wins over the pairing.
+    assert resolve_style(deck.model_copy(update={"style": "zen"})).id == "zen"
+
+
+def test_cover_composition_differs_between_styles():
+    centred = _content_root(_styled("classic"), THEMES["navy"])
+    left = _content_root(_styled("editorial"), THEMES["navy"])
+
+    def title_frame(root):
+        page = root.findall(".//draw:page", NS)[0]
+        return page.findall(".//draw:frame", NS)
+
+    # The left-aligned cover starts its title nearer the margin than the centred
+    # one, and only the centred style ships the dot-lattice decoration.
+    centred_x = {f.get(_q("svg", "x")) for f in title_frame(centred)}
+    left_x = {f.get(_q("svg", "x")) for f in title_frame(left)}
+    assert centred_x != left_x
+    assert "Pictures/deco.svg" in etree.tostring(centred, encoding="unicode")
+    assert "Pictures/deco.svg" not in etree.tostring(left, encoding="unicode")
+
+
+def test_the_dot_lattice_is_only_packaged_for_styles_that_use_it(tmp_path):
+    with zipfile.ZipFile(render_odp(_styled("classic"), tmp_path / "c.odp")) as z:
+        assert "Pictures/deco.svg" in z.namelist()
+    with zipfile.ZipFile(render_odp(_styled("zen"), tmp_path / "z.odp")) as z:
+        # A quiet style that still shipped an unused decoration part would be
+        # carrying weight it never draws.
+        assert "Pictures/deco.svg" not in z.namelist()
+
+
+def test_heading_marks_differ_between_styles():
+    theme = THEMES["navy"]
+    content_page = lambda root: root.findall(".//draw:page", NS)[1]  # noqa: E731
+
+    bar = _content_root(_styled("classic"), theme)
+    block = _content_root(_styled("corporate"), theme)
+    none = _content_root(_styled("zen"), theme)
+
+    # classic marks a heading with a thin vertical bar, corporate fills a whole
+    # band behind it, zen marks it with nothing at all.
+    bar_rects = content_page(bar).findall(".//draw:rect", NS)
+    block_rects = content_page(block).findall(".//draw:rect", NS)
+    assert len(bar_rects) == 1
+    assert len(block_rects) == 1
+    assert float(bar_rects[0].get(_q("svg", "width")).removesuffix("cm")) < 0.5
+    assert float(block_rects[0].get(_q("svg", "width")).removesuffix("cm")) > 20
+    assert content_page(none).findall(".//draw:rect", NS) == []
+
+
+def test_a_filled_heading_band_flips_its_text_to_the_page_colour():
+    theme = THEMES["navy"]
+    root = _content_root(
+        _styled("corporate").model_copy(
+            update={
+                "slides": [
+                    Slide(layout="title-content", title="內頁", bullets=["甲"], kicker="進度"),
+                ]
+            }
+        ),
+        theme,
+    )
+    page = root.findall(".//draw:page", NS)[0]
+    title = _text_p_with(page, "內頁")
+    styles = {
+        s.get(_q("style", "name")): s for s in root.findall(".//style:style", NS)
+    }
+    props = styles[title.get(_q("text", "style-name"))].find(
+        ".//style:text-properties", NS
+    )
+    # Ink-on-accent would be an unreadable heading on every content page.
+    assert props.get(_q("fo", "color")).upper() == theme.bg.upper()
+
+
+def test_divider_treatment_differs_between_styles():
+    theme = THEMES["navy"]
+    inverted = _content_root(_styled("classic"), theme)
+    light = _content_root(_styled("editorial"), theme)
+    band = _content_root(_styled("corporate"), theme)
+
+    def section_page(root):
+        return root.findall(".//draw:page", NS)[2]
+
+    # classic inverts the whole page (a separate drawing-page style); editorial
+    # keeps the page light; corporate marks it with a full-height band instead.
+    assert section_page(inverted).get(_q("draw", "style-name")) != section_page(
+        light
+    ).get(_q("draw", "style-name"))
+    band_rects = section_page(band).findall(".//draw:rect", NS)
+    assert len(band_rects) == 1
+    assert band_rects[0].get(_q("svg", "height")) == "15.75cm"
+
+
+def test_a_light_closing_keeps_its_message_readable():
+    theme = THEMES["navy"]
+    root = _content_root(_styled("editorial"), theme)
+    page = root.findall(".//draw:page", NS)[3]
+    message = _text_p_with(page, "結語")
+    styles = {
+        s.get(_q("style", "name")): s for s in root.findall(".//style:style", NS)
+    }
+    props = styles[message.get(_q("text", "style-name"))].find(
+        ".//style:text-properties", NS
+    )
+    # The old renderer hard-coded bg here because closing was always inverted;
+    # on a light closing that is bg-on-bg — a blank final page.
+    assert props.get(_q("fo", "color")).upper() == theme.title_color.upper()
+
+
+def test_footer_furniture_follows_the_style():
+    theme = THEMES["navy"]
+    full = build_styles_xml(theme, "文件標題", get_style("classic"))
+    quiet = build_styles_xml(theme, "文件標題", get_style("stage"))
+    bare = build_styles_xml(theme, "文件標題", get_style("zen"))
+
+    assert "draw:line" in full and "文件標題" in full
+    # stage keeps the page number but drops the rule and the running head.
+    assert "text:page-number" in quiet
+    assert "draw:line" not in quiet
+    # zen carries no furniture at all.
+    assert "text:page-number" not in bare
+    assert "draw:line" not in bare
+
+
+def test_the_byline_follows_the_cover_it_sits_under():
+    theme = THEMES["navy"]
+
+    def byline_y(style_id):
+        root = _content_root(
+            _styled(style_id, branding={"byline": "資工系 · 王小明"}), theme
+        )
+        page = root.findall(".//draw:page", NS)[0]
+        frame = next(
+            f
+            for f in page.findall(".//draw:frame", NS)
+            if any(p.text == "資工系 · 王小明" for p in f.findall(".//text:p", NS))
+        )
+        return float(frame.get(_q("svg", "y")).removesuffix("cm"))
+
+    # The airy cover pushes its subtitle further down, so a fixed byline line
+    # would have printed on top of it.
+    assert byline_y("zen") > byline_y("classic")

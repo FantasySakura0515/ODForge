@@ -2641,3 +2641,41 @@ def test_branding_and_language_survive_a_reload(app, monkeypatch):
     assert job.branding is not None and job.branding.byline == "資工系"
     assert job.branding.logo == "asset://logo"
     assert "logo" in job.assets and Path(job.assets["logo"]).is_file()
+
+
+def test_style_travels_from_the_request_to_the_deck(app, monkeypatch):
+    _install_fakes(monkeypatch, n=3)
+    with TestClient(app) as client:
+        job_id, snapshot = _run_to_completion(
+            client, {"prompt": "x", "theme": "navy", "style": "editorial"}
+        )
+        rejected = client.post(
+            "/api/generate", json={"prompt": "x", "style": "bauhaus"}
+        )
+    assert snapshot["status"] == "complete"
+    assert rejected.status_code == 422
+    assert app.state.jobs[job_id].ir.style == "editorial"
+
+
+def test_style_survives_a_reload(app, monkeypatch):
+    _install_fakes(monkeypatch, n=3)
+    with TestClient(app) as client:
+        job_id, snapshot = _run_to_completion(
+            client, {"prompt": "x", "style": "stage"}
+        )
+    assert snapshot["status"] == "complete"
+    revived = webapi.create_app(jobs_dir=app.state.jobs_dir)
+    assert revived.state.jobs[job_id].style == "stage"
+    assert revived.state.jobs[job_id].ir.style == "stage"
+
+
+def test_no_style_leaves_the_palettes_pairing_in_charge(app, monkeypatch):
+    # Omitting 版式 must not silently mean "classic": each preset ships paired
+    # with the composition it was designed for.
+    _install_fakes(monkeypatch, n=3)
+    with TestClient(app) as client:
+        job_id, snapshot = _run_to_completion(
+            client, {"prompt": "x", "theme": "dark"}
+        )
+    assert snapshot["status"] == "complete"
+    assert app.state.jobs[job_id].ir.style is None

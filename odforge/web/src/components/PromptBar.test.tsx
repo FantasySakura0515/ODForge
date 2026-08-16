@@ -30,6 +30,7 @@ function mockTemplates(templates?: DeckTemplate[]) {
         id: "academic",
         name: "學術藍",
         design: design("#1A4B8C"),
+        style: "classic",
         builtin: true,
         source: "builtin",
         created_at: 0,
@@ -38,6 +39,7 @@ function mockTemplates(templates?: DeckTemplate[]) {
         id: "dark",
         name: "深夜藍",
         design: design("#3DD6E6", "#171826"),
+        style: "stage",
         builtin: true,
         source: "builtin",
         created_at: 0,
@@ -46,6 +48,7 @@ function mockTemplates(templates?: DeckTemplate[]) {
         id: "tpl-abc123",
         name: "系上公版",
         design: design("#A3212F"),
+        style: "editorial",
         builtin: false,
         source: "extracted",
         created_at: 1,
@@ -55,6 +58,11 @@ function mockTemplates(templates?: DeckTemplate[]) {
       { id: "zh-TW", label: "繁體中文" },
       { id: "en", label: "English" },
       { id: "bilingual", label: "中英對照" },
+    ],
+    styles: [
+      { id: "classic", label: "學院派", blurb: "置中封面" },
+      { id: "editorial", label: "編輯風", blurb: "左切齊封面" },
+      { id: "stage", label: "舞台", blurb: "滿版色帶" },
     ],
   });
 }
@@ -219,6 +227,8 @@ test("視覺主題預設交給 AI；選了內建範本才送 theme", async () =>
   fireEvent.click(screen.getByLabelText(/深夜藍/));
   fireEvent.click(screen.getByRole("button", { name: "繼續" }));
   expect(onDiscover.mock.calls[1][0].theme).toBe("dark");
+  // 版式跟著範本一起送:畫廊裡看到的構圖,就是生成出來的構圖。
+  expect(onDiscover.mock.calls[1][0].style).toBe("stage");
 
   // 再選回「AI 決定」→ 欄位必須整個消失,不是送一個空字串。
   fireEvent.click(screen.getByLabelText(/AI 決定/));
@@ -239,6 +249,7 @@ test("自訂範本送 design 而不是 theme", async () => {
   const body = onDiscover.mock.calls[0][0];
   expect("theme" in body).toBe(false);
   expect(body.design.palette.accent).toBe("#A3212F");
+  expect(body.style).toBe("editorial");
 });
 
 test("選中的自訂範本被刪掉後，選擇作廢而不是送出死 id", async () => {
@@ -253,6 +264,7 @@ test("選中的自訂範本被刪掉後，選擇作廢而不是送出死 id", as
       id: "academic",
       name: "學術藍",
       design: design("#1A4B8C"),
+      style: "classic",
       builtin: true,
       source: "builtin",
       created_at: 0,

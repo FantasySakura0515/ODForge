@@ -10,6 +10,7 @@ test("沒有紀錄時顯示可操作的空狀態", () => {
       loading={false}
       error=""
       onNew={onNew}
+      onTemplates={vi.fn()}
       onReload={vi.fn()}
     />,
   );
@@ -38,6 +39,7 @@ test("session 顯示狀態、頁數、預覽與下載", () => {
       loading={false}
       error=""
       onNew={vi.fn()}
+      onTemplates={vi.fn()}
       onReload={vi.fn()}
     />,
   );
@@ -63,6 +65,7 @@ test("讀取失敗可以重試", () => {
       loading={false}
       error="無法讀取工作紀錄"
       onNew={vi.fn()}
+      onTemplates={vi.fn()}
       onReload={onReload}
     />,
   );

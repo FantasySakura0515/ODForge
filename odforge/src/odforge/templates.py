@@ -31,7 +31,14 @@ from typing import List, Optional
 from pydantic import Field, field_validator
 
 from odforge.ir import DesignSpec, FontPair, Palette, StrictModel
-from odforge.themes import THEME_LABELS, THEMES, theme_scale
+from odforge.themes import (
+    DEFAULT_STYLE,
+    STYLES,
+    THEME_LABELS,
+    THEME_STYLE,
+    THEMES,
+    theme_scale,
+)
 
 # A library is a personal shortlist, not a catalogue. The cap exists so a script
 # in a loop cannot grow the file without bound.
@@ -47,12 +54,22 @@ class Template(StrictModel):
     id: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=MAX_NAME_CHARS)
     design: DesignSpec
+    # 版式: the layout personality. Colour alone made every template the same
+    # document in different paint; this is the half that changes composition.
+    style: str = DEFAULT_STYLE
     # Built-ins are read-only and are sent to the API as ``theme: <id>``;
     # user templates travel as a full ``design`` payload.
     builtin: bool = False
     # "builtin" | "custom" (hand-picked) | "extracted" (from an ODF template).
     source: str = "custom"
     created_at: float = 0.0
+
+    @field_validator("style")
+    @classmethod
+    def _known_style(cls, value: str) -> str:
+        if value not in STYLES:
+            raise ValueError(f"unknown style; available: {sorted(STYLES)}")
+        return value
 
     @field_validator("name")
     @classmethod
@@ -91,6 +108,7 @@ def builtin_templates() -> List[Template]:
             id=theme_id,
             name=THEME_LABELS[theme_id],
             design=design_of_theme(theme_id),
+            style=THEME_STYLE.get(theme_id, DEFAULT_STYLE),
             builtin=True,
             source="builtin",
         )
@@ -155,6 +173,7 @@ def save_template(
     *,
     name: str,
     design: DesignSpec,
+    style: str = DEFAULT_STYLE,
     source: str = "custom",
     template_id: Optional[str] = None,
 ) -> Template:
@@ -181,6 +200,7 @@ def save_template(
             id=f"tpl-{uuid.uuid4().hex[:12]}",
             name=name,
             design=design,
+            style=style,
             source=source,
             created_at=now,
         )
@@ -194,6 +214,7 @@ def save_template(
                 id=template_id,
                 name=name,
                 design=design,
+                style=style,
                 source=source,
                 created_at=current.created_at or now,
             )

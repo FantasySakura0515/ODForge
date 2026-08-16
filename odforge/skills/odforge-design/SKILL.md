@@ -87,6 +87,7 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
   "title": "簡報標題",
   "theme": "academic",
   "design": { ... 見下方 DesignSpec，可省略 ... },
+  "style": "classic",
   "branding": { "byline": "單位 · 講者 · 日期", "logo": "asset://logo",
                 "placement": "cover-closing" },
   "slides": [ { ...Slide... }, ... ]
@@ -96,6 +97,13 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
 - `theme`：`"academic"` | `"minimal"` | `"dark"` | `"teal"` | `"forest"` | `"navy"` |
   `"violet"` | `"crimson"` | `"slate"` | `"gold"` | `"sky"` | `"plum"` | `"clay"`
   （沒給 `design` 時就用這個內建主題；十三套的定位見 ④）。
+- `style`：版式（構圖），與 `theme`／`design`（顏色）正交，可省略：
+  `"classic"` 學院派（置中封面、標題左側色條、滿版分節頁）、
+  `"editorial"` 編輯風（左切齊封面、標題下細線、淺底分節頁）、
+  `"stage"` 舞台（封面滿版色帶反白、內頁只有大標、頁尾只留頁碼）、
+  `"corporate"` 企業報告（每頁標題帶填色、分節頁左側粗色帶）、
+  `"zen"` 極簡（無裝飾、無頁尾線、標題不加記號）。
+  省略時使用該 `theme` 配對的預設版式。
 - `slides`：至少 1 張。
 - `branding`：封面署名與機構標誌，可省略。`byline` 原樣印在封面標題下方；
   `logo` 只接受 `asset://<id>`（呼叫端上傳的圖），`placement` 是

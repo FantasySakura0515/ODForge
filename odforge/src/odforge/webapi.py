@@ -91,7 +91,7 @@ from odforge.templates import (
     save_template,
     templates_path,
 )
-from odforge.themes import THEMES
+from odforge.themes import STYLES, THEMES
 from odforge.validate import validate_odf
 
 # The odp mimetype, verbatim per the project's ODF mimetype constants.
@@ -200,6 +200,8 @@ class Job:
     # A user template's design tokens. Beats both the model's own DesignSpec and
     # ``theme``: the user picked this look explicitly.
     design: Optional[DesignSpec] = None
+    # 版式 (layout personality). None = the palette's paired default.
+    style: Optional[str] = None
     # Cover byline + logo. ``branding.logo`` points at ``assets["logo"]``.
     branding: Optional[Branding] = None
     assets: Dict[str, AssetInput] = field(default_factory=dict)
@@ -368,6 +370,7 @@ def _job_metadata(job: Job) -> Dict[str, Any]:
         "backend": job.backend,
         "pages": job.pages,
         "language": job.language,
+        "style": job.style,
         "design": (
             job.design.model_dump(mode="json") if job.design is not None else None
         ),
@@ -453,6 +456,7 @@ def _load_persisted_job(job_dir: Path) -> Optional[Job]:
             # Jobs persisted before these fields existed restore as the
             # defaults, which is exactly what they ran as.
             language=str(data.get("language") or "zh-TW"),
+            style=data.get("style"),
             design=(
                 DesignSpec.model_validate(data["design"])
                 if data.get("design") is not None
@@ -564,6 +568,7 @@ def create_job(
     uploads: Optional[List[AssetUpload]] = None,
     language: str = "zh-TW",
     design: Optional[DesignSpec] = None,
+    style: Optional[str] = None,
     byline: str = "",
     logo: Optional[AssetUpload] = None,
     logo_placement: str = "cover-closing",
@@ -618,6 +623,7 @@ def create_job(
         pages=pages,
         language=language,
         design=design,
+        style=style,
         branding=branding,
         reference_documents=reference_documents,
     )
@@ -1153,8 +1159,10 @@ async def run_job(job: Job) -> None:
         # name. (Re-applied here because stage 2 could have returned its own.)
         if job.design is not None:
             ir = ir.model_copy(update={"design": job.design})
-        # Cover branding is app-owned: whatever the model may have emitted in
-        # this field is replaced by what the user actually typed and uploaded.
+        # 版式 and cover branding are both app-owned: whatever the model may
+        # have emitted in these fields is replaced by what the user chose.
+        if job.style:
+            ir = ir.model_copy(update={"style": job.style})
         ir = ir.model_copy(update={"branding": job.branding})
         job.ir = ir
         for n, slide in enumerate(ir.slides, start=1):
@@ -1615,6 +1623,8 @@ class GenerateBody(StrictBody):
     # A user template's tokens, sent instead of ``theme``. Validated by
     # DesignSpec itself — an unreadable palette is a 422, not a grey deck.
     design: Optional[DesignSpec] = None
+    # 版式: independent of colour, so a palette can be worn by any composition.
+    style: Optional[str] = None
     language: str = "zh-TW"
     # Cover branding. ``logo`` is one more base64 image upload; it is stored
     # apart from ``assets`` so the model is never offered the crest as media.
@@ -1667,6 +1677,13 @@ class GenerateBody(StrictBody):
     def language_must_be_supported(cls, value: str) -> str:
         if value not in LANGUAGES:
             raise ValueError(f"unknown language; available: {sorted(LANGUAGES)}")
+        return value
+
+    @field_validator("style")
+    @classmethod
+    def style_must_be_registered(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value not in STYLES:
+            raise ValueError(f"unknown style; available: {sorted(STYLES)}")
         return value
 
     @field_validator("logo")
@@ -1783,6 +1800,7 @@ class TemplateBody(StrictBody):
 
     name: str = Field(min_length=1, max_length=MAX_NAME_CHARS)
     design: DesignSpec
+    style: str = "classic"
     source: Literal["custom", "extracted"] = "custom"
     # Present = overwrite that template; absent = create a new one.
     id: Optional[str] = Field(default=None, max_length=64)
@@ -2242,6 +2260,7 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
                 uploads=body.assets,
                 language=body.language,
                 design=body.design,
+                style=body.style,
                 byline=body.byline,
                 logo=body.logo,
                 logo_placement=body.logo_placement,
@@ -2277,6 +2296,12 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
             "languages": [
                 {"id": code, "label": label} for code, label in LANGUAGES.items()
             ],
+            # The style registry travels with the list so the gallery can offer
+            # 版式 without keeping its own copy of the names and descriptions.
+            "styles": [
+                {"id": s.id, "label": s.label, "blurb": s.blurb}
+                for s in STYLES.values()
+            ],
         }
 
     @app.post("/api/templates")
@@ -2286,6 +2311,7 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
                 _templates_file(),
                 name=body.name,
                 design=body.design,
+                style=body.style,
                 source=body.source,
                 template_id=body.id,
             )

@@ -727,3 +727,40 @@ test("工作台有且只有一個 h1,說得出正在看的是哪一份文件", a
   });
   expect(h1s[0].textContent).toContain("資結第三章教學");
 });
+
+// ---------------------------------------------------------------------------
+// 範本庫是自己的一頁,不是首頁捲到底的附屬區塊
+// ---------------------------------------------------------------------------
+
+test("首頁不直接鋪出範本庫,而是給一個入口", async () => {
+  window.history.replaceState({}, "", "/");
+  vi.mocked(getSessions).mockResolvedValue([]);
+  render(<App />);
+
+  await screen.findByText("還沒有簡報");
+  // 十三張縮圖掛在工作紀錄底下 = 首頁被一個次要功能佔滿。
+  expect(document.querySelector(".template-gallery")).toBeNull();
+  expect(screen.getByRole("button", { name: /範本庫/ })).toBeInTheDocument();
+});
+
+test("進入範本庫會換頁並寫進 URL,重整回得來", async () => {
+  window.history.replaceState({}, "", "/");
+  vi.mocked(getSessions).mockResolvedValue([]);
+  const { unmount } = render(<App />);
+
+  await screen.findByText("還沒有簡報");
+  fireEvent.click(screen.getByRole("button", { name: /範本庫/ }));
+
+  expect(
+    await screen.findByRole("heading", { level: 1, name: "範本庫" }),
+  ).toBeInTheDocument();
+  expect(window.location.search).toContain("templates=1");
+  // 工作紀錄讓位給範本庫,而不是兩個疊在同一頁。
+  expect(screen.queryByText("還沒有簡報")).toBeNull();
+
+  unmount();
+  render(<App />);
+  expect(
+    await screen.findByRole("heading", { level: 1, name: "範本庫" }),
+  ).toBeInTheDocument();
+});

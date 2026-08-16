@@ -6,6 +6,8 @@ import {
   saveTemplate,
   type DeckTemplate,
   type DesignSpec,
+  type StyleId,
+  type StyleOption,
 } from "../state/api";
 
 // 白名單與後端 ir.FONT_WHITELIST 一致;送出不在名單內的字體會被 422 擋下,
@@ -26,6 +28,11 @@ const SWATCHES: { key: keyof DesignSpec["palette"]; label: string; hint: string 
 ];
 
 const MAX_TEMPLATE_BYTES = 12 * 1024 * 1024;
+
+/** 版式的顯示名稱;清單還沒到就先顯示 id,不要顯示空白。 */
+function styleLabel(styles: StyleOption[], id: StyleId): string {
+  return styles.find((option) => option.id === id)?.label ?? id;
+}
 
 const BLANK: DesignSpec = {
   palette: {
@@ -87,19 +94,43 @@ function fileAsDataUrl(file: File): Promise<string> {
   });
 }
 
-/** 一張迷你封面:用這組配色畫出標題、強調線與一行內文。 */
-function TemplatePreview({ design }: { design: DesignSpec }) {
+/**
+ * 一張迷你封面。**版式決定構圖**,配色只決定顏色——所以這張圖必須跟著 style 換
+ * 排法。畫廊裡十三張構圖一模一樣的縮圖,正是「這些其實都是同一個範本」的來源。
+ */
+function TemplatePreview({
+  design,
+  style,
+}: {
+  design: DesignSpec;
+  style: StyleId;
+}) {
   const { palette, fonts } = design;
+  const banded = style === "stage";
   return (
     <span
       className="tpl-preview"
+      data-style={style}
       aria-hidden="true"
       style={{ background: palette.bg, fontFamily: fonts.body }}
     >
-      <i className="tpl-rule" style={{ background: palette.accent }} />
-      <b style={{ color: palette.text, fontFamily: fonts.display }}>標題</b>
-      <em style={{ color: palette.muted }}>副標與說明</em>
-      <s className="tpl-card" style={{ background: palette.surface }} />
+      {banded && <s className="tpl-band" style={{ background: palette.accent }} />}
+      {style === "editorial" && (
+        <i className="tpl-rule" style={{ background: palette.accent }} />
+      )}
+      {style === "corporate" && (
+        <s className="tpl-topbar" style={{ background: palette.accent }} />
+      )}
+      {style === "classic" && (
+        <s className="tpl-dots" style={{ background: palette.accent }} />
+      )}
+      <b style={{ color: banded ? palette.bg : palette.text, fontFamily: fonts.display }}>
+        標題
+      </b>
+      <em style={{ color: banded ? palette.surface : palette.muted }}>副標與說明</em>
+      {style !== "zen" && (
+        <s className="tpl-card" style={{ background: palette.surface }} />
+      )}
     </span>
   );
 }
@@ -108,7 +139,9 @@ export function TemplateGallery() {
   const [templates, setTemplates] = useState<DeckTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [styles, setStyles] = useState<StyleOption[]>([]);
   const [editing, setEditing] = useState<DesignSpec>();
+  const [style, setStyle] = useState<StyleId>("classic");
   const [name, setName] = useState("");
   const [source, setSource] = useState<"custom" | "extracted">("custom");
   const [saving, setSaving] = useState(false);
@@ -119,7 +152,9 @@ export function TemplateGallery() {
     setLoading(true);
     setError("");
     try {
-      setTemplates((await getTemplates()).templates);
+      const report = await getTemplates();
+      setTemplates(report.templates);
+      setStyles(report.styles ?? []);
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "無法讀取範本庫。");
     } finally {
@@ -141,6 +176,7 @@ export function TemplateGallery() {
 
   function startFrom(template: DeckTemplate) {
     setEditing({ ...template.design, palette: { ...template.design.palette } });
+    setStyle(template.style);
     setName(template.builtin ? `${template.name} 改版` : template.name);
     setSource("custom");
     setFormError("");
@@ -169,7 +205,7 @@ export function TemplateGallery() {
     setSaving(true);
     setFormError("");
     try {
-      await saveTemplate({ name: name.trim(), design: editing, source });
+      await saveTemplate({ name: name.trim(), design: editing, style, source });
       setEditing(undefined);
       setName("");
       await reload();
@@ -217,6 +253,7 @@ export function TemplateGallery() {
             className="archive-refresh"
             onClick={() => {
               setEditing({ ...BLANK, palette: { ...BLANK.palette } });
+              setStyle("classic");
               setName("");
               setSource("custom");
               setFormError("");
@@ -250,7 +287,7 @@ export function TemplateGallery() {
       {editing && (
         <div className="tpl-editor" role="group" aria-label="編輯範本">
           <div className="tpl-editor-main">
-            <TemplatePreview design={editing} />
+            <TemplatePreview design={editing} style={style} />
             <div className="tpl-fields">
               <label className="advfield text-setting">
                 <span className="advlabel">範本名稱</span>
@@ -263,6 +300,37 @@ export function TemplateGallery() {
                   onChange={(e) => setName(e.target.value)}
                 />
               </label>
+
+              {styles.length > 0 && (
+                <div className="advfield">
+                  <span className="advlabel" id="style-label">版式</span>
+                  <div
+                    className="stylelist"
+                    role="radiogroup"
+                    aria-labelledby="style-label"
+                  >
+                    {styles.map((option) => (
+                      <label
+                        key={option.id}
+                        className={
+                          style === option.id ? "style-option on" : "style-option"
+                        }
+                      >
+                        <input
+                          type="radio"
+                          name="tpl-style"
+                          checked={style === option.id}
+                          onChange={() => setStyle(option.id)}
+                        />
+                        <span>
+                          <b>{option.label}</b>
+                          <small>{option.blurb}</small>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="advfield">
                 <span className="advlabel">配色</span>
@@ -380,11 +448,12 @@ export function TemplateGallery() {
           <div className="tpl-grid" data-testid="tpl-custom">
             {custom.map((template) => (
               <article className="tpl-card" key={template.id}>
-                <TemplatePreview design={template.design} />
+                <TemplatePreview design={template.design} style={template.style} />
                 <div className="tpl-meta">
                   <strong>{template.name}</strong>
                   <small>
-                    {template.source === "extracted" ? "匯入自範本檔" : "自訂配色"}
+                    {styleLabel(styles, template.style)}
+                    {template.source === "extracted" ? " · 匯入自範本檔" : ""}
                   </small>
                 </div>
                 <div className="tpl-card-actions">
@@ -410,10 +479,10 @@ export function TemplateGallery() {
       <div className="tpl-grid" data-testid="tpl-builtin">
         {builtins.map((template) => (
           <article className="tpl-card" key={template.id}>
-            <TemplatePreview design={template.design} />
+            <TemplatePreview design={template.design} style={template.style} />
             <div className="tpl-meta">
               <strong>{template.name}</strong>
-              <small>{template.design.fonts.display}</small>
+              <small>{styleLabel(styles, template.style)}</small>
             </div>
             <div className="tpl-card-actions">
               <button type="button" className="text-action" onClick={() => startFrom(template)}>

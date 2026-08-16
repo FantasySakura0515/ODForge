@@ -83,6 +83,162 @@ PAGE_W: float = 28.0
 PAGE_H: float = 15.75
 
 
+# ---------------------------------------------------------------------------
+# Style (版式) — the layout personality, orthogonal to colour
+#
+# A Theme decides what a deck is *coloured* like. A Style decides what it is
+# *composed* like: where the cover title sits, what marks a content heading,
+# whether a section divider inverts, and how much footer furniture appears.
+# Recolouring alone produced thirteen decks that were recognisably the same
+# template; these switches are what make two templates actually different
+# documents.
+#
+# Every field is a small enum consumed at exactly one place in the renderer, so
+# adding a style is data, not new drawing code.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Style:
+    """One layout personality.
+
+    ``cover`` — how the opening page is composed:
+      ``centered`` 置中大標 · ``left`` 左切齊編輯感 · ``band`` 滿版色帶反白 ·
+      ``quiet`` 大量留白、標題偏下。
+    ``cover_deco`` — the opening page's decoration: ``dots`` 點陣 ·
+      ``rule`` 標題上方粗線 · ``none``。
+    ``title_mark`` — what marks a content heading: ``bar`` 左側色條 ·
+      ``underline`` 標題下細線 · ``block`` 整條填色標題帶(文字反白) · ``none``。
+    ``section`` — the divider page: ``invert-number`` 滿版強調色+巨大編號 ·
+      ``light-number`` 淺底+淡編號 · ``band`` 淺底+左側粗色帶 · ``rule`` 淺底+
+      標題上方短線。
+    ``footer`` — master furniture: ``line`` 頁尾線+頁碼+眉標 · ``quiet`` 只留頁碼 ·
+      ``none`` 全部拿掉。
+    """
+
+    id: str
+    label: str
+    blurb: str
+    cover: str
+    cover_deco: str
+    title_mark: str
+    section: str
+    footer: str
+    invert_closing: bool
+
+
+STYLES: dict[str, Style] = {
+    "classic": Style(
+        id="classic",
+        label="學院派",
+        blurb="置中封面、標題左側色條、滿版分節頁。最穩的教學與研究簡報版式。",
+        cover="centered",
+        cover_deco="dots",
+        title_mark="bar",
+        section="invert-number",
+        footer="line",
+        invert_closing=True,
+    ),
+    "editorial": Style(
+        id="editorial",
+        label="編輯風",
+        blurb="左切齊封面、標題下細線、淺底分節頁。像一份印刷品，適合人文與報告。",
+        cover="left",
+        cover_deco="rule",
+        title_mark="underline",
+        section="light-number",
+        footer="line",
+        invert_closing=False,
+    ),
+    "stage": Style(
+        id="stage",
+        label="舞台",
+        blurb="封面滿版色帶反白、內頁只有大標、頁尾只留頁碼。給上台講述的場合。",
+        cover="band",
+        cover_deco="none",
+        title_mark="none",
+        section="invert-number",
+        footer="quiet",
+        invert_closing=True,
+    ),
+    "corporate": Style(
+        id="corporate",
+        label="企業報告",
+        blurb="每頁標題帶填色、分節頁左側粗色帶。結構清楚，適合正式匯報與評鑑。",
+        cover="left",
+        cover_deco="none",
+        title_mark="block",
+        section="band",
+        footer="line",
+        invert_closing=True,
+    ),
+    "zen": Style(
+        id="zen",
+        label="極簡",
+        blurb="沒有裝飾、沒有頁尾線、標題不加記號。留白自己說話。",
+        cover="quiet",
+        cover_deco="none",
+        title_mark="none",
+        section="rule",
+        footer="none",
+        invert_closing=False,
+    ),
+}
+
+DEFAULT_STYLE = "classic"
+
+# Which style each built-in palette ships with. Pairing them by hand is the
+# point: 「墨金」 as an editorial print piece and 「深夜藍」 as a stage deck are two
+# different templates, not two colourways of one.
+THEME_STYLE: dict[str, str] = {
+    "academic": "classic",
+    "minimal": "zen",
+    "teal": "corporate",
+    "forest": "editorial",
+    "navy": "corporate",
+    "dark": "stage",
+    "violet": "stage",
+    "crimson": "classic",
+    "slate": "stage",
+    "gold": "editorial",
+    "sky": "classic",
+    "plum": "editorial",
+    "clay": "zen",
+}
+
+
+def get_style(style_id: str | None) -> Style:
+    """Resolve a style id, falling back to :data:`DEFAULT_STYLE`."""
+    return STYLES.get(style_id or DEFAULT_STYLE, STYLES[DEFAULT_STYLE])
+
+
+# Cover geometry per ``Style.cover``. Only the opening page moves; the other
+# layouts share one geometry and differ by the marks drawn on them, which keeps
+# the layout budget (textmetrics) reasoning about one set of content frames.
+COVER_FRAMES: dict[str, list[Frame]] = {
+    "centered": [
+        Frame("title", 2, 5.5, 24, 3, 40, bold=True, center=True),
+        Frame("subtitle", 2, 9, 24, 2, 20, center=True),
+    ],
+    "left": [
+        Frame("title", 2.2, 5.2, 21, 3.2, 40, bold=True),
+        Frame("subtitle", 2.2, 9.0, 19, 2, 20),
+    ],
+    "band": [
+        Frame("title", 2, 5.3, 24, 3, 40, bold=True, center=True),
+        Frame("subtitle", 2, 8.9, 24, 1.6, 19, center=True),
+    ],
+    "quiet": [
+        Frame("title", 3.5, 6.4, 21, 3, 36, bold=True, center=True),
+        Frame("subtitle", 3.5, 9.9, 21, 1.6, 18, center=True),
+    ],
+}
+
+# The full-bleed band behind a ``cover="band"`` title (x is edge to edge).
+COVER_BAND_Y = 4.2
+COVER_BAND_H = 6.6
+
+
 LAYOUTS: dict[str, list[Frame]] = {
     "title": [
         Frame("title", 2, 5.5, 24, 3, 40, bold=True, center=True),
@@ -383,6 +539,19 @@ def theme_scale(theme: Theme) -> str:
         if sizes == tier:
             return name
     return "standard"
+
+
+def resolve_style(p: Presentation) -> Style:
+    """Resolve a presentation's layout personality.
+
+    An explicit ``p.style`` wins; otherwise the palette's paired default
+    (:data:`THEME_STYLE`) applies, so a deck that only names a preset still
+    gets that preset's intended composition rather than one house style for
+    everything.
+    """
+    if p.style:
+        return get_style(p.style)
+    return get_style(THEME_STYLE.get(p.theme, DEFAULT_STYLE))
 
 
 def resolve_design(p: Presentation) -> Theme:

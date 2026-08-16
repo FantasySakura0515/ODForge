@@ -46,6 +46,8 @@ export interface DesignSpec {
 }
 
 export type LanguageId = "zh-TW" | "en" | "bilingual";
+/** 版式 id;與後端 themes.STYLES 對應。 */
+export type StyleId = "classic" | "editorial" | "stage" | "corporate" | "zen";
 export type LogoPlacement = "cover" | "cover-closing" | "all";
 
 export interface GenerateBody {
@@ -56,6 +58,8 @@ export interface GenerateBody {
   theme?: string;
   /** 自訂範本的設計代幣;送了就整份鎖定這一組。 */
   design?: DesignSpec;
+  /** 版式(封面構圖、標題記號、分節頁、頁尾家具);與配色正交。 */
+  style?: StyleId;
   language?: LanguageId;
   pages?: number;
   /** 封面署名(單位／講者／日期)。 */
@@ -78,6 +82,7 @@ export interface DeckTemplate {
   id: string;
   name: string;
   design: DesignSpec;
+  style: StyleId;
   builtin: boolean;
   source: "builtin" | "custom" | "extracted";
   created_at: number;
@@ -88,9 +93,16 @@ export interface LanguageOption {
   label: string;
 }
 
+export interface StyleOption {
+  id: StyleId;
+  label: string;
+  blurb: string;
+}
+
 export interface TemplatesReport {
   templates: DeckTemplate[];
   languages: LanguageOption[];
+  styles: StyleOption[];
 }
 
 export async function getTemplates(): Promise<TemplatesReport> {
@@ -102,6 +114,7 @@ export async function getTemplates(): Promise<TemplatesReport> {
 export async function saveTemplate(body: {
   name: string;
   design: DesignSpec;
+  style: StyleId;
   source?: "custom" | "extracted";
   id?: string;
 }): Promise<DeckTemplate> {
@@ -238,6 +251,8 @@ export interface GenerateOptions {
   theme?: string;
   /** 自訂範本的設計代幣;與 theme 互斥,送了就整份鎖定 */
   design?: DesignSpec;
+  /** 版式;undefined = 用配色配對的預設版式 */
+  style?: StyleId;
   /** 預設 zh-TW;非預設才送 */
   language?: LanguageId;
   /** 封面署名;空字串不送 */
@@ -301,6 +316,7 @@ export function buildGenerateBody(prompt: string, docType: DocType, opts: Genera
   // 之間挑一個,而使用者只挑過一次。
   if (opts.design) body.design = opts.design;
   else if (opts.theme) body.theme = opts.theme;
+  if (opts.style) body.style = opts.style;
   if (isValidPages(opts.pages)) body.pages = opts.pages;
   if (opts.language && opts.language !== "zh-TW") body.language = opts.language;
   const byline = opts.byline?.trim();
@@ -319,11 +335,13 @@ export function buildGenerateBody(prompt: string, docType: DocType, opts: Genera
 /** 把範本庫的一列折成 GenerateOptions 的兩個欄位(內建走 theme,自訂走 design)。 */
 export function templateSelection(
   template: DeckTemplate | undefined,
-): Pick<GenerateOptions, "theme" | "design"> {
+): Pick<GenerateOptions, "theme" | "design" | "style"> {
   if (!template) return {};
+  // 版式一律明講:內建範本的配色與版式是配對好的,靠後端預設也對得起來,但送
+  // 出去的 body 若沒寫,使用者在畫廊看到的與生成出來的就不是同一份契約。
   return template.builtin
-    ? { theme: template.id }
-    : { design: template.design };
+    ? { theme: template.id, style: template.style }
+    : { design: template.design, style: template.style };
 }
 
 export async function postGenerate(body: GenerateBody): Promise<{ job_id: string }> {

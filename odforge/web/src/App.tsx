@@ -8,6 +8,7 @@ import { DownloadDock } from "./components/DownloadDock";
 import { ErrorPanel } from "./components/ErrorPanel";
 import { DiscoveryPanel } from "./components/DiscoveryPanel";
 import { HomeDashboard } from "./components/HomeDashboard";
+import { TemplatesPage } from "./components/TemplatesPage";
 import {
   ApiHttpError,
   getSessions,
@@ -44,10 +45,13 @@ function replaceUrl(next: URLSearchParams) {
 
 export default function App() {
   const [state, dispatch] = useReducer(cockpitReducer, undefined, () => initialState());
-  const [view, setView] = useState<"home" | "create" | "workspace">(() => {
+  const [view, setView] = useState<"home" | "create" | "workspace" | "templates">(() => {
     const initial = new URLSearchParams(window.location.search);
     if (initial.has("job")) return "workspace";
     if (initial.has("new") || initial.has("mock")) return "create";
+    // 範本庫是自己的一頁,不是首頁捲到底的附屬區塊:它有自己的 URL,重整、
+    // 分享、上一頁都成立。
+    if (initial.has("templates")) return "templates";
     return "home";
   });
   const [jobId, setJobId] = useState<string | undefined>();
@@ -286,6 +290,12 @@ export default function App() {
     setView("home");
   }
 
+  function goTemplates() {
+    clearWorkspace();
+    replaceUrl(new URLSearchParams({ templates: "1" }));
+    setView("templates");
+  }
+
   // 「再鍛一份」/ 等待卡取消:關閉舊 SSE、丟掉待播佇列、清 jobId、重置 cockpit 回 empty。
   // prompt 文字刻意保留在輸入框(受控 state 不動),使用者可微調再送。
   function resetCockpit() {
@@ -338,12 +348,18 @@ export default function App() {
     : null;
   const taskName = taskNameFromOutline(state.outline);
   const home = view === "home" && !submitting && state.phase === "empty";
+  const templates = view === "templates" && !submitting && state.phase === "empty";
   const composer = view === "create"
     && !submitting
     && (state.phase === "empty" || state.phase === "error");
 
   return (
-    <div className="page" data-view={home ? "home" : composer ? "welcome" : "workspace"}>
+    <div
+      className="page"
+      data-view={
+        home || templates ? "home" : composer ? "welcome" : "workspace"
+      }
+    >
       <a className="skiplink" href="#main-content">跳到主要內容</a>
 
       <header className="sitebar">
@@ -369,12 +385,15 @@ export default function App() {
         </div>
       </header>
 
-      {home ? (
+      {templates ? (
+        <TemplatesPage onBack={goHome} />
+      ) : home ? (
         <HomeDashboard
           sessions={sessions}
           loading={sessionsLoading}
           error={sessionsError}
           onNew={startNew}
+          onTemplates={goTemplates}
           onReload={() => void loadSessions()}
         />
       ) : composer ? (

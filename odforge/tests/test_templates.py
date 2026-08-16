@@ -290,3 +290,40 @@ def test_a_wrong_mime_upload_is_refused(app):
     with TestClient(app) as client:
         response = client.post("/api/templates/extract", json={"data_url": data_url})
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# 版式 (Style) — the half of a template that is not colour
+# ---------------------------------------------------------------------------
+
+
+def test_builtin_templates_carry_their_paired_style(library):
+    from odforge.themes import THEME_STYLE
+
+    for template in T.builtin_templates():
+        assert template.style == THEME_STYLE[template.id]
+    # Not all one style — that would make thirteen recolourings of one template.
+    assert len({t.style for t in T.builtin_templates()}) > 1
+
+
+def test_a_user_template_keeps_the_style_it_was_saved_with(library):
+    saved = T.save_template(
+        library, name="舞台版", design=_design(), style="stage"
+    )
+    assert saved.style == "stage"
+    assert T.load_user_templates(library)[0].style == "stage"
+
+
+def test_an_unknown_style_is_refused(library):
+    with pytest.raises(Exception):
+        T.save_template(library, name="壞的", design=_design(), style="bauhaus")
+
+
+def test_styles_are_served_with_the_gallery(app):
+    with TestClient(app) as client:
+        body = client.get("/api/templates").json()
+    ids = {style["id"] for style in body["styles"]}
+    assert ids == {"classic", "editorial", "stage", "corporate", "zen"}
+    # Each carries a human label + one-line blurb, so the gallery needs no copy
+    # of its own that could drift from what the renderer actually does.
+    assert all(style["label"] and style["blurb"] for style in body["styles"])

@@ -62,6 +62,14 @@ class Theme(str, Enum):
     clay = "clay"
 
 
+class StyleName(str, Enum):
+    classic = "classic"
+    editorial = "editorial"
+    stage = "stage"
+    corporate = "corporate"
+    zen = "zen"
+
+
 class Language(str, Enum):
     zh_tw = "zh-TW"
     en = "en"
@@ -293,6 +301,12 @@ def new(
         help="講述型態，僅對 .odp 兩段式流程有效：presenter（講者型）/ "
         "detailed（自讀型）；省略則沿用大綱的判斷。",
     ),
+    style: Optional[StyleName] = typer.Option(
+        None,
+        "--style",
+        help="版式（僅對 .odp 有效）：classic 學院派 / editorial 編輯風 / "
+        "stage 舞台 / corporate 企業報告 / zen 極簡；省略則用主題配對的預設版式。",
+    ),
     language: Language = typer.Option(
         Language.zh_tw,
         "--language",
@@ -482,6 +496,12 @@ def new(
     # and is honoured even if stage 2 dropped the locked design).
     if extracted_design is not None:
         ir = ir.model_copy(update={"design": extracted_design})
+
+    # --style locks the layout personality (cover composition, heading marks,
+    # divider treatment, footer furniture). Independent of --theme: any palette
+    # can be worn by any composition.
+    if doc_type == "presentation" and style is not None:
+        ir = ir.model_copy(update={"style": style.value})
 
     # Cover branding (署名 / 校徽). App-owned, so it is written onto the deck
     # AFTER generation — never asked of the model, never taken from it.

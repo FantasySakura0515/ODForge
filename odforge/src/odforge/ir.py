@@ -23,7 +23,7 @@ from pydantic import (
 # themes.py is pure data and imports nothing from this module at runtime (its
 # only ir reference is a TYPE_CHECKING annotation), so this direction is safe
 # and gives the IR a single source of truth for which themes exist.
-from odforge.themes import THEMES
+from odforge.themes import STYLES, THEMES
 
 
 class StrictModel(BaseModel):
@@ -688,6 +688,12 @@ class Presentation(StrictModel):
     theme: str = Field(
         default="academic", json_schema_extra={"enum": sorted(THEMES)}
     )
+    # 版式: the layout personality (cover composition, heading marks, divider
+    # treatment, footer furniture). Orthogonal to ``theme``/``design``, which
+    # only decide colour and type. Omitted → the palette's paired default.
+    style: Optional[str] = Field(
+        default=None, json_schema_extra={"enum": sorted(STYLES)}
+    )
     slides: List[Slide] = Field(
         default_factory=list, min_length=1, max_length=MAX_SLIDES
     )
@@ -702,6 +708,15 @@ class Presentation(StrictModel):
         if value not in THEMES:
             raise ValueError(
                 f"unknown theme {value!r}; choose from {sorted(THEMES)}"
+            )
+        return value
+
+    @field_validator("style")
+    @classmethod
+    def _known_style(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value not in STYLES:
+            raise ValueError(
+                f"unknown style {value!r}; choose from {sorted(STYLES)}"
             )
         return value
 

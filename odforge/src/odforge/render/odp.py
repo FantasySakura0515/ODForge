@@ -48,6 +48,9 @@ from odforge.textmetrics import (
     text_width_cm,
 )
 from odforge.themes import (
+    COVER_BAND_H,
+    COVER_BAND_Y,
+    COVER_FRAMES,
     LAYOUTS,
     LIST_ROLES,
     PAGE_H,
@@ -55,8 +58,11 @@ from odforge.themes import (
     PLAIN_LAYOUTS,
     THEMES,
     Frame,
+    Style,
     Theme,
+    get_style,
     resolve_design,
+    resolve_style,
 )
 
 # ---------------------------------------------------------------------------
@@ -800,6 +806,141 @@ def _svg_decoration(theme: Theme) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# Style-driven page furniture (themes.Style)
+#
+# Each helper below owns exactly one of the Style switches. They are pure
+# functions of (style, theme) so a new style stays a data edit.
+# ---------------------------------------------------------------------------
+
+# Cover rule (``cover_deco="rule"``): a short heavy accent bar above the title.
+_COVER_RULE_W = 3.6
+_COVER_RULE_H = 0.34
+_COVER_RULE_GAP = 0.9
+# Content heading underline (``title_mark="underline"``).
+_TITLE_RULE_H = 0.06
+_TITLE_RULE_GAP = 0.12
+# Filled heading band (``title_mark="block"``) — full content width, text inset.
+_TITLE_BLOCK_PAD_X = 0.42
+_TITLE_BLOCK_PAD_Y = 0.22
+# Section band (``section="band"``) and section rule (``section="rule"``).
+_SECTION_BAND_W = 0.55
+_SECTION_RULE_W = 2.6
+_SECTION_RULE_H = 0.16
+_SECTION_RULE_GAP = 0.85
+# A light-ground section numeral has no accent fill to sit on, so it is blended
+# toward the page bg much harder than the inverted one.
+_SECTION_NUMBER_LIGHT_BLEND = 0.82
+
+
+def cover_frames(style: Style) -> list[Frame]:
+    """The opening page's frames for this style."""
+    return COVER_FRAMES.get(style.cover, COVER_FRAMES["centered"])
+
+
+def inverted_layouts(style: Style) -> frozenset[str]:
+    """Which layouts paint a full-bleed accent ground under this style."""
+    inverted = set()
+    if style.section == "invert-number":
+        inverted.add("section")
+    if style.invert_closing:
+        inverted.add("closing")
+    return frozenset(inverted)
+
+
+def _cover_band_xml(theme: Theme, graphics: _GraphicStyles) -> str:
+    """Full-bleed accent band behind a ``cover="band"`` title block."""
+    return _rect_xml(
+        0,
+        COVER_BAND_Y,
+        PAGE_W,
+        COVER_BAND_H,
+        fill=_section_fill(theme),
+        style_name=graphics.name_for_fill(_section_fill(theme)),
+    )
+
+
+def _cover_rule_xml(
+    style: Style, theme: Theme, graphics: _GraphicStyles
+) -> str:
+    """The heavy accent rule a ``cover_deco="rule"`` style sets above the title."""
+    title = cover_frames(style)[0]
+    x = title.x if not title.center else (PAGE_W - _COVER_RULE_W) / 2
+    return _rect_xml(
+        x,
+        title.y - _COVER_RULE_GAP,
+        _COVER_RULE_W,
+        _COVER_RULE_H,
+        fill=theme.accent,
+        style_name=graphics.name_for_fill(theme.accent),
+    )
+
+
+def _title_mark_xml(
+    style: Style, frame: Frame, theme: Theme, graphics: _GraphicStyles
+) -> str:
+    """The mark that identifies a content heading, per ``Style.title_mark``."""
+    if style.title_mark == "bar":
+        return _rect_xml(
+            frame.x, frame.y, _ACCENT_BAR_W, frame.h,
+            fill=theme.accent, style_name=graphics.name_for_fill(theme.accent),
+        )
+    if style.title_mark == "underline":
+        return _rect_xml(
+            frame.x,
+            frame.y + frame.h + _TITLE_RULE_GAP,
+            frame.w,
+            _TITLE_RULE_H,
+            fill=theme.accent,
+            style_name=graphics.name_for_fill(theme.accent),
+        )
+    if style.title_mark == "block":
+        return _rect_xml(
+            frame.x - _TITLE_BLOCK_PAD_X,
+            frame.y - _TITLE_BLOCK_PAD_Y,
+            frame.w + 2 * _TITLE_BLOCK_PAD_X,
+            frame.h + 2 * _TITLE_BLOCK_PAD_Y,
+            fill=theme.accent,
+            style_name=graphics.name_for_fill(theme.accent),
+        )
+    return ""
+
+
+def _section_mark_xml(
+    style: Style,
+    ordinal: int | None,
+    theme: Theme,
+    styles: _ParagraphStyles,
+    graphics: _GraphicStyles,
+) -> str:
+    """The divider page's decoration, per ``Style.section``."""
+    if style.section in ("invert-number", "light-number"):
+        if ordinal is None:
+            return ""
+        blend = (
+            _SECTION_NUMBER_BLEND
+            if style.section == "invert-number"
+            else _SECTION_NUMBER_LIGHT_BLEND
+        )
+        return _section_number_xml(ordinal, theme, styles, blend)
+    if style.section == "band":
+        return _rect_xml(
+            0, 0, _SECTION_BAND_W, PAGE_H,
+            fill=theme.accent, style_name=graphics.name_for_fill(theme.accent),
+        )
+    if style.section == "rule":
+        title = LAYOUTS["section"][0]
+        return _rect_xml(
+            (PAGE_W - _SECTION_RULE_W) / 2,
+            title.y - _SECTION_RULE_GAP,
+            _SECTION_RULE_W,
+            _SECTION_RULE_H,
+            fill=theme.accent,
+            style_name=graphics.name_for_fill(theme.accent),
+        )
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Cover branding: byline + organisation logo (ir.Branding)
 #
 # App-owned furniture, drawn outside the LAYOUTS frame loop: the byline and the
@@ -810,8 +951,9 @@ def _svg_decoration(theme: Theme) -> bytes:
 # Cover: one muted line under the subtitle. The title-page decoration lives at
 # (21.0, 10.75) and its dots are faint there, so a centred line at this y clears
 # the dense corner of the lattice.
-_BYLINE_Y = 11.45
-_BYLINE_BOX = (2.0, _BYLINE_Y, 24.0, 1.0)
+_BYLINE_BOX = (2.0, 0.0, 24.0, 1.0)
+# How far under the lowest cover frame the byline sits.
+_BYLINE_GAP = 0.55
 
 # (x, y, max_w, max_h) per placement. The cover mark is generous; the in-deck
 # marks are deliberately small — a logo repeated on 12 pages is furniture, not a
@@ -914,14 +1056,27 @@ def _page_shows_logo(layout: str, placement: str) -> bool:
     return True
 
 
-def _byline_xml(byline: str, theme: Theme, styles: _ParagraphStyles) -> str:
-    """The cover's muted署名 line (單位／講者／日期), centred under the subtitle."""
-    x, y, w, h = _BYLINE_BOX
-    frame = Frame("byline", x, y, w, h, theme.caption_pt, center=True)
-    style = styles.name_for(theme.caption_pt, False, True, theme.muted)
+def _byline_xml(
+    byline: str, theme: Theme, styles: _ParagraphStyles, style: Style
+) -> str:
+    """The cover's muted署名 line (單位／講者／日期), set under the cover text.
+
+    Its position follows the style's cover frames rather than a fixed y: a
+    left-aligned cover wants a left-aligned byline, and the airy ``quiet`` cover
+    pushes its subtitle far enough down that a fixed line would have printed on
+    top of it.
+    """
+    frames = cover_frames(style)
+    title = frames[0]
+    y = max(frame.y + frame.h for frame in frames) + _BYLINE_GAP
+    centered = title.center
+    x = title.x if not centered else _BYLINE_BOX[0]
+    w = title.w if not centered else _BYLINE_BOX[2]
+    frame = Frame("byline", x, y, w, 1.0, theme.caption_pt, center=centered)
+    para_style = styles.name_for(theme.caption_pt, False, centered, theme.muted)
     return _frame_box_xml(
         frame,
-        f'<text:p text:style-name="{_attr(style)}">{escape(byline)}</text:p>',
+        f'<text:p text:style-name="{_attr(para_style)}">{escape(byline)}</text:p>',
     )
 
 
@@ -2628,18 +2783,24 @@ def _list_xml(
     return f"<text:list{style_attr}>{''.join(li_parts)}</text:list>"
 
 
-def _kicker_paragraph_xml(text: str, styles: _ParagraphStyles, theme: Theme) -> str:
+def _kicker_paragraph_xml(
+    text: str,
+    styles: _ParagraphStyles,
+    theme: Theme,
+    color: str | None = None,
+) -> str:
     """Build a wide-tracked "kicker" ``<text:p>`` (caption-size, accent, spaced).
 
-    Not wired to any layout yet — provided for Tasks 13.3/14.1 to place an
-    eyebrow/kicker line above a heading. The paragraph style carries
-    ``fo:letter-spacing`` so the label reads as spaced small caps.
+    An eyebrow/kicker line above a heading. The paragraph style carries
+    ``fo:letter-spacing`` so the label reads as spaced small caps. ``color``
+    overrides the default accent for headings that already sit ON accent — an
+    accent kicker on an accent band is an invisible line, not a subtle one.
     """
     style_name = styles.name_for(
         theme.caption_pt,
         True,
         False,
-        theme.accent,
+        color or theme.accent,
         letter_spacing=_KICKER_LETTER_SPACING,
     )
     return f'<text:p text:style-name="{_attr(style_name)}">{escape(text)}</text:p>'
@@ -2659,7 +2820,10 @@ def _notes_xml(notes: str, style_name: str) -> str:
 
 
 def _section_number_xml(
-    ordinal: int, theme: Theme, styles: _ParagraphStyles
+    ordinal: int,
+    theme: Theme,
+    styles: _ParagraphStyles,
+    blend: float = _SECTION_NUMBER_BLEND,
 ) -> str:
     """Build the giant faded chapter-number watermark for a section page.
 
@@ -2669,7 +2833,7 @@ def _section_number_xml(
     the accent fill (see :data:`_SECTION_NUMBER_BLEND`). Emitted *before* the
     title so the title paints on top.
     """
-    color = _blend(theme.accent, theme.bg, _SECTION_NUMBER_BLEND)
+    color = _blend(theme.accent, theme.bg, blend)
     style_name = styles.name_for(_SECTION_NUMBER_PT, True, True, color)
     x, y, w, h = _SECTION_NUMBER_BOX
     frame = Frame("section-number", x, y, w, h, _SECTION_NUMBER_PT, bold=True, center=True)
@@ -2744,25 +2908,34 @@ def _page_xml(
     resolved_image: tuple[str, AssetBlob] | None = None,
     branding: Branding | None = None,
     logo: _LogoAsset | None = None,
+    style: Style | None = None,
 ) -> str:
     """Build one ``draw:page`` for a slide, registering its paragraph styles.
 
     Master page + drawing-page style are chosen by layout: :data:`PLAIN_LAYOUTS`
-    use the furniture-free "Plain" master, and :data:`_ACCENT_BG_LAYOUTS` swap in
-    the full-accent drawing-page style. Content-page titles gain a vertical accent
-    bar (and an optional ``kicker`` eyebrow); ``fact`` text is up-sized to display
-    + accent; the Task 14.1 page-role layouts (quote/agenda/comparison/chart/
-    closing) are dispatched by frame role below.
+    use the furniture-free "Plain" master, and the style's inverted layouts
+    (:func:`inverted_layouts`) swap in the full-accent drawing-page style. What a
+    content heading is marked with, how the divider page is treated and how the
+    cover is composed all come from ``style``; ``fact`` text is up-sized to
+    display + accent; the Task 14.1 page-role layouts (quote/agenda/comparison/
+    chart/closing) are dispatched by frame role below.
     """
+    style = style or get_style(None)
+    inverted = inverted_layouts(style)
     layout = slide.layout
     parts: list[str] = []
     # Pre-content decorations, emitted first so they sit behind the text.
-    if layout in _DECO_LAYOUTS:
-        parts.append(_deco_frame_xml())
-    # Giant chapter-number watermark: section pages only (closing must neither
-    # display nor consume an ordinal).
-    if layout == "section" and section_ordinal is not None:
-        parts.append(_section_number_xml(section_ordinal, theme, styles))
+    if layout == "title":
+        if style.cover == "band":
+            parts.append(_cover_band_xml(theme, graphics))
+        if style.cover_deco == "dots":
+            parts.append(_deco_frame_xml())
+        elif style.cover_deco == "rule":
+            parts.append(_cover_rule_xml(style, theme, graphics))
+    if layout == "section":
+        parts.append(
+            _section_mark_xml(style, section_ordinal, theme, styles, graphics)
+        )
     if layout == "quote":
         parts.append(_quote_mark_xml(theme, styles))
 
@@ -2771,7 +2944,7 @@ def _page_xml(
     # byline with no logo, or the reverse.
     if branding is not None:
         if layout == "title" and branding.byline:
-            parts.append(_byline_xml(branding.byline, theme, styles))
+            parts.append(_byline_xml(branding.byline, theme, styles, style))
         if logo is not None and _page_shows_logo(layout, branding.placement):
             parts.append(_logo_xml(logo, layout, theme, graphics))
 
@@ -2792,7 +2965,10 @@ def _page_xml(
         gap = caption_frame.y - (fact_frame.y + fact_frame.h)
         bigfact_caption_y = fact_frame.y + max(fact_frame.h, fact_h) + gap
 
-    for frame in LAYOUTS[layout]:
+    # The cover is the one layout whose geometry the style moves; every other
+    # layout keeps the shared frames the layout budget is computed against.
+    frames = cover_frames(style) if layout == "title" else LAYOUTS[layout]
+    for frame in frames:
         role = frame.role
 
         # chart-area draws a ChartSpec (shapes + labels), not text lines.
@@ -2871,15 +3047,18 @@ def _page_xml(
                 )
             )
 
-        # closing: inverted message (title + optional subtitle) in the bg colour.
+        # closing message (title + optional subtitle). Inverted styles paint it
+        # in the page colour on the accent ground; light ones keep title ink —
+        # bg-on-bg would have made the whole closing page blank.
         if role == "message":
             if layout == "closing" and not slide.bullets:
                 frame = replace(frame, y=6)
+            message_color = theme.bg if layout in inverted else theme.title_color
             msg_style = styles.name_for(
                 theme.h1_pt,
                 frame.bold,
                 frame.center,
-                theme.bg,
+                message_color,
                 font=theme.font_display,
             )
             inner = (
@@ -2888,7 +3067,7 @@ def _page_xml(
             )
             if slide.subtitle:
                 sub_style = styles.name_for(
-                    theme.body_pt, False, frame.center, theme.bg
+                    theme.body_pt, False, frame.center, message_color
                 )
                 inner += (
                     f'<text:p text:style-name="{_attr(sub_style)}">'
@@ -2934,19 +3113,20 @@ def _page_xml(
             parts.append(_frame_box_xml(frame, inner))
             continue
 
-        # Content-page title: optional vertical accent bar + optional kicker
-        # eyebrow (accent, letter-spaced) rendered above the title text.
+        # Content-page title: the style's heading mark + optional kicker eyebrow
+        # (accent, letter-spaced) rendered above the title text.
         if role == "title":
             if layout not in PLAIN_LAYOUTS:
-                bar_style = graphics.name_for_fill(theme.accent)
-                parts.append(
-                    _rect_xml(
-                        frame.x, frame.y, _ACCENT_BAR_W, frame.h,
-                        fill=theme.accent, style_name=bar_style,
-                    )
-                )
-            # Section/closing titles invert onto the accent background.
-            color = theme.bg if layout in _ACCENT_BG_LAYOUTS else theme.title_color
+                parts.append(_title_mark_xml(style, frame, theme, graphics))
+            # Inverted grounds (per style) and a filled heading band both put
+            # the text on accent, so it has to flip to the page colour.
+            on_accent = layout in inverted or (
+                style.title_mark == "block" and layout not in PLAIN_LAYOUTS
+            )
+            # A banded cover paints the accent ground behind the title too.
+            if layout == "title" and style.cover == "band":
+                on_accent = True
+            color = theme.bg if on_accent else theme.title_color
             title_style = styles.name_for(
                 frame.size_pt,
                 frame.bold,
@@ -2956,7 +3136,12 @@ def _page_xml(
             )
             inner = ""
             if slide.kicker and layout not in PLAIN_LAYOUTS:
-                inner += _kicker_paragraph_xml(slide.kicker, styles, theme)
+                inner += _kicker_paragraph_xml(
+                    slide.kicker,
+                    styles,
+                    theme,
+                    _blend(theme.bg, theme.accent, 0.22) if on_accent else None,
+                )
             inner += "".join(
                 f'<text:p text:style-name="{_attr(title_style)}">'
                 f"{escape(_line_text(line))}</text:p>"
@@ -2998,6 +3183,10 @@ def _page_xml(
             # caption never overlaps: drop it below the fact's real height.
             if bigfact_caption_y is not None:
                 frame = replace(frame, y=bigfact_caption_y)
+        elif role == "subtitle" and layout == "title" and style.cover == "band":
+            # The banded cover puts the subtitle on the accent ground too; ink
+            # colour there is dark-on-dark, i.e. an unreadable second line.
+            color = _blend(theme.bg, _section_fill(theme), 0.18)
         else:
             color = theme.text_color
 
@@ -3023,7 +3212,7 @@ def _page_xml(
     master = _PLAIN_MASTER_NAME if layout in PLAIN_LAYOUTS else _MASTER_PAGE_NAME
     dp_style = (
         _SECTION_DRAWING_PAGE_STYLE
-        if layout in _ACCENT_BG_LAYOUTS
+        if layout in inverted
         else _DRAWING_PAGE_STYLE
     )
     return (
@@ -3059,14 +3248,18 @@ def build_content_xml(
     theme: Theme,
     resolved_images: Mapping[int, tuple[str, AssetBlob]] | None = None,
     logo: _LogoAsset | None = None,
+    style: Style | None = None,
 ) -> str:
     """Build ``content.xml`` for a presentation. Pure function.
 
     ``logo`` is the resolved cover mark (``render_odp`` packages the bytes and
     passes the part reference in); ``None`` means the deck carries no logo, or
     the one it named could not be resolved — either way the pages render exactly
-    as they did before branding existed.
+    as they did before branding existed. ``style`` defaults to the deck's own
+    (``resolve_style``), so a caller holding only a Presentation gets the look
+    that Presentation asked for.
     """
+    style = style or resolve_style(p)
     styles = _ParagraphStyles(theme.font)
     # Graphic styles for shapes drawn on pages (accent bars, etc.).
     graphics = _GraphicStyles()
@@ -3095,6 +3288,7 @@ def build_content_xml(
             (resolved_images or {}).get(i),
             p.branding,
             logo,
+            style,
         )
         for i, slide in enumerate(p.slides)
     )
@@ -3106,7 +3300,7 @@ def build_content_xml(
     drawing_pages = _drawing_page_style_xml(
         _DRAWING_PAGE_STYLE, _page_fill_attrs(theme), display_page_number=True
     )
-    if any(slide.layout in _ACCENT_BG_LAYOUTS for slide in p.slides):
+    if any(slide.layout in inverted_layouts(style) for slide in p.slides):
         drawing_pages += _drawing_page_style_xml(
             _SECTION_DRAWING_PAGE_STYLE,
             f'draw:fill="solid" draw:fill-color="{_attr(_section_fill(theme))}"',
@@ -3190,7 +3384,7 @@ def _furniture_styles_xml(theme: Theme) -> str:
     return line + frame + page_number + kicker
 
 
-def _master_furniture_xml(theme: Theme, title: str) -> str:
+def _master_furniture_xml(theme: Theme, title: str, style: Style) -> str:
     """Standard master-page furniture: footer line, page number, kicker title.
 
     The kicker carries the presentation title (a per-page kicker field arrives in
@@ -3221,17 +3415,27 @@ def _master_furniture_xml(theme: Theme, title: str) -> str:
         f'<draw:text-box><text:p text:style-name="{_MP_KICKER_STYLE}">'
         f"{escape(title)}</text:p></draw:text-box></draw:frame>"
     )
+    # 版式 decides how much furniture a content page carries: the full rule +
+    # kicker + number, the page number alone, or nothing at all. A quiet style
+    # that still drew a footer rule would not read as a different template.
+    if style.footer == "none":
+        return ""
+    if style.footer == "quiet":
+        return page_number
     return footer_line + page_number + kicker
 
 
-def build_styles_xml(theme: Theme, title: str = "") -> str:
+def build_styles_xml(
+    theme: Theme, title: str = "", style: Style | None = None
+) -> str:
     """Build ``styles.xml`` (page layout + master pages + bg). Pure function.
 
-    Two master pages are defined: "Standard" (footer line, page-number frame,
-    kicker) for content pages, and "Plain" (no furniture) for title/section
-    pages. ``title`` supplies the kicker text. The dark preset gets a subtle
-    two-stop linear gradient background; light presets keep a flat solid fill.
+    Two master pages are defined: "Standard" (the style's footer furniture) for
+    content pages, and "Plain" (no furniture) for title/section pages. ``title``
+    supplies the kicker text. The dark preset gets a subtle two-stop linear
+    gradient background; light presets keep a flat solid fill.
     """
+    style = style or get_style(None)
     font_family = f"'{theme.font}','微軟正黑體',sans-serif"
     # office:styles carries the layer-set (required for master furniture to
     # render — see _LAYER_SET_XML) plus, for the dark preset, the bg gradient.
@@ -3273,7 +3477,7 @@ def build_styles_xml(theme: Theme, title: str = "") -> str:
         f'<style:master-page style:name="{_MASTER_PAGE_NAME}"'
         f' style:page-layout-name="PM1"'
         f' draw:style-name="{_DRAWING_PAGE_STYLE}">'
-        f"{_master_furniture_xml(theme, title)}"
+        f"{_master_furniture_xml(theme, title, style)}"
         f"</style:master-page>"
         f'<style:master-page style:name="{_PLAIN_MASTER_NAME}"'
         f' style:page-layout-name="PM1"'
@@ -3313,6 +3517,7 @@ def render_odp(
     # None) and a custom Theme built from the per-deck DesignSpec otherwise, so a
     # deck carrying design tokens actually renders with them.
     theme = resolve_design(p)
+    style = resolve_style(p)
     normalized_assets = normalize_assets(assets)
     provider = image_provider
     if provider is None and any(
@@ -3372,14 +3577,17 @@ def render_odp(
             logo = _LogoAsset(href, blob.width, blob.height)
 
     parts: dict[str, str | bytes] = {
-        "content.xml": build_content_xml(p, theme, resolved_images, logo),
-        "styles.xml": build_styles_xml(theme, p.title),
+        "content.xml": build_content_xml(p, theme, resolved_images, logo, style),
+        "styles.xml": build_styles_xml(theme, p.title, style),
         "meta.xml": build_meta_xml(p.title),
     }
     parts.update(image_parts)
     # Only ship the decoration SVG when a title page actually references it —
     # keeps non-title decks free of an unused Pictures part. build_content_xml
-    # emits the <draw:image> under the same title-layout condition.
-    if any(slide.layout in _DECO_LAYOUTS for slide in p.slides):
+    # emits the <draw:image> under the same conditions (title page + a style
+    # whose cover decoration is the dot lattice).
+    if style.cover_deco == "dots" and any(
+        slide.layout in _DECO_LAYOUTS for slide in p.slides
+    ):
         parts[_DECO_HREF] = _svg_decoration(theme)
     return write_odf_package(Path(out_path), ODP_MIMETYPE, parts)
