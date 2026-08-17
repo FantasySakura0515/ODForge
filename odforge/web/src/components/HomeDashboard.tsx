@@ -26,14 +26,12 @@ export function HomeDashboard({
   loading,
   error,
   onNew,
-  onTemplates,
   onReload,
 }: {
   sessions: SessionSummary[];
   loading: boolean;
   error: string;
   onNew: () => void;
-  onTemplates: () => void;
   onReload: () => void;
 }) {
   return (
@@ -42,24 +40,6 @@ export function HomeDashboard({
         <div>
           <span className="home-kicker">簡報工作台</span>
           <h1 id="home-title">最近工作</h1>
-        </div>
-        <div className="home-actions">
-          <button type="button" className="new-session" onClick={onNew}>
-            <span className="new-session-mark" aria-hidden="true">＋</span>
-            <span>
-              <b>新增簡報</b>
-              <small>從需求或參考文件開始</small>
-            </span>
-            <i aria-hidden="true">→</i>
-          </button>
-          <button type="button" className="new-session ghost" onClick={onTemplates}>
-            <span className="new-session-mark" aria-hidden="true">◧</span>
-            <span>
-              <b>範本庫</b>
-              <small>版式與配色，可自訂</small>
-            </span>
-            <i aria-hidden="true">→</i>
-          </button>
         </div>
       </section>
 
@@ -91,7 +71,9 @@ export function HomeDashboard({
             <span aria-hidden="true">00</span>
             <h2>還沒有簡報</h2>
             <p>建立第一份後，會保留在這裡。</p>
-            <button type="button" className="text-action" onClick={onNew}>新增簡報</button>
+            <button type="button" className="text-action" onClick={onNew}>
+              建立第一份簡報
+            </button>
           </div>
         ) : (
           <div className="session-list">

@@ -64,9 +64,10 @@ class Theme(str, Enum):
 
 class StyleName(str, Enum):
     classic = "classic"
+    report = "report"
+    academic = "academic"
+    keynote = "keynote"
     editorial = "editorial"
-    stage = "stage"
-    corporate = "corporate"
     zen = "zen"
 
 
@@ -304,8 +305,9 @@ def new(
     style: Optional[StyleName] = typer.Option(
         None,
         "--style",
-        help="版式（僅對 .odp 有效）：classic 學院派 / editorial 編輯風 / "
-        "stage 舞台 / corporate 企業報告 / zen 極簡；省略則用主題配對的預設版式。",
+        help="版式（僅對 .odp 有效）：classic 學院派 / report 顧問報告 / "
+        "academic 學術簡潔 / keynote 舞台 / editorial 編輯風 / zen 極簡；"
+        "省略則用主題配對的預設版式。",
     ),
     language: Language = typer.Option(
         Language.zh_tw,

@@ -2585,13 +2585,24 @@ def test_a_preset_without_an_explicit_style_uses_its_paired_default():
     # 「深夜藍」 ships as a stage deck and 「墨金」 as an editorial one; if the
     # pairing were ignored, every preset would render as the same house style —
     # which is exactly the complaint this layer answers.
-    assert THEME_STYLE["dark"] == "stage"
+    assert THEME_STYLE["dark"] == "keynote"
+    assert THEME_STYLE["gold"] == "editorial"
     deck = Presentation(
         title="t", theme="dark", slides=[Slide(layout="section", title="x")]
     )
-    assert resolve_style(deck).id == "stage"
+    assert resolve_style(deck).id == "keynote"
     # An explicit style always wins over the pairing.
     assert resolve_style(deck.model_copy(update={"style": "zen"})).id == "zen"
+
+
+def test_the_default_palette_keeps_the_default_composition():
+    from odforge.themes import THEME_STYLE, resolve_style
+
+    # A deck that names neither a style nor a preset must look exactly like it
+    # did before this layer existed.
+    deck = Presentation(title="t", slides=[Slide(layout="section", title="x")])
+    assert THEME_STYLE["academic"] == "classic"
+    assert resolve_style(deck).id == "classic"
 
 
 def test_cover_composition_differs_between_styles():
@@ -2622,64 +2633,76 @@ def test_the_dot_lattice_is_only_packaged_for_styles_that_use_it(tmp_path):
 
 def test_heading_marks_differ_between_styles():
     theme = THEMES["navy"]
-    content_page = lambda root: root.findall(".//draw:page", NS)[1]  # noqa: E731
 
-    bar = _content_root(_styled("classic"), theme)
-    block = _content_root(_styled("corporate"), theme)
-    none = _content_root(_styled("zen"), theme)
+    def mark(style_id):
+        page = _content_root(_styled(style_id), theme).findall(".//draw:page", NS)[1]
+        rects = page.findall(".//draw:rect", NS)
+        if not rects:
+            return None
+        rect = rects[0]
+        return (
+            float(rect.get(_q("svg", "width")).removesuffix("cm")),
+            float(rect.get(_q("svg", "height")).removesuffix("cm")),
+        )
 
-    # classic marks a heading with a thin vertical bar, corporate fills a whole
-    # band behind it, zen marks it with nothing at all.
-    bar_rects = content_page(bar).findall(".//draw:rect", NS)
-    block_rects = content_page(block).findall(".//draw:rect", NS)
-    assert len(bar_rects) == 1
-    assert len(block_rects) == 1
-    assert float(bar_rects[0].get(_q("svg", "width")).removesuffix("cm")) < 0.5
-    assert float(block_rects[0].get(_q("svg", "width")).removesuffix("cm")) > 20
-    assert content_page(none).findall(".//draw:rect", NS) == []
+    # classic: a narrow vertical bar beside the heading.
+    bar_w, bar_h = mark("classic")
+    assert bar_w < 0.5 and bar_h > 1.5
+    # report (MBB): a full-measure hairline UNDER the title — a hairline, not a
+    # filled band; the band treatment is what makes a deck look like 2009.
+    rule_w, rule_h = mark("report")
+    assert rule_w > 20 and rule_h < 0.1
+    # academic (metropolis): the same idea at 0.4pt, quieter still.
+    sep_w, sep_h = mark("academic")
+    assert sep_w > 20 and sep_h < rule_h
+    # editorial (Swiss): a short heavy rule ABOVE the heading.
+    kicker_w, kicker_h = mark("editorial")
+    assert kicker_w < 4 and kicker_h > sep_h
+    # zen: nothing at all.
+    assert mark("zen") is None
 
 
-def test_a_filled_heading_band_flips_its_text_to_the_page_colour():
+def test_a_bleed_cover_flips_its_text_to_the_page_colour():
     theme = THEMES["navy"]
-    root = _content_root(
-        _styled("corporate").model_copy(
-            update={
-                "slides": [
-                    Slide(layout="title-content", title="內頁", bullets=["甲"], kicker="進度"),
-                ]
-            }
-        ),
-        theme,
-    )
+    root = _content_root(_styled("keynote"), theme)
     page = root.findall(".//draw:page", NS)[0]
-    title = _text_p_with(page, "內頁")
     styles = {
         s.get(_q("style", "name")): s for s in root.findall(".//style:style", NS)
     }
-    props = styles[title.get(_q("text", "style-name"))].find(
-        ".//style:text-properties", NS
-    )
-    # Ink-on-accent would be an unreadable heading on every content page.
-    assert props.get(_q("fo", "color")).upper() == theme.bg.upper()
+
+    def colour_of(text):
+        para = _text_p_with(page, text)
+        return styles[para.get(_q("text", "style-name"))].find(
+            ".//style:text-properties", NS
+        ).get(_q("fo", "color")).upper()
+
+    # Title AND subtitle sit on the accent ground; ink colour there is an
+    # unreadable cover, which is exactly what the first cut shipped.
+    assert colour_of("封面") == theme.bg.upper()
+    assert colour_of("副標") != theme.text.upper()
 
 
 def test_divider_treatment_differs_between_styles():
     theme = THEMES["navy"]
-    inverted = _content_root(_styled("classic"), theme)
-    light = _content_root(_styled("editorial"), theme)
-    band = _content_root(_styled("corporate"), theme)
 
-    def section_page(root):
-        return root.findall(".//draw:page", NS)[2]
+    def section_page(style_id):
+        return _content_root(_styled(style_id), theme).findall(".//draw:page", NS)[2]
 
-    # classic inverts the whole page (a separate drawing-page style); editorial
-    # keeps the page light; corporate marks it with a full-height band instead.
-    assert section_page(inverted).get(_q("draw", "style-name")) != section_page(
-        light
+    # keynote inverts the whole divider (its own drawing-page style); the light
+    # styles keep the page colour and mark the divider some other way.
+    assert section_page("keynote").get(_q("draw", "style-name")) != section_page(
+        "report"
     ).get(_q("draw", "style-name"))
-    band_rects = section_page(band).findall(".//draw:rect", NS)
-    assert len(band_rects) == 1
-    assert band_rects[0].get(_q("svg", "height")) == "15.75cm"
+    # metropolis: the title sits between two full-measure rules.
+    rules = section_page("academic").findall(".//draw:rect", NS)
+    assert len(rules) == 2
+    # zen: a single small dot above the title, nothing else.
+    dots = section_page("zen").findall(".//draw:rect", NS)
+    assert len(dots) == 1
+    assert float(dots[0].get(_q("svg", "width")).removesuffix("cm")) < 0.4
+    # report / editorial: a numeral, drawn as text rather than a shape.
+    assert "01" in "".join(section_page("report").itertext())
+    assert "01" in "".join(section_page("editorial").itertext())
 
 
 def test_a_light_closing_keeps_its_message_readable():
@@ -2700,14 +2723,20 @@ def test_a_light_closing_keeps_its_message_readable():
 
 def test_footer_furniture_follows_the_style():
     theme = THEMES["navy"]
-    full = build_styles_xml(theme, "文件標題", get_style("classic"))
-    quiet = build_styles_xml(theme, "文件標題", get_style("stage"))
+    full = build_styles_xml(theme, "文件標題", get_style("report"))
+    progress = build_styles_xml(theme, "文件標題", get_style("academic"))
+    number_only = build_styles_xml(theme, "文件標題", get_style("keynote"))
     bare = build_styles_xml(theme, "文件標題", get_style("zen"))
 
+    # Consulting: rule + running head + page number.
     assert "draw:line" in full and "文件標題" in full
-    # stage keeps the page number but drops the rule and the running head.
-    assert "text:page-number" in quiet
-    assert "draw:line" not in quiet
+    # metropolis: its one decorative element is the progress track; no rule.
+    assert "MPtrack" in progress
+    assert "draw:line" not in progress
+    assert "text:page-number" in progress
+    # keynote: the page number and nothing else.
+    assert "text:page-number" in number_only
+    assert "MPtrack" not in number_only and "draw:line" not in number_only
     # zen carries no furniture at all.
     assert "text:page-number" not in bare
     assert "draw:line" not in bare
@@ -2728,6 +2757,6 @@ def test_the_byline_follows_the_cover_it_sits_under():
         )
         return float(frame.get(_q("svg", "y")).removesuffix("cm"))
 
-    # The airy cover pushes its subtitle further down, so a fixed byline line
-    # would have printed on top of it.
-    assert byline_y("zen") > byline_y("classic")
+    # The bottom-anchored keynote cover pushes its subtitle far down the page,
+    # so a fixed byline line would have printed on top of it.
+    assert byline_y("keynote") > byline_y("classic")

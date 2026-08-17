@@ -2661,12 +2661,12 @@ def test_style_survives_a_reload(app, monkeypatch):
     _install_fakes(monkeypatch, n=3)
     with TestClient(app) as client:
         job_id, snapshot = _run_to_completion(
-            client, {"prompt": "x", "style": "stage"}
+            client, {"prompt": "x", "style": "keynote"}
         )
     assert snapshot["status"] == "complete"
     revived = webapi.create_app(jobs_dir=app.state.jobs_dir)
-    assert revived.state.jobs[job_id].style == "stage"
-    assert revived.state.jobs[job_id].ir.style == "stage"
+    assert revived.state.jobs[job_id].style == "keynote"
+    assert revived.state.jobs[job_id].ir.style == "keynote"
 
 
 def test_no_style_leaves_the_palettes_pairing_in_charge(app, monkeypatch):

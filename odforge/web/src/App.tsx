@@ -9,6 +9,7 @@ import { ErrorPanel } from "./components/ErrorPanel";
 import { DiscoveryPanel } from "./components/DiscoveryPanel";
 import { HomeDashboard } from "./components/HomeDashboard";
 import { TemplatesPage } from "./components/TemplatesPage";
+import { SideNav } from "./components/SideNav";
 import {
   ApiHttpError,
   getSessions,
@@ -385,17 +386,25 @@ export default function App() {
         </div>
       </header>
 
-      {templates ? (
-        <TemplatesPage onBack={goHome} />
-      ) : home ? (
-        <HomeDashboard
-          sessions={sessions}
-          loading={sessionsLoading}
-          error={sessionsError}
-          onNew={startNew}
-          onTemplates={goTemplates}
-          onReload={() => void loadSessions()}
-        />
+      {home || templates ? (
+        <div className="shell-with-nav">
+          <SideNav
+            current={templates ? "templates" : "home"}
+            onNavigate={(next) => (next === "templates" ? goTemplates() : goHome())}
+            onNew={startNew}
+          />
+          {templates ? (
+            <TemplatesPage />
+          ) : (
+            <HomeDashboard
+              sessions={sessions}
+              loading={sessionsLoading}
+              error={sessionsError}
+              onNew={startNew}
+              onReload={() => void loadSessions()}
+            />
+          )}
+        </div>
       ) : composer ? (
         <main className="welcome-shell" id="main-content">
           <span className="cockpit state-probe" data-outline="absent" hidden />

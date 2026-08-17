@@ -48,9 +48,8 @@ from odforge.textmetrics import (
     text_width_cm,
 )
 from odforge.themes import (
-    COVER_BAND_H,
-    COVER_BAND_Y,
     COVER_FRAMES,
+    SECTION_FRAMES,
     LAYOUTS,
     LIST_ROLES,
     PAGE_H,
@@ -140,6 +139,7 @@ _PAGENUM_X = 24.0
 _PAGENUM_W = 2.5
 _KICKER_W = 18.0
 _MP_LINE_STYLE = "MPline"
+_MP_TRACK_STYLE = "MPtrack"
 _MP_FRAME_STYLE = "MPframe"
 _MP_PAGENUM_STYLE = "MPpage"
 _MP_KICKER_STYLE = "MPkicker"
@@ -812,24 +812,33 @@ def _svg_decoration(theme: Theme) -> bytes:
 # functions of (style, theme) so a new style stays a data edit.
 # ---------------------------------------------------------------------------
 
-# Cover rule (``cover_deco="rule"``): a short heavy accent bar above the title.
-_COVER_RULE_W = 3.6
-_COVER_RULE_H = 0.34
-_COVER_RULE_GAP = 0.9
-# Content heading underline (``title_mark="underline"``).
-_TITLE_RULE_H = 0.06
-_TITLE_RULE_GAP = 0.12
-# Filled heading band (``title_mark="block"``) — full content width, text inset.
-_TITLE_BLOCK_PAD_X = 0.42
-_TITLE_BLOCK_PAD_Y = 0.22
-# Section band (``section="band"``) and section rule (``section="rule"``).
-_SECTION_BAND_W = 0.55
-_SECTION_RULE_W = 2.6
-_SECTION_RULE_H = 0.16
-_SECTION_RULE_GAP = 0.85
-# A light-ground section numeral has no accent fill to sit on, so it is blended
-# toward the page bg much harder than the inverted one.
-_SECTION_NUMBER_LIGHT_BLEND = 0.82
+# Hairline weights. The consulting rule and metropolis' separator are both
+# hairlines (0.4–0.6pt ≈ 0.015–0.02cm); anything heavier reads as a divider bar
+# and is the first thing that makes a deck look like a 2009 PowerPoint.
+_HAIRLINE_H = 0.045
+_SEPARATOR_H = 0.02
+# Swiss kicker rule: short, heavier, sits above the heading.
+_KICKER_RULE_W = 2.2
+_KICKER_RULE_H = 0.12
+# Cover rules.
+_COVER_RULE_W = 3.2
+_COVER_RULE_H = 0.14
+_COVER_RULE_GAP = 0.85
+_COVER_UNDERRULE_H = 0.03
+_COVER_UNDERRULE_GAP = 0.75
+_MASTHEAD_Y = 2.2
+# Section numerals.
+_SECTION_NUMERAL_PT = 120
+_SECTION_HUGE_PT = 190
+_SECTION_RULE_H = 0.03
+_SECTION_DOT = 0.24
+# metropolis' progress bar: full-width hairline track at the very bottom.
+_PROGRESS_Y = 15.52
+_PROGRESS_H = 0.09
+# A light-ground numeral has no accent fill to sit on, so it is blended toward
+# the page bg far harder than one printed on the accent ground.
+_SECTION_NUMBER_LIGHT_BLEND = 0.80
+_SECTION_NUMBER_GHOST_BLEND = 0.90
 
 
 def cover_frames(style: Style) -> list[Frame]:
@@ -837,70 +846,101 @@ def cover_frames(style: Style) -> list[Frame]:
     return COVER_FRAMES.get(style.cover, COVER_FRAMES["centered"])
 
 
+def section_frames(style: Style) -> list[Frame]:
+    """The divider page's frames for this style (numerals move the title)."""
+    return SECTION_FRAMES.get(style.section, LAYOUTS["section"])
+
+
 def inverted_layouts(style: Style) -> frozenset[str]:
     """Which layouts paint a full-bleed accent ground under this style."""
     inverted = set()
-    if style.section == "invert-number":
+    if style.section == "bleed-numeral":
         inverted.add("section")
     if style.invert_closing:
         inverted.add("closing")
     return frozenset(inverted)
 
 
-def _cover_band_xml(theme: Theme, graphics: _GraphicStyles) -> str:
-    """Full-bleed accent band behind a ``cover="band"`` title block."""
+def _cover_is_bleed(style: Style) -> bool:
+    """Whether the opening page itself is a full-bleed accent ground."""
+    return style.cover_deco == "bleed"
+
+
+def _fill(x, y, w, h, color, graphics, radius=0.0):
     return _rect_xml(
-        0,
-        COVER_BAND_Y,
-        PAGE_W,
-        COVER_BAND_H,
-        fill=_section_fill(theme),
-        style_name=graphics.name_for_fill(_section_fill(theme)),
+        x, y, w, h,
+        fill=color,
+        corner_radius_cm=radius,
+        style_name=graphics.name_for_fill(color),
     )
 
 
-def _cover_rule_xml(
+def _cover_deco_xml(
     style: Style, theme: Theme, graphics: _GraphicStyles
 ) -> str:
-    """The heavy accent rule a ``cover_deco="rule"`` style sets above the title."""
+    """The opening page's decoration, per ``Style.cover_deco``."""
     title = cover_frames(style)[0]
-    x = title.x if not title.center else (PAGE_W - _COVER_RULE_W) / 2
-    return _rect_xml(
-        x,
-        title.y - _COVER_RULE_GAP,
-        _COVER_RULE_W,
-        _COVER_RULE_H,
-        fill=theme.accent,
-        style_name=graphics.name_for_fill(theme.accent),
-    )
+    if style.cover_deco == "bleed":
+        # Bleed to every edge: the ground itself is the decoration.
+        return _fill(0, 0, PAGE_W, PAGE_H, _section_fill(theme), graphics)
+    if style.cover_deco == "rule-above":
+        return _fill(
+            title.x, title.y - _COVER_RULE_GAP,
+            _COVER_RULE_W, _COVER_RULE_H, theme.accent, graphics,
+        )
+    if style.cover_deco == "masthead":
+        # Swiss report head: one hairline across the full measure near the top.
+        return _fill(
+            title.x, _MASTHEAD_Y, PAGE_W - 2 * title.x, _COVER_UNDERRULE_H,
+            theme.accent, graphics,
+        )
+    if style.cover_deco == "rule-under":
+        # metropolis draws its rule under the whole title block, full measure.
+        bottom = max(frame.y + frame.h for frame in cover_frames(style))
+        return _fill(
+            title.x, bottom + _COVER_UNDERRULE_GAP,
+            PAGE_W - 2 * title.x, _COVER_UNDERRULE_H, theme.accent, graphics,
+        )
+    return ""
+
+
+def _cover_text_bottom(style: Style) -> float:
+    """The lowest y any cover element occupies, decoration included.
+
+    The byline is placed under this. Taking only the text frames into account
+    printed metropolis' full-measure rule straight through the byline.
+    """
+    bottom = max(frame.y + frame.h for frame in cover_frames(style))
+    if style.cover_deco == "rule-under":
+        bottom += _COVER_UNDERRULE_GAP + _COVER_UNDERRULE_H
+    return bottom
 
 
 def _title_mark_xml(
     style: Style, frame: Frame, theme: Theme, graphics: _GraphicStyles
 ) -> str:
     """The mark that identifies a content heading, per ``Style.title_mark``."""
+    if style.title_mark == "hairline":
+        # Consulting: a hairline under the action title, full content measure.
+        return _fill(
+            frame.x, frame.y + frame.h + 0.18, frame.w, _HAIRLINE_H,
+            theme.accent, graphics,
+        )
+    if style.title_mark == "separator":
+        # metropolis: a 0.4pt separator directly under the frame title, in the
+        # muted ink rather than the accent — it separates, it does not shout.
+        return _fill(
+            frame.x, frame.y + frame.h + 0.12, frame.w, _SEPARATOR_H,
+            _blend(theme.muted, theme.bg, 0.45), graphics,
+        )
+    if style.title_mark == "kicker-rule":
+        return _fill(
+            frame.x, frame.y - 0.42, _KICKER_RULE_W, _KICKER_RULE_H,
+            theme.accent, graphics,
+        )
     if style.title_mark == "bar":
-        return _rect_xml(
-            frame.x, frame.y, _ACCENT_BAR_W, frame.h,
-            fill=theme.accent, style_name=graphics.name_for_fill(theme.accent),
-        )
-    if style.title_mark == "underline":
-        return _rect_xml(
-            frame.x,
-            frame.y + frame.h + _TITLE_RULE_GAP,
-            frame.w,
-            _TITLE_RULE_H,
-            fill=theme.accent,
-            style_name=graphics.name_for_fill(theme.accent),
-        )
-    if style.title_mark == "block":
-        return _rect_xml(
-            frame.x - _TITLE_BLOCK_PAD_X,
-            frame.y - _TITLE_BLOCK_PAD_Y,
-            frame.w + 2 * _TITLE_BLOCK_PAD_X,
-            frame.h + 2 * _TITLE_BLOCK_PAD_Y,
-            fill=theme.accent,
-            style_name=graphics.name_for_fill(theme.accent),
+        return _fill(
+            frame.x, frame.y, _ACCENT_BAR_W, frame.h, theme.accent, graphics,
         )
     return ""
 
@@ -912,32 +952,66 @@ def _section_mark_xml(
     styles: _ParagraphStyles,
     graphics: _GraphicStyles,
 ) -> str:
-    """The divider page's decoration, per ``Style.section``."""
-    if style.section in ("invert-number", "light-number"):
+    """The divider page's composition, per ``Style.section``."""
+    title = section_frames(style)[0]
+    if style.section == "bleed-numeral":
         if ordinal is None:
             return ""
-        blend = (
-            _SECTION_NUMBER_BLEND
-            if style.section == "invert-number"
-            else _SECTION_NUMBER_LIGHT_BLEND
+        return _section_number_xml(ordinal, theme, styles, _SECTION_NUMBER_BLEND)
+    if style.section == "numeral-left":
+        # Consulting divider: a big quiet numeral on the left, title beside it.
+        if ordinal is None:
+            return ""
+        color = _blend(theme.accent, theme.bg, _SECTION_NUMBER_LIGHT_BLEND)
+        return _numeral_xml(
+            ordinal, 2.0, 5.5, 7.0, 3.8, _SECTION_NUMERAL_PT, color, styles
         )
-        return _section_number_xml(ordinal, theme, styles, blend)
-    if style.section == "band":
-        return _rect_xml(
-            0, 0, _SECTION_BAND_W, PAGE_H,
-            fill=theme.accent, style_name=graphics.name_for_fill(theme.accent),
+    if style.section == "numeral-huge":
+        # Swiss: an oversized ghosted numeral behind the title.
+        if ordinal is None:
+            return ""
+        color = _blend(theme.accent, theme.bg, _SECTION_NUMBER_GHOST_BLEND)
+        return _numeral_xml(
+            ordinal, 1.8, 2.3, 13.0, 5.6, _SECTION_HUGE_PT, color, styles
         )
-    if style.section == "rule":
-        title = LAYOUTS["section"][0]
-        return _rect_xml(
-            (PAGE_W - _SECTION_RULE_W) / 2,
-            title.y - _SECTION_RULE_GAP,
-            _SECTION_RULE_W,
-            _SECTION_RULE_H,
-            fill=theme.accent,
-            style_name=graphics.name_for_fill(theme.accent),
+    if style.section == "centered-rules":
+        # metropolis section page: the title sits between two full-measure rules.
+        rule_w = PAGE_W - 2 * title.x
+        color = _blend(theme.muted, theme.bg, 0.4)
+        return (
+            _fill(title.x, title.y - 0.85, rule_w, _SECTION_RULE_H, color, graphics)
+            + _fill(
+                title.x, title.y + title.h + 0.55, rule_w, _SECTION_RULE_H,
+                color, graphics,
+            )
+        )
+    if style.section == "dot":
+        return _fill(
+            (PAGE_W - _SECTION_DOT) / 2, title.y - 1.1,
+            _SECTION_DOT, _SECTION_DOT, theme.accent, graphics,
+            radius=_SECTION_DOT / 2,
         )
     return ""
+
+
+def _numeral_xml(
+    ordinal: int,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    size_pt: int,
+    color: str,
+    styles: _ParagraphStyles,
+) -> str:
+    """A large zero-padded section numeral drawn at an explicit box."""
+    style_name = styles.name_for(size_pt, True, False, color)
+    frame = Frame("section-number", x, y, w, h, size_pt, bold=True)
+    return _frame_box_xml(
+        frame,
+        f'<text:p text:style-name="{_attr(style_name)}">'
+        f"{escape(f'{ordinal:02d}')}</text:p>",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1066,14 +1140,20 @@ def _byline_xml(
     pushes its subtitle far enough down that a fixed line would have printed on
     top of it.
     """
-    frames = cover_frames(style)
-    title = frames[0]
-    y = max(frame.y + frame.h for frame in frames) + _BYLINE_GAP
+    title = cover_frames(style)[0]
+    y = _cover_text_bottom(style) + _BYLINE_GAP
     centered = title.center
     x = title.x if not centered else _BYLINE_BOX[0]
     w = title.w if not centered else _BYLINE_BOX[2]
+    # On a bleed cover the muted ink is dark-on-dark; the byline reads in the
+    # page colour, dimmed toward the ground so it stays secondary to the title.
+    colour = (
+        _blend(theme.bg, _section_fill(theme), 0.42)
+        if _cover_is_bleed(style)
+        else theme.muted
+    )
     frame = Frame("byline", x, y, w, 1.0, theme.caption_pt, center=centered)
-    para_style = styles.name_for(theme.caption_pt, False, centered, theme.muted)
+    para_style = styles.name_for(theme.caption_pt, False, centered, colour)
     return _frame_box_xml(
         frame,
         f'<text:p text:style-name="{_attr(para_style)}">{escape(byline)}</text:p>',
@@ -2926,12 +3006,9 @@ def _page_xml(
     parts: list[str] = []
     # Pre-content decorations, emitted first so they sit behind the text.
     if layout == "title":
-        if style.cover == "band":
-            parts.append(_cover_band_xml(theme, graphics))
+        parts.append(_cover_deco_xml(style, theme, graphics))
         if style.cover_deco == "dots":
             parts.append(_deco_frame_xml())
-        elif style.cover_deco == "rule":
-            parts.append(_cover_rule_xml(style, theme, graphics))
     if layout == "section":
         parts.append(
             _section_mark_xml(style, section_ordinal, theme, styles, graphics)
@@ -2967,7 +3044,12 @@ def _page_xml(
 
     # The cover is the one layout whose geometry the style moves; every other
     # layout keeps the shared frames the layout budget is computed against.
-    frames = cover_frames(style) if layout == "title" else LAYOUTS[layout]
+    if layout == "title":
+        frames = cover_frames(style)
+    elif layout == "section":
+        frames = section_frames(style)
+    else:
+        frames = LAYOUTS[layout]
     for frame in frames:
         role = frame.role
 
@@ -3123,8 +3205,8 @@ def _page_xml(
             on_accent = layout in inverted or (
                 style.title_mark == "block" and layout not in PLAIN_LAYOUTS
             )
-            # A banded cover paints the accent ground behind the title too.
-            if layout == "title" and style.cover == "band":
+            # A bleed cover paints the accent ground behind the title too.
+            if layout == "title" and _cover_is_bleed(style):
                 on_accent = True
             color = theme.bg if on_accent else theme.title_color
             title_style = styles.name_for(
@@ -3183,10 +3265,10 @@ def _page_xml(
             # caption never overlaps: drop it below the fact's real height.
             if bigfact_caption_y is not None:
                 frame = replace(frame, y=bigfact_caption_y)
-        elif role == "subtitle" and layout == "title" and style.cover == "band":
-            # The banded cover puts the subtitle on the accent ground too; ink
+        elif role == "subtitle" and layout == "title" and _cover_is_bleed(style):
+            # The bleed cover puts the subtitle on the accent ground too; ink
             # colour there is dark-on-dark, i.e. an unreadable second line.
-            color = _blend(theme.bg, _section_fill(theme), 0.18)
+            color = _blend(theme.bg, _section_fill(theme), 0.22)
         else:
             color = theme.text_color
 
@@ -3356,8 +3438,12 @@ def _furniture_para_xml(
     )
 
 
-def _furniture_styles_xml(theme: Theme) -> str:
-    """Automatic styles the "Standard" master's furniture frames/line reference."""
+def _furniture_styles_xml(theme: Theme, style: Style) -> str:
+    """Automatic styles the "Standard" master's furniture frames/line reference.
+
+    Only what this 版式 actually draws is emitted — an automatic style nobody
+    references is dead weight in every file the user ships.
+    """
     line = (
         f'<style:style style:name="{_MP_LINE_STYLE}" style:family="graphic">'
         f'<style:graphic-properties draw:fill="none" draw:stroke="solid"'
@@ -3368,6 +3454,14 @@ def _furniture_styles_xml(theme: Theme) -> str:
     frame = (
         f'<style:style style:name="{_MP_FRAME_STYLE}" style:family="graphic">'
         f'<style:graphic-properties draw:fill="none" draw:stroke="none"/>'
+        f"</style:style>"
+    )
+    # metropolis' progress track: a faint accent strip at the very bottom edge.
+    track = (
+        f'<style:style style:name="{_MP_TRACK_STYLE}" style:family="graphic">'
+        f'<style:graphic-properties draw:fill="solid"'
+        f' draw:fill-color="{_attr(_blend(theme.accent, theme.bg, 0.45))}"'
+        f' draw:stroke="none"/>'
         f"</style:style>"
     )
     page_number = _furniture_para_xml(
@@ -3381,6 +3475,12 @@ def _furniture_styles_xml(theme: Theme) -> str:
         align="start",
         letter_spacing=_KICKER_LETTER_SPACING,
     )
+    if style.footer == "none":
+        return frame
+    if style.footer == "number":
+        return frame + page_number
+    if style.footer == "progress":
+        return frame + track + page_number
     return line + frame + page_number + kicker
 
 
@@ -3415,13 +3515,22 @@ def _master_furniture_xml(theme: Theme, title: str, style: Style) -> str:
         f'<draw:text-box><text:p text:style-name="{_MP_KICKER_STYLE}">'
         f"{escape(title)}</text:p></draw:text-box></draw:frame>"
     )
-    # 版式 decides how much furniture a content page carries: the full rule +
-    # kicker + number, the page number alone, or nothing at all. A quiet style
-    # that still drew a footer rule would not read as a different template.
+    # 版式 decides how much furniture a content page carries. metropolis' one
+    # decorative element is a slim progress track at the very bottom edge; the
+    # consulting layout keeps the rule + running head + number; the stage and
+    # Swiss layouts keep only the number; zen keeps nothing.
     if style.footer == "none":
         return ""
-    if style.footer == "quiet":
+    if style.footer == "number":
         return page_number
+    if style.footer == "progress":
+        track = (
+            f'<draw:rect draw:style-name="{_MP_TRACK_STYLE}"'
+            f' draw:layer="{_FURNITURE_LAYER}"'
+            f' svg:x="0cm" svg:y="{_cm(_PROGRESS_Y)}"'
+            f' svg:width="{_cm(PAGE_W)}" svg:height="{_cm(_PROGRESS_H)}"/>'
+        )
+        return track + page_number
     return footer_line + page_number + kicker
 
 
@@ -3471,7 +3580,7 @@ def build_styles_xml(
         f' style:family="drawing-page">'
         f"<style:drawing-page-properties {page_fill}/>"
         f"</style:style>"
-        f"{_furniture_styles_xml(theme)}"
+        f"{_furniture_styles_xml(theme, style)}"
         f"</office:automatic-styles>"
         f"<office:master-styles>"
         f'<style:master-page style:name="{_MASTER_PAGE_NAME}"'

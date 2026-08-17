@@ -86,15 +86,35 @@ PAGE_H: float = 15.75
 # ---------------------------------------------------------------------------
 # Style (版式) — the layout personality, orthogonal to colour
 #
-# A Theme decides what a deck is *coloured* like. A Style decides what it is
-# *composed* like: where the cover title sits, what marks a content heading,
-# whether a section divider inverts, and how much footer furniture appears.
-# Recolouring alone produced thirteen decks that were recognisably the same
-# template; these switches are what make two templates actually different
-# documents.
+# A Theme decides what a deck is *coloured* like; a Style decides what it is
+# *composed* like. Recolouring alone produced thirteen decks that were
+# recognisably one template — these switches are what make two templates two
+# different documents.
+#
+# None of these compositions is invented here. Each follows a published, widely
+# used convention, and the fields below are just the knobs those conventions
+# actually differ on:
+#
+# * ``report``  — the MBB consulting slide: an action title top-left, a hairline
+#   rule under it, evidence below, source line bottom-left and page number
+#   bottom-right. Title 28–36pt / body 11–12pt / footnote 7–8pt.
+#   (deckary.com/blog/consulting-slide-standards, poesius.com consulting guides)
+# * ``academic`` — the Beamer *metropolis* theme: minimal noise, frame title with
+#   a 0.4pt separator directly under it, section pages centred between two
+#   rules, a slim progress bar as the one decorative element.
+#   (github.com/matze/mtheme)
+# * ``keynote`` — the full-bleed colour block with bottom-anchored text: bleed to
+#   at least one edge, text grounded in the lower third, furniture stripped to a
+#   page number. (slidemodel / slidegenius title-slide guides, Evergreen "Bleed
+#   your presentation")
+# * ``editorial`` — Swiss/International Typographic Style: strict grid, bold
+#   headline running across the middle, spaced small-caps kicker, hairline at the
+#   top of the content area and almost no other furniture.
+# * ``zen`` — the minimalist/design-forward layout: no rules at all; the title
+#   sits on the upper third rather than dead centre and whitespace does the work.
 #
 # Every field is a small enum consumed at exactly one place in the renderer, so
-# adding a style is data, not new drawing code.
+# adding a style stays a data edit rather than new drawing code.
 # ---------------------------------------------------------------------------
 
 
@@ -102,18 +122,18 @@ PAGE_H: float = 15.75
 class Style:
     """One layout personality.
 
-    ``cover`` — how the opening page is composed:
-      ``centered`` 置中大標 · ``left`` 左切齊編輯感 · ``band`` 滿版色帶反白 ·
-      ``quiet`` 大量留白、標題偏下。
-    ``cover_deco`` — the opening page's decoration: ``dots`` 點陣 ·
-      ``rule`` 標題上方粗線 · ``none``。
-    ``title_mark`` — what marks a content heading: ``bar`` 左側色條 ·
-      ``underline`` 標題下細線 · ``block`` 整條填色標題帶(文字反白) · ``none``。
-    ``section`` — the divider page: ``invert-number`` 滿版強調色+巨大編號 ·
-      ``light-number`` 淺底+淡編號 · ``band`` 淺底+左側粗色帶 · ``rule`` 淺底+
-      標題上方短線。
-    ``footer`` — master furniture: ``line`` 頁尾線+頁碼+眉標 · ``quiet`` 只留頁碼 ·
-      ``none`` 全部拿掉。
+    ``cover`` — which entry in :data:`COVER_FRAMES` composes the opening page.
+    ``cover_deco`` — ``rule-above`` 標題上方細線 · ``rule-under`` 標題下方通欄細線 ·
+      ``masthead`` 頁面上緣通欄細線(Swiss 報頭) · ``bleed`` 滿版強調色出血 ·
+      ``dots`` 點陣 · ``none``。
+    ``title_mark`` — the content heading's mark: ``hairline`` 標題下通欄細線
+      (顧問報告) · ``separator`` 標題下 0.4pt 分隔線 (metropolis) ·
+      ``kicker-rule`` 標題上方短線 (Swiss) · ``bar`` 左側色條 · ``none``。
+    ``section`` — the divider page: ``numeral-left`` 淺底、左側巨大編號 ·
+      ``centered-rules`` 置中標題、上下兩條細線 · ``bleed-numeral`` 滿版強調色 +
+      編號 · ``numeral-huge`` 淺底、超大編號壓在標題後 · ``dot`` 標題上方小圓點。
+    ``footer`` — master furniture: ``rule`` 頁尾線 + 眉標 + 頁碼 ·
+      ``progress`` 進度條 + 頁碼 · ``number`` 只有頁碼 · ``none``。
     """
 
     id: str
@@ -128,58 +148,73 @@ class Style:
 
 
 STYLES: dict[str, Style] = {
+    # The deck design ODForge shipped with: a centred cover over a dot lattice,
+    # a vertical accent bar beside每個內頁標題, and full-bleed dividers. Kept as
+    # a style rather than replaced — it is a real, tuned composition, and it is
+    # what every deck generated before this layer existed looks like.
     "classic": Style(
         id="classic",
         label="學院派",
-        blurb="置中封面、標題左側色條、滿版分節頁。最穩的教學與研究簡報版式。",
+        blurb="置中封面、標題左側色條、滿版分節頁。ODForge 原本的版面，穩定好用的通用選擇。",
         cover="centered",
         cover_deco="dots",
         title_mark="bar",
-        section="invert-number",
-        footer="line",
+        section="bleed-numeral",
+        footer="rule",
+        invert_closing=True,
+    ),
+    "report": Style(
+        id="report",
+        label="顧問報告",
+        blurb="標題在左上、下方一條細線，出處與頁碼在頁尾。MBB 顧問簡報的標準結構，最適合正式匯報與評鑑。",
+        cover="report",
+        cover_deco="rule-above",
+        title_mark="hairline",
+        section="numeral-left",
+        footer="rule",
+        invert_closing=False,
+    ),
+    "academic": Style(
+        id="academic",
+        label="學術簡潔",
+        blurb="標題下一條細分隔線、底部一條進度條、分節頁上下夾兩條線。取自 Beamer metropolis 主題，適合論文口試與課堂。",
+        cover="academic",
+        cover_deco="rule-under",
+        title_mark="separator",
+        section="centered-rules",
+        footer="progress",
+        invert_closing=False,
+    ),
+    "keynote": Style(
+        id="keynote",
+        label="舞台",
+        blurb="封面整頁出血強調色、標題錨在下三分之一，內頁只有大字。適合上台講述與主題演講。",
+        cover="keynote",
+        cover_deco="bleed",
+        title_mark="none",
+        section="bleed-numeral",
+        footer="number",
         invert_closing=True,
     ),
     "editorial": Style(
         id="editorial",
         label="編輯風",
-        blurb="左切齊封面、標題下細線、淺底分節頁。像一份印刷品，適合人文與報告。",
-        cover="left",
-        cover_deco="rule",
-        title_mark="underline",
-        section="light-number",
-        footer="line",
+        blurb="Swiss 網格：頂部通欄細線、粗標題橫貫中段、極少家具。適合人文、設計與展覽敘事。",
+        cover="editorial",
+        cover_deco="masthead",
+        title_mark="kicker-rule",
+        section="numeral-huge",
+        footer="number",
         invert_closing=False,
-    ),
-    "stage": Style(
-        id="stage",
-        label="舞台",
-        blurb="封面滿版色帶反白、內頁只有大標、頁尾只留頁碼。給上台講述的場合。",
-        cover="band",
-        cover_deco="none",
-        title_mark="none",
-        section="invert-number",
-        footer="quiet",
-        invert_closing=True,
-    ),
-    "corporate": Style(
-        id="corporate",
-        label="企業報告",
-        blurb="每頁標題帶填色、分節頁左側粗色帶。結構清楚，適合正式匯報與評鑑。",
-        cover="left",
-        cover_deco="none",
-        title_mark="block",
-        section="band",
-        footer="line",
-        invert_closing=True,
     ),
     "zen": Style(
         id="zen",
         label="極簡",
-        blurb="沒有裝飾、沒有頁尾線、標題不加記號。留白自己說話。",
-        cover="quiet",
+        blurb="沒有線、沒有頁尾、沒有裝飾；標題落在上三分之一，留白自己說話。適合品牌與產品發表。",
+        cover="zen",
         cover_deco="none",
         title_mark="none",
-        section="rule",
+        section="dot",
         footer="none",
         invert_closing=False,
     ),
@@ -191,17 +226,19 @@ DEFAULT_STYLE = "classic"
 # point: 「墨金」 as an editorial print piece and 「深夜藍」 as a stage deck are two
 # different templates, not two colourways of one.
 THEME_STYLE: dict[str, str] = {
+    # The default palette keeps the default composition: a deck that names no
+    # style at all must look like it always did.
     "academic": "classic",
     "minimal": "zen",
-    "teal": "corporate",
+    "teal": "report",
     "forest": "editorial",
-    "navy": "corporate",
-    "dark": "stage",
-    "violet": "stage",
-    "crimson": "classic",
-    "slate": "stage",
+    "navy": "report",
+    "dark": "keynote",
+    "violet": "keynote",
+    "crimson": "academic",
+    "slate": "keynote",
     "gold": "editorial",
-    "sky": "classic",
+    "sky": "academic",
     "plum": "editorial",
     "clay": "zen",
 }
@@ -215,29 +252,52 @@ def get_style(style_id: str | None) -> Style:
 # Cover geometry per ``Style.cover``. Only the opening page moves; the other
 # layouts share one geometry and differ by the marks drawn on them, which keeps
 # the layout budget (textmetrics) reasoning about one set of content frames.
+#
+# Margins follow the 0.75in (≈1.9cm) "comfortable standard" the slide-design
+# guides converge on, with a deeper bottom margin than top for optical grounding.
 COVER_FRAMES: dict[str, list[Frame]] = {
+    # The original centred cover.
     "centered": [
         Frame("title", 2, 5.5, 24, 3, 40, bold=True, center=True),
         Frame("subtitle", 2, 9, 24, 2, 20, center=True),
     ],
-    "left": [
-        Frame("title", 2.2, 5.2, 21, 3.2, 40, bold=True),
-        Frame("subtitle", 2.2, 9.0, 19, 2, 20),
+    # Consulting cover: title block anchored low-left, subtitle under it.
+    "report": [
+        Frame("title", 2.0, 8.6, 21.5, 2.6, 34, bold=True),
+        Frame("subtitle", 2.0, 11.5, 19.0, 1.6, 16),
     ],
-    "band": [
-        Frame("title", 2, 5.3, 24, 3, 40, bold=True, center=True),
-        Frame("subtitle", 2, 8.9, 24, 1.6, 19, center=True),
+    # metropolis: title upper-left with the rule under the whole block.
+    "academic": [
+        Frame("title", 2.0, 5.0, 22.0, 2.8, 36, bold=True),
+        Frame("subtitle", 2.0, 8.9, 20.0, 1.6, 17),
     ],
-    "quiet": [
-        Frame("title", 3.5, 6.4, 21, 3, 36, bold=True, center=True),
-        Frame("subtitle", 3.5, 9.9, 21, 1.6, 18, center=True),
+    # Bottom-anchored text on a full-bleed ground (lower third).
+    "keynote": [
+        Frame("title", 2.2, 9.5, 23.0, 3.0, 40, bold=True),
+        Frame("subtitle", 2.2, 12.7, 20.0, 1.5, 17),
+    ],
+    # Swiss: headline running across the middle band, subtitle far below it.
+    "editorial": [
+        Frame("title", 2.0, 5.6, 23.0, 3.6, 44, bold=True),
+        Frame("subtitle", 2.0, 10.6, 18.0, 1.6, 16),
+    ],
+    # Minimal: the title sits on the upper third, not dead centre.
+    "zen": [
+        Frame("title", 3.2, 4.9, 21.6, 2.8, 34, bold=True, center=True),
+        Frame("subtitle", 3.2, 8.2, 21.6, 1.5, 16, center=True),
     ],
 }
 
-# The full-bleed band behind a ``cover="band"`` title (x is edge to edge).
-COVER_BAND_Y = 4.2
-COVER_BAND_H = 6.6
 
+# Divider-page geometry per ``Style.section``. Styles whose divider carries a
+# numeral move the title out from under it; the rest keep the shared frame.
+SECTION_FRAMES: dict[str, list[Frame]] = {
+    # Consulting: numeral on the left, title set beside it on the same optical
+    # line — not centred over it.
+    "numeral-left": [Frame("title", 7.6, 6.4, 18.4, 2.6, 34, bold=True)],
+    # Swiss: an oversized ghosted numeral with the title on the line below it.
+    "numeral-huge": [Frame("title", 2.0, 8.9, 22.0, 2.4, 34, bold=True)],
+}
 
 LAYOUTS: dict[str, list[Frame]] = {
     "title": [

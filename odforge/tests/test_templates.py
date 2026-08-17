@@ -308,10 +308,10 @@ def test_builtin_templates_carry_their_paired_style(library):
 
 def test_a_user_template_keeps_the_style_it_was_saved_with(library):
     saved = T.save_template(
-        library, name="舞台版", design=_design(), style="stage"
+        library, name="舞台版", design=_design(), style="keynote"
     )
-    assert saved.style == "stage"
-    assert T.load_user_templates(library)[0].style == "stage"
+    assert saved.style == "keynote"
+    assert T.load_user_templates(library)[0].style == "keynote"
 
 
 def test_an_unknown_style_is_refused(library):
@@ -323,7 +323,7 @@ def test_styles_are_served_with_the_gallery(app):
     with TestClient(app) as client:
         body = client.get("/api/templates").json()
     ids = {style["id"] for style in body["styles"]}
-    assert ids == {"classic", "editorial", "stage", "corporate", "zen"}
+    assert ids == {"classic", "report", "academic", "keynote", "editorial", "zen"}
     # Each carries a human label + one-line blurb, so the gallery needs no copy
     # of its own that could drift from what the renderer actually does.
     assert all(style["label"] and style["blurb"] for style in body["styles"])

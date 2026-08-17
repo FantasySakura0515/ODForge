@@ -138,7 +138,7 @@ CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：�
 |---|---|---|
 | POST | `/api/discovery/questions` | `{prompt, mode?, theme?, language?, backend?, doc_type?: "odp", pages?, assets?: [{description, credit, data_url?}]}` → `DiscoveryPlan`。訪談一律以繁體中文提問，`language` 只是讓讀題模型知道成品要寫成哪一種語言 |
 | POST | `/api/discovery/questions/stream` | 同上 → NDJSON `progress` / `result` / `error` 事件 |
-| POST | `/api/generate` | `{prompt, mode?, theme?, design?: DesignSpec, style?: "classic"\|"editorial"\|"stage"\|"corporate"\|"zen", language?: "zh-TW"\|"en"\|"bilingual", byline?, logo?: AssetUpload, logo_placement?: "cover"\|"cover-closing"\|"all", interactive?: bool, qa?: bool, backend?, doc_type?: "odp", pages?: int, assets?: AssetUpload[]}` → `{job_id}`。`theme` 對照內建主題註冊表（THEMES）驗證；`design` 是自訂範本的設計代幣，兩者同時給時 `design` 勝出 |
+| POST | `/api/generate` | `{prompt, mode?, theme?, design?: DesignSpec, style?: "classic"\|"report"\|"academic"\|"keynote"\|"editorial"\|"zen", language?: "zh-TW"\|"en"\|"bilingual", byline?, logo?: AssetUpload, logo_placement?: "cover"\|"cover-closing"\|"all", interactive?: bool, qa?: bool, backend?, doc_type?: "odp", pages?: int, assets?: AssetUpload[]}` → `{job_id}`。`theme` 對照內建主題註冊表（THEMES）驗證；`design` 是自訂範本的設計代幣，兩者同時給時 `design` 勝出 |
 | GET | `/api/templates` | 範本庫 `{templates: [{id, name, design, style, builtin, source, created_at}], languages: [{id, label}], styles: [{id, label, blurb}]}`。一個範本 = 版式 × 配色：內建（`builtin: true`）以 `theme: <id>` 套用、不可改不可刪，自訂的整包送 `design`，兩者都連同 `style` 一起送 |
 | POST | `/api/templates` | `{name, design, style?, source?: "custom"\|"extracted", id?}` → 存檔後的 `Template`。給 `id` 為覆寫；調色盤過不了 WCAG 對比或範本數達上限回 `422` |
 | DELETE | `/api/templates/{id}` | 刪除自訂範本 → `{ok: true}`；內建 `422`、不存在 `404` |

@@ -732,7 +732,7 @@ test("工作台有且只有一個 h1,說得出正在看的是哪一份文件", a
 // 範本庫是自己的一頁,不是首頁捲到底的附屬區塊
 // ---------------------------------------------------------------------------
 
-test("首頁不直接鋪出範本庫,而是給一個入口", async () => {
+test("首頁不直接鋪出範本庫,入口在左側常駐導覽", async () => {
   window.history.replaceState({}, "", "/");
   vi.mocked(getSessions).mockResolvedValue([]);
   render(<App />);
@@ -740,7 +740,13 @@ test("首頁不直接鋪出範本庫,而是給一個入口", async () => {
   await screen.findByText("還沒有簡報");
   // 十三張縮圖掛在工作紀錄底下 = 首頁被一個次要功能佔滿。
   expect(document.querySelector(".template-gallery")).toBeNull();
-  expect(screen.getByRole("button", { name: /範本庫/ })).toBeInTheDocument();
+  const nav = screen.getByRole("navigation", { name: "主要導覽" });
+  expect(within(nav).getByRole("button", { name: /範本庫/ })).toBeInTheDocument();
+  // 目前所在的那一項要標出來,而不是兩個看起來一樣。
+  expect(within(nav).getByRole("button", { name: /工作紀錄/ })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
 });
 
 test("進入範本庫會換頁並寫進 URL,重整回得來", async () => {
@@ -749,7 +755,8 @@ test("進入範本庫會換頁並寫進 URL,重整回得來", async () => {
   const { unmount } = render(<App />);
 
   await screen.findByText("還沒有簡報");
-  fireEvent.click(screen.getByRole("button", { name: /範本庫/ }));
+  const nav = screen.getByRole("navigation", { name: "主要導覽" });
+  fireEvent.click(within(nav).getByRole("button", { name: /範本庫/ }));
 
   expect(
     await screen.findByRole("heading", { level: 1, name: "範本庫" }),

@@ -106,29 +106,41 @@ function TemplatePreview({
   style: StyleId;
 }) {
   const { palette, fonts } = design;
-  const banded = style === "stage";
+  // keynote bleeds the accent to every edge, so its text flips to the page
+  // colour — exactly what the renderer does.
+  const bleed = style === "keynote";
   return (
     <span
       className="tpl-preview"
       data-style={style}
       aria-hidden="true"
-      style={{ background: palette.bg, fontFamily: fonts.body }}
+      style={{
+        background: bleed ? palette.accent : palette.bg,
+        fontFamily: fonts.body,
+      }}
     >
-      {banded && <s className="tpl-band" style={{ background: palette.accent }} />}
-      {style === "editorial" && (
+      {style === "report" && (
         <i className="tpl-rule" style={{ background: palette.accent }} />
       )}
-      {style === "corporate" && (
-        <s className="tpl-topbar" style={{ background: palette.accent }} />
+      {style === "editorial" && (
+        <s className="tpl-masthead" style={{ background: palette.accent }} />
       )}
       {style === "classic" && (
         <s className="tpl-dots" style={{ background: palette.accent }} />
       )}
-      <b style={{ color: banded ? palette.bg : palette.text, fontFamily: fonts.display }}>
+      <b
+        style={{
+          color: bleed ? palette.bg : palette.text,
+          fontFamily: fonts.display,
+        }}
+      >
         標題
       </b>
-      <em style={{ color: banded ? palette.surface : palette.muted }}>副標與說明</em>
-      {style !== "zen" && (
+      <em style={{ color: bleed ? palette.surface : palette.muted }}>副標與說明</em>
+      {style === "academic" && (
+        <s className="tpl-underrule" style={{ background: palette.accent }} />
+      )}
+      {(style === "classic" || style === "report") && (
         <s className="tpl-card" style={{ background: palette.surface }} />
       )}
     </span>
@@ -141,7 +153,7 @@ export function TemplateGallery() {
   const [error, setError] = useState("");
   const [styles, setStyles] = useState<StyleOption[]>([]);
   const [editing, setEditing] = useState<DesignSpec>();
-  const [style, setStyle] = useState<StyleId>("classic");
+  const [style, setStyle] = useState<StyleId>("report");
   const [name, setName] = useState("");
   const [source, setSource] = useState<"custom" | "extracted">("custom");
   const [saving, setSaving] = useState(false);
@@ -253,7 +265,7 @@ export function TemplateGallery() {
             className="archive-refresh"
             onClick={() => {
               setEditing({ ...BLANK, palette: { ...BLANK.palette } });
-              setStyle("classic");
+              setStyle("report");
               setName("");
               setSource("custom");
               setFormError("");

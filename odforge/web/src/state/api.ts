@@ -47,7 +47,13 @@ export interface DesignSpec {
 
 export type LanguageId = "zh-TW" | "en" | "bilingual";
 /** 版式 id;與後端 themes.STYLES 對應。 */
-export type StyleId = "classic" | "editorial" | "stage" | "corporate" | "zen";
+export type StyleId =
+  | "classic"
+  | "report"
+  | "academic"
+  | "keynote"
+  | "editorial"
+  | "zen";
 export type LogoPlacement = "cover" | "cover-closing" | "all";
 
 export interface GenerateBody {

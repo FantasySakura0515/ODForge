@@ -39,7 +39,7 @@ function mockTemplates(templates?: DeckTemplate[]) {
         id: "dark",
         name: "深夜藍",
         design: design("#3DD6E6", "#171826"),
-        style: "stage",
+        style: "keynote",
         builtin: true,
         source: "builtin",
         created_at: 0,
@@ -62,7 +62,7 @@ function mockTemplates(templates?: DeckTemplate[]) {
     styles: [
       { id: "classic", label: "學院派", blurb: "置中封面" },
       { id: "editorial", label: "編輯風", blurb: "左切齊封面" },
-      { id: "stage", label: "舞台", blurb: "滿版色帶" },
+      { id: "keynote", label: "舞台", blurb: "滿版出血" },
     ],
   });
 }
@@ -228,7 +228,7 @@ test("視覺主題預設交給 AI；選了內建範本才送 theme", async () =>
   fireEvent.click(screen.getByRole("button", { name: "繼續" }));
   expect(onDiscover.mock.calls[1][0].theme).toBe("dark");
   // 版式跟著範本一起送:畫廊裡看到的構圖,就是生成出來的構圖。
-  expect(onDiscover.mock.calls[1][0].style).toBe("stage");
+  expect(onDiscover.mock.calls[1][0].style).toBe("keynote");
 
   // 再選回「AI 決定」→ 欄位必須整個消失,不是送一個空字串。
   fireEvent.click(screen.getByLabelText(/AI 決定/));

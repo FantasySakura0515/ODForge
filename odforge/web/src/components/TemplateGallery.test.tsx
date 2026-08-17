@@ -33,7 +33,7 @@ const BUILTIN: DeckTemplate = {
   id: "academic",
   name: "學術藍",
   design: design(),
-  style: "classic",
+  style: "report",
   builtin: true,
   source: "builtin",
   created_at: 0,
@@ -54,9 +54,9 @@ function mockList(templates: DeckTemplate[]) {
     templates,
     languages: [{ id: "zh-TW", label: "繁體中文" }],
     styles: [
-      { id: "classic", label: "學院派", blurb: "置中封面、標題左側色條" },
-      { id: "editorial", label: "編輯風", blurb: "左切齊封面、標題下細線" },
-      { id: "stage", label: "舞台", blurb: "封面滿版色帶反白" },
+      { id: "report", label: "顧問報告", blurb: "標題在左上、下方一條細線" },
+      { id: "editorial", label: "編輯風", blurb: "頂部通欄細線、粗標題橫貫中段" },
+      { id: "keynote", label: "舞台", blurb: "封面整頁出血強調色" },
     ],
   });
 }
@@ -189,7 +189,7 @@ test("對比檢查與後端同一組門檻", () => {
 test("每一列都標出版式，而不是只有配色", async () => {
   render(<TemplateGallery />);
   await waitFor(() => expect(screen.getByText("學術藍")).toBeInTheDocument());
-  expect(screen.getByTestId("tpl-builtin").textContent).toContain("學院派");
+  expect(screen.getByTestId("tpl-builtin").textContent).toContain("顧問報告");
   expect(screen.getByTestId("tpl-custom").textContent).toContain("編輯風");
 });
 
@@ -214,7 +214,7 @@ test("新範本可以選版式，並隨儲存送出", async () => {
   fireEvent.click(screen.getByRole("button", { name: /儲存範本/ }));
 
   await waitFor(() => expect(vi.mocked(saveTemplate)).toHaveBeenCalled());
-  expect(vi.mocked(saveTemplate).mock.calls[0][0].style).toBe("stage");
+  expect(vi.mocked(saveTemplate).mock.calls[0][0].style).toBe("keynote");
 });
 
 test("以某一套為底時，連它的版式一起帶過來", async () => {

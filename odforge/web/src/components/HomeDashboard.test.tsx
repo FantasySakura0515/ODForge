@@ -10,13 +10,12 @@ test("沒有紀錄時顯示可操作的空狀態", () => {
       loading={false}
       error=""
       onNew={onNew}
-      onTemplates={vi.fn()}
       onReload={vi.fn()}
     />,
   );
 
   expect(screen.getByText("還沒有簡報")).toBeInTheDocument();
-  fireEvent.click(screen.getAllByRole("button", { name: "新增簡報" })[0]);
+  fireEvent.click(screen.getByRole("button", { name: "建立第一份簡報" }));
   expect(onNew).toHaveBeenCalledOnce();
 });
 
@@ -39,7 +38,6 @@ test("session 顯示狀態、頁數、預覽與下載", () => {
       loading={false}
       error=""
       onNew={vi.fn()}
-      onTemplates={vi.fn()}
       onReload={vi.fn()}
     />,
   );
@@ -65,7 +63,6 @@ test("讀取失敗可以重試", () => {
       loading={false}
       error="無法讀取工作紀錄"
       onNew={vi.fn()}
-      onTemplates={vi.fn()}
       onReload={onReload}
     />,
   );
