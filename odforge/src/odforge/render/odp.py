@@ -49,12 +49,12 @@ from odforge.textmetrics import (
 )
 from odforge.themes import (
     COVER_FRAMES,
-    SECTION_FRAMES,
     LAYOUTS,
     LIST_ROLES,
     PAGE_H,
     PAGE_W,
     PLAIN_LAYOUTS,
+    SECTION_FRAMES,
     THEMES,
     Frame,
     Style,

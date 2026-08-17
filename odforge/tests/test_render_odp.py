@@ -18,8 +18,8 @@ from odforge.package import ODP_MIMETYPE
 from odforge.render import render
 from odforge.render.odp import (
     _GraphicStyles,
-    _LogoAsset,
     _line_xml,
+    _LogoAsset,
     _rect_xml,
     _section_fill,
     build_content_xml,
@@ -28,12 +28,12 @@ from odforge.render.odp import (
 )
 from odforge.themes import (
     LAYOUTS,
-    get_style,
     PAGE_H,
     PAGE_W,
     SCALES,
     THEME_LABELS,
     THEMES,
+    get_style,
     resolve_design,
 )
 from odforge.validate import find_soffice

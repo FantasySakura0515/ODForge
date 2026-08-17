@@ -315,7 +315,8 @@ def test_a_user_template_keeps_the_style_it_was_saved_with(library):
 
 
 def test_an_unknown_style_is_refused(library):
-    with pytest.raises(Exception):
+    # pydantic raises ValidationError (a ValueError) from the style validator.
+    with pytest.raises(ValueError, match="unknown style"):
         T.save_template(library, name="壞的", design=_design(), style="bauhaus")
 
 

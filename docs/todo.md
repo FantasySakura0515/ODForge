@@ -3,14 +3,14 @@
 > **給 agentic worker：** 本檔是**現況與待辦**，不是歷史紀錄。已完成的 Phase 只留一行結論；
 > 用不到的計畫直接標為「不做」並寫明理由。要追溯細節請看 git log 與 `odforge/docs/`。
 
-## 現況（2026-08-13，第二輪複驗修復後）
+## 現況（2026-08-17，版式層／範本庫之後）
 
 | 項目 | 狀態 |
 | ------ | ------ |
-| Python 測試 | **711 passed**（含真 LibreOffice 整合測試 5 項） |
-| Frontend 測試 | **244 passed**（25 檔） |
-| Ruff | 明確規則集（E/F/W/I/B/UP/C4/SIM/RUF）**All checks passed** |
-| Coverage | **87.19%**（branch，門檻 85%，`pyproject.toml`） |
+| Python 測試 | **784 passed**（含真 LibreOffice 整合測試 5 項） |
+| Frontend 測試 | **268 passed**（26 檔） |
+| Ruff | 明確規則集（E/F/W/I/B/UP/C4/SIM/RUF）**All checks passed**（實跑 CI 釘的 0.15.4） |
+| Coverage | **87.87%**（branch，門檻 85%，`pyproject.toml`） |
 | TypeScript | src 與 **測試** 皆通過（`tsconfig.test.json`） |
 | wheel | 乾淨安裝實測：`/`＋JS＋CSS 皆 200、MCP import 乾淨、ODT/ODP/ODS 三閘全綠 |
 | 相依漂移 | 乾淨環境解析到 **mcp 2.0.0 / PyMuPDF 1.28.2 / openai 3.0.0 / pytest 9.1.1** 下全數通過 |
@@ -29,6 +29,14 @@
 > 監聽 tags）、`ci.yml` 與 `hatch_build.py` 根本沒進 Git、ODS 品質閘只看第一張
 > 工作表、乾淨安裝會因為 mcp 2.0 直接 crash。綠燈量的是「跑過的東西」，不是
 > 「該跑的東西」。
+
+2026-08-17 補記：版式層／範本庫那三個 commit 讓 **CI 連三次紅燈**（本機全綠）。
+兩個原因，都已修：ruff 7 項（import 排序、E501、未使用 import／noqa、`raises(Exception)`），
+以及 `test_serve_rejects_remote_bind_without_explicit_acknowledgement` ——
+**Rich 把 GitHub Actions 當終端機**，於是上色，而它的 highlighter 把旗標拆成三段
+各自加碼，`--allow-remote` 不再是連續子字串。開發機色彩關閉所以永遠看不到。
+兩個 `_out()` helper 現在都先剝 ANSI；本機要複現 CI 的算繪模式就設 `GITHUB_ACTIONS=true`。
+**推 main 之後要看一眼 `gh run list`——本機綠燈不代表 CI 綠燈。**
 
 ---
 

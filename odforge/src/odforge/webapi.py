@@ -85,7 +85,6 @@ from odforge.references import (
 from odforge.render import render
 from odforge.templates import (
     MAX_NAME_CHARS,
-    Template,
     all_templates,
     delete_template,
     save_template,

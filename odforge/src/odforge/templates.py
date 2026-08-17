@@ -142,7 +142,7 @@ def load_user_templates(path: Path) -> List[Template]:
     for item in data:
         try:
             template = Template.model_validate(item)
-        except Exception:  # noqa: BLE001 - one bad row must not lose the rest
+        except Exception:  # one bad row must not lose the rest
             continue
         if template.builtin:
             # A preset id in the user file would shadow the read-only original.

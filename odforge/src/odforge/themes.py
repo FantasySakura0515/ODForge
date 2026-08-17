@@ -166,7 +166,10 @@ STYLES: dict[str, Style] = {
     "report": Style(
         id="report",
         label="顧問報告",
-        blurb="標題在左上、下方一條細線，出處與頁碼在頁尾。MBB 顧問簡報的標準結構，最適合正式匯報與評鑑。",
+        blurb=(
+            "標題在左上、下方一條細線，出處與頁碼在頁尾。"
+            "MBB 顧問簡報的標準結構，最適合正式匯報與評鑑。"
+        ),
         cover="report",
         cover_deco="rule-above",
         title_mark="hairline",
@@ -177,7 +180,10 @@ STYLES: dict[str, Style] = {
     "academic": Style(
         id="academic",
         label="學術簡潔",
-        blurb="標題下一條細分隔線、底部一條進度條、分節頁上下夾兩條線。取自 Beamer metropolis 主題，適合論文口試與課堂。",
+        blurb=(
+            "標題下一條細分隔線、底部一條進度條、分節頁上下夾兩條線。"
+            "取自 Beamer metropolis 主題，適合論文口試與課堂。"
+        ),
         cover="academic",
         cover_deco="rule-under",
         title_mark="separator",

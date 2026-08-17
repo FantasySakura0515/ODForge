@@ -8,6 +8,7 @@ No real API is ever hit; rendering and validation run for real against a
 tmp_path output file.
 """
 
+import re
 import zipfile
 from pathlib import Path
 
@@ -19,15 +20,24 @@ from odforge.validate import validate_odf
 
 runner = CliRunner()
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
 
 def _out(result) -> str:
-    """Combined stdout + stderr for robust assertions across click versions."""
+    """Combined stdout + stderr, ANSI stripped, for robust assertions.
+
+    Rich counts GitHub Actions as a terminal, so in CI it colours the output —
+    and its highlighter styles a flag as three separate spans, which puts escape
+    codes *inside* the token (``--allow-remote`` arrives as ``-`` + ``-allow`` +
+    ``-remote``). Assert against the text, never the escape codes, or the test
+    only passes on a developer machine where colour happens to be off.
+    """
     err = ""
     try:
         err = result.stderr
     except (ValueError, AttributeError):
         err = ""
-    return (result.stdout or "") + (err or "")
+    return _ANSI.sub("", (result.stdout or "") + (err or ""))
 
 
 def _sample_outline(mode="presenter", design=None) -> Outline:
@@ -565,7 +575,7 @@ def test_serve_rejects_remote_bind_without_explicit_acknowledgement():
     result = runner.invoke(app, ["serve", "--host", "0.0.0.0"])
 
     assert result.exit_code != 0
-    assert "--allow-remote" in result.output
+    assert "--allow-remote" in _out(result)
 
 
 def test_new_ods_success(tmp_path, monkeypatch, sample_spreadsheet):

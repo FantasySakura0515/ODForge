@@ -6,6 +6,7 @@ appear here solely to manufacture real ODF inputs to check against. Neither
 text or ``error:`` strings.
 """
 
+import re
 import subprocess
 import zipfile
 from pathlib import Path
@@ -22,13 +23,19 @@ from odforge.validate import find_soffice
 runner = CliRunner()
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def _out(result) -> str:
+    # ANSI stripped for the same reason as tests/test_cli.py: Rich colours its
+    # output under GitHub Actions and splits styled tokens, so escape codes land
+    # inside the strings under assertion.
     err = ""
     try:
         err = result.stderr
     except (ValueError, AttributeError):
         err = ""
-    return (result.stdout or "") + (err or "")
+    return _ANSI.sub("", (result.stdout or "") + (err or ""))
 
 
 def test_check_valid_odp_report(tmp_path, sample_presentation, monkeypatch):
