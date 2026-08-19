@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   buildGenerateBody,
   getSources,
@@ -6,9 +6,7 @@ import {
   isValidPages,
   PAGES_MAX,
   PAGES_MIN,
-  templateSelection,
   type AssetUpload,
-  type DeckTemplate,
   type GenerateBody,
   type GenerateOptions,
   type LanguageId,
@@ -36,8 +34,6 @@ const OCCASIONS = [
 const DURATIONS = ["5 分鐘", "10 分鐘", "15 分鐘", "20 分鐘", "30 分鐘以上"];
 const TONES = ["親切易懂", "正式專業", "精簡直接", "熱情有感染力"];
 
-// 視覺主題直接讀 /api/templates:內建的十三套與使用者自己存的範本來自同一份
-// 清單,前端不再自帶一份會過期的色表。預設仍是「不選」= 讓 AI 依主題定調。
 const LOGO_PLACEMENTS: { id: LogoPlacement; label: string; hint: string }[] = [
   { id: "cover", label: "只放封面", hint: "最保守,只出現一次" },
   { id: "cover-closing", label: "封面與結尾", hint: "首尾呼應,中間頁保持乾淨" },
@@ -87,7 +83,57 @@ function fileAsDataUrl(file: File, mime: string): Promise<string> {
   });
 }
 
-/** 單選晶片組:再點一次同一顆就取消,回到「交給 AI」。 */
+/** 可收起的區塊:標題本身就是開關(+ / −)。
+ *
+ * 收起來的代價是「看不見自己設過什麼」,所以收起時一定要把已指定的值摘要在標題
+ * 下方——沒有摘要的抽屜,使用者只會忘記自己上次填了 20 頁。 */
+function CollapsibleBlock({
+  id,
+  title,
+  sub,
+  summary,
+  open,
+  onToggle,
+  children,
+}: {
+  id: string;
+  title: string;
+  sub: string;
+  summary: string;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  const bodyId = `${id}-body`;
+  return (
+    <section className="composer-block" aria-labelledby={id}>
+      <div className="block-head">
+        <h2 className="block-title">
+          <button
+            id={id}
+            type="button"
+            className="block-toggle"
+            aria-expanded={open}
+            aria-controls={bodyId}
+            onClick={onToggle}
+          >
+            <span className="block-sign" aria-hidden="true">{open ? "−" : "+"}</span>
+            <span>{title}</span>
+          </button>
+        </h2>
+        {sub !== "" && <p className="block-sub">{sub}</p>}
+        {!open && summary !== "" && <p className="block-set">已指定：{summary}</p>}
+      </div>
+      {open && (
+        <div className="block-body" id={bodyId}>
+          {children}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** 單選晶片組:再點一次同一顆就取消,回到「交給 AI」。`hint` 留空就不出說明列。 */
 function ChipField({
   id,
   label,
@@ -98,7 +144,7 @@ function ChipField({
 }: {
   id: string;
   label: string;
-  hint: string;
+  hint?: string;
   options: string[];
   value: string;
   onChange: (next: string) => void;
@@ -119,7 +165,7 @@ function ChipField({
           </button>
         ))}
       </div>
-      <small className="advhint">{hint}</small>
+      {hint && <small className="advhint">{hint}</small>}
     </div>
   );
 }
@@ -146,10 +192,6 @@ export function PromptBar({
   const [duration, setDuration] = useState("");
   const [tone, setTone] = useState("");
   const [audience, setAudience] = useState("");
-  // "" = 不選範本 = 由模型自己定調(DesignSpec)。存的是範本 id,內建與自訂共用
-  // 同一個欄位;送出時才由 templateSelection 決定折成 theme 還是 design。
-  const [templateId, setTemplateId] = useState("");
-  const [templates, setTemplates] = useState<DeckTemplate[]>([]);
   const [languages, setLanguages] = useState<LanguageOption[]>([]);
   const [language, setLanguage] = useState<LanguageId>("zh-TW");
   const [byline, setByline] = useState("");
@@ -170,6 +212,30 @@ export function PromptBar({
     useState<"loading" | "ready" | "error">("loading");
   const [sourcesAttempt, setSourcesAttempt] = useState(0);
   const pagesInputRef = useRef<HTMLInputElement>(null);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  // 兩個進階區塊預設收起:需求欄位與參考文件才是主線,客製化與封面家具是「要的人
+  // 才要」。收起的狀態不會清掉任何值——值住在這個元件裡,不在那段 JSX 裡。
+  const [showCustom, setShowCustom] = useState(false);
+  const [showCover, setShowCover] = useState(false);
+  // 頁數非法時要把焦點帶回那個欄位,但收起來時它根本不在 DOM 裡:先展開,等它掛
+  // 上去之後再 focus(下面的 effect)。少了這一步,使用者按下繼續只會看到一顆
+  // 沒反應的按鈕,錯誤訊息還藏在收起來的區塊裡。
+  const wantPagesFocus = useRef(false);
+
+  // 需求框跟著內容長高。固定高度的框把一整段需求塞進一條四行的捲軸裡:使用者看
+  // 不到自己寫過什麼,也就校對不了——而這裡正是整個產品唯一必須寫長的地方。上限
+  // 交給 CSS 的 max-height,超過才在框內捲動,繼續鈕不會被推出畫面。
+  // layout effect 而非 effect:量測與改高度要在瀏覽器繪製前做完,否則每打一個字
+  // 都會先閃一次舊高度。
+  useLayoutEffect(() => {
+    const box = promptRef.current;
+    if (!box) return;
+    // 先歸零再量:scrollHeight 不會小於目前的高度,不歸零就只會單向長大,刪字時
+    // 框永遠縮不回去。
+    box.style.height = "auto";
+    // jsdom 沒有版面,scrollHeight 恆為 0;照抄會把框壓成 0 高。
+    if (box.scrollHeight > 0) box.style.height = `${box.scrollHeight}px`;
+  }, [prompt]);
 
   useEffect(() => {
     let alive = true;
@@ -186,28 +252,25 @@ export function PromptBar({
     };
   }, [sourcesAttempt]);
 
-  // 範本庫與語言選單同一支端點。失敗時靜默降級成「只有 AI 決定」——這兩項都是
-  // 加分選項,拿不到清單不該擋住任何人生成簡報。
+  // 語言選單來自 /api/templates。失敗時靜默降級成不顯示語言選項——這是加分選項,
+  // 拿不到清單不該擋住任何人生成簡報。
   useEffect(() => {
     let alive = true;
     getTemplates()
-      .then((report) => {
-        if (!alive) return;
-        setTemplates(report.templates);
-        setLanguages(report.languages);
-      })
+      .then((report) => alive && setLanguages(report.languages))
       .catch(() => undefined);
     return () => {
       alive = false;
     };
   }, []);
 
-  // 使用者在別處刪掉了選中的自訂範本 → 選擇作廢,回到「AI 決定」,而不是送出
-  // 一個伺服器已經不認得的 id。
-  const selectedTemplate = templates.find((t) => t.id === templateId);
+  // 展開之後才輪到 focus:收起時 pagesInputRef 是 null,先 focus 只會靜靜落空。
   useEffect(() => {
-    if (templateId && templates.length && !selectedTemplate) setTemplateId("");
-  }, [templateId, templates, selectedTemplate]);
+    if (showCustom && wantPagesFocus.current) {
+      wantPagesFocus.current = false;
+      pagesInputRef.current?.focus();
+    }
+  }, [showCustom]);
 
   // 這一輪實際會用到的視覺來源,以及它現在能不能跑。
   const visionDefault = sources?.defaults.vision;
@@ -321,7 +384,6 @@ export function PromptBar({
     const opts: GenerateOptions = {
       mode,
       pages: pagesNum,
-      ...templateSelection(selectedTemplate),
       language,
       byline,
       logo,
@@ -337,10 +399,32 @@ export function PromptBar({
     return buildGenerateBody(prompt.trim(), "odp", opts);
   }
 
+  // 收起時的摘要只列真的被指定過的東西:留白就是「交給 AI」,不必報告。
+  const customSummary = [
+    mode === "detailed" ? "閱讀文件" : "",
+    pages.trim() ? `${pages.trim()} 頁` : "",
+    occasion,
+    duration,
+    audience,
+    tone,
+    language === "en" ? "English" : language === "bilingual" ? "中英對照" : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const coverSummary = [byline.trim() ? "封面署名" : "", logo ? "校徽" : ""]
+    .filter(Boolean)
+    .join(" · ");
+
   function submit() {
-    // 非法頁數不再靜默丟掉:把焦點放到出問題的欄位,錯誤訊息就在旁邊。
+    // 非法頁數不再靜默丟掉:把焦點放到出問題的欄位,錯誤訊息就在旁邊。收起來的
+    // 情況下先展開——否則錯誤訊息連著欄位一起被藏著,只剩一顆不動的按鈕。
     if (pagesInvalid) {
-      pagesInputRef.current?.focus();
+      if (showCustom) {
+        pagesInputRef.current?.focus();
+      } else {
+        wantPagesFocus.current = true;
+        setShowCustom(true);
+      }
       return;
     }
     if (!canSubmit) return;
@@ -363,6 +447,7 @@ export function PromptBar({
       <div className="promptbar-main">
         <span className="prompt-quote" aria-hidden="true">「</span>
         <textarea
+          ref={promptRef}
           aria-label="簡報需求（主題、受眾與內容）"
           placeholder={
             "盡量詳細地寫下想呈現的內容：主題、受眾、每個段落要講的重點，" +
@@ -405,7 +490,7 @@ export function PromptBar({
         <div className="block-head">
           <h2 className="block-title" id="ref-block">參考文件</h2>
           <p className="block-sub">
-            上傳講義、論文或圖片，AI 會據此取材；沒有依據的數字不會被編出來。
+            上傳講義、論文或圖片，AI 會據此取材。
           </p>
         </div>
         <label className="advfield">
@@ -450,14 +535,14 @@ export function PromptBar({
         </label>
       </section>
 
-      <section className="composer-block" aria-labelledby="custom-block">
-        <div className="block-head">
-          <h2 className="block-title" id="custom-block">客製化</h2>
-          <p className="block-sub">
-            全部可留白：留白的欄位由 AI 依你的需求判斷，填了的就是硬性指定。
-          </p>
-        </div>
-
+      <CollapsibleBlock
+        id="custom-block"
+        title="客製化"
+        sub="全部可留白：留白的欄位由 AI 依你的需求判斷。"
+        summary={customSummary}
+        open={showCustom}
+        onToggle={() => setShowCustom((v) => !v)}
+      >
         <div className="settings-grid">
           <div className="advfield">
             <span className="advlabel" id="density-label">內容密度</span>
@@ -532,14 +617,7 @@ export function PromptBar({
             />
             <small className="advhint">決定術語深度與要不要先補背景知識。</small>
           </label>
-          <ChipField
-            id="tone"
-            label="語氣風格"
-            hint="決定句子的長相；沒有選就依場合與聽眾判斷。"
-            options={TONES}
-            value={tone}
-            onChange={setTone}
-          />
+          <ChipField id="tone" label="語氣風格" options={TONES} value={tone} onChange={setTone} />
         </div>
 
         {languages.length > 1 && (
@@ -567,68 +645,25 @@ export function PromptBar({
             </small>
           </div>
         )}
-
-        <div className="advfield">
-          <span className="advlabel" id="theme-label">視覺主題</span>
-          <div className="themeset" role="radiogroup" aria-labelledby="theme-label">
-            <label className={templateId === "" ? "theme-option on" : "theme-option"}>
-              <input
-                type="radio"
-                name="adv-theme"
-                checked={templateId === ""}
-                onChange={() => setTemplateId("")}
-              />
-              <span className="theme-swatch auto" aria-hidden="true" />
-              <span className="theme-name">AI 決定</span>
-            </label>
-            {templates.map((template) => (
-              <label
-                key={template.id}
-                className={templateId === template.id ? "theme-option on" : "theme-option"}
-                data-custom={!template.builtin || undefined}
-              >
-                <input
-                  type="radio"
-                  name="adv-theme"
-                  checked={templateId === template.id}
-                  onChange={() => setTemplateId(template.id)}
-                />
-                <span
-                  className="theme-swatch"
-                  aria-hidden="true"
-                  style={{ background: template.design.palette.bg }}
-                >
-                  <i style={{ background: template.design.palette.accent }} />
-                  <i style={{ background: template.design.palette.text }} />
-                </span>
-                <span className="theme-name">{template.name}</span>
-              </label>
-            ))}
-          </div>
-          <small className="advhint">
-            留白時 AI 會依主題自己定調配色與字體；指定後整份鎖定這一組。
-            自訂範本在首頁的「範本庫」新增。
-          </small>
-        </div>
-      </section>
+      </CollapsibleBlock>
 
       {/* 封面署名與校徽:兩者都是使用者自己的內容,模型不參與,也不會被寫進頁面
           內容裡——它們是版面家具,由渲染器直接畫上去。 */}
-      <section className="composer-block" aria-labelledby="cover-block">
-        <div className="block-head">
-          <h2 className="block-title" id="cover-block">封面署名與校徽</h2>
-          <p className="block-sub">
-            會原樣印在封面上，不經過 AI 改寫；留白就不會出現。
-          </p>
-        </div>
-
+      <CollapsibleBlock
+        id="cover-block"
+        title="封面署名與校徽"
+        sub=""
+        summary={coverSummary}
+        open={showCover}
+        onToggle={() => setShowCover((v) => !v)}
+      >
         <div className="settings-grid even">
           <label className="advfield text-setting">
             <span className="advlabel">封面署名</span>
             <input
               type="text"
               maxLength={80}
-              placeholder="例：輔仁大學資訊工程學系 · 王小明 · 2026/08"
+              placeholder="例：XX大學資訊工程學系 · 王小明 · 2026/08"
               value={byline}
               onChange={(e) => setByline(e.target.value)}
             />
@@ -684,49 +719,44 @@ export function PromptBar({
             </div>
           </div>
         )}
-      </section>
+      </CollapsibleBlock>
 
-      {/* 第四道閘不再是選項:能跑就跑。這一塊只報告它這一輪跑不跑得成、為什麼。 */}
-      {/* role=status:探測是非同步的,狀態從「確認中」翻成「一律執行 / 跑不成」時
-          讀屏使用者要聽得到,而不是只有看得見的人知道第四道閘這輪算不算數。 */}
-      <div className="qa-status" data-state={qaState} data-testid="qa-status" role="status">
-        <span className="qa-mark" aria-hidden="true">
-          {qaState === "on" ? "✓" : qaState === "checking" ? "⟳" : "!"}
-        </span>
-        <span className="qa-copy">
-          <b>
-            {qaState === "on"
-              ? "設計品質檢查：一律執行（第四道閘）"
-              : qaState === "checking"
-                ? "正在確認視覺模型是否可用…"
-                : sourcesState === "error"
-                  ? "無法確認視覺模型，這一輪只跑前三道格式驗證"
-                  : "未設定視覺模型，這一輪只跑前三道格式驗證"}
-          </b>
-          <small>
-            {qaState === "on"
-              ? "生成後由視覺模型逐頁看溢出、重疊、對比與版型節奏，必要時重做該頁，最多重生一輪；會多花約 10–30 秒。"
-              : qaState === "checking"
-                ? "確認之前不會替你承諾——這一項要跑得成才說得出口。"
-                : sourcesState === "error"
-                  ? "讀取 /api/sources 失敗，因此無法保證有人看過版面。"
-                  : visionUnavailable
-                    ? `來源「${visionDefault}」目前不可用：${visionStatus?.reason}`
-                    : "伺服器的 ODFORGE_VISION_BACKEND 是 off；設定一個視覺來源後即會自動執行。"}
-          </small>
-        </span>
-        {sourcesState === "error" && (
-          // 失敗不是終局:快取已經清掉,再問一次是真的會再送一次請求。
-          <button
-            type="button"
-            className="linkish"
-            data-testid="retry-sources"
-            onClick={() => setSourcesAttempt((n) => n + 1)}
-          >
-            重新確認
-          </button>
-        )}
-      </div>
+      {/* 第四道閘不再是選項:能跑就跑,所以「會跑」這件事不必佔一整條版面
+          (2026-08-17 使用者決定拿掉那條綠色說明)。跑不成才要說——那是使用者
+          拿到的成品少了一道檢查,不講就是隱瞞。確認中也不出聲:它是暫態,
+          幾百毫秒後就會有答案,先閃一條字只是噪音。 */}
+      {/* role=status:探測是非同步的,從「什麼都沒有」翻成「這一輪跑不成」時,
+          讀屏使用者要聽得到。 */}
+      {qaState === "off" && (
+        <div className="qa-status" data-state={qaState} data-testid="qa-status" role="status">
+          <span className="qa-mark" aria-hidden="true">!</span>
+          <span className="qa-copy">
+            <b>
+              {sourcesState === "error"
+                ? "無法確認視覺模型，這一輪只跑前三道格式驗證"
+                : "未設定視覺模型，這一輪只跑前三道格式驗證"}
+            </b>
+            <small>
+              {sourcesState === "error"
+                ? "讀取 /api/sources 失敗，因此無法保證有人看過版面。"
+                : visionUnavailable
+                  ? `來源「${visionDefault}」目前不可用：${visionStatus?.reason}`
+                  : "伺服器的 ODFORGE_VISION_BACKEND 是 off；設定一個視覺來源後即會自動執行。"}
+            </small>
+          </span>
+          {sourcesState === "error" && (
+            // 失敗不是終局:快取已經清掉,再問一次是真的會再送一次請求。
+            <button
+              type="button"
+              className="linkish"
+              data-testid="retry-sources"
+              onClick={() => setSourcesAttempt((n) => n + 1)}
+            >
+              重新確認
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

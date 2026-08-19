@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import {
   getSources,
@@ -87,11 +87,20 @@ beforeEach(() => {
   mockTemplates();
 });
 
-/** Wait for the template gallery answer to land (the theme picker fills in). */
+/** Wait for the /api/templates answer to land (the language chipset fills in). */
 async function templatesSettled() {
   await waitFor(() =>
-    expect(screen.getByLabelText(/學術藍/)).toBeInTheDocument(),
+    expect(screen.getByRole("button", { name: "English" })).toBeInTheDocument(),
   );
+}
+
+/** 兩個進階區塊預設收起來,所以碰它們裡面任何欄位的測試都得先按開。 */
+function openCustom() {
+  fireEvent.click(screen.getByRole("button", { name: "客製化" }));
+}
+
+function openCover() {
+  fireEvent.click(screen.getByRole("button", { name: "封面署名與校徽" }));
 }
 
 /** Wait for the `/api/sources` probe to land.
@@ -99,12 +108,14 @@ async function templatesSettled() {
  * The fourth gate is forced on but still fail-closed: until the probe answers,
  * `qa` is not promised. Tests that click straight through would be asserting
  * the pre-probe state, not the configured one.
+ *
+ * A working probe now renders *nothing* (the green strip was removed), so the
+ * barrier is the state commit itself, not a DOM node: flush the resolved promise
+ * inside act() and React has applied it by the time this returns.
  */
 async function sourcesSettled() {
   await waitFor(() => expect(vi.mocked(getSources)).toHaveBeenCalled());
-  await waitFor(() =>
-    expect(screen.getByTestId("qa-status")).toHaveAttribute("data-state", "on"),
-  );
+  await act(async () => {});
 }
 
 test("空 prompt 時送出鈕停用", () => {
@@ -139,6 +150,43 @@ test("只有單一入口，送出後一律進入訪談", () => {
   expect(screen.queryByRole("button", { name: "先問幾題" })).toBeNull();
 });
 
+// 需求框是整個產品唯一該寫長的地方:一段完整需求貼進四行高的框裡,使用者只看得
+// 到自己文字的最後一段,校對不了也刪不掉重複。jsdom 沒有版面(scrollHeight 恆為
+// 0),所以這裡自己給一個「一行 28px、下限 112px」的假版面——要驗的是長高那條
+// 邏輯,不是瀏覽器怎麼排字。
+test("需求框跟著內容長高,刪字後縮得回去", () => {
+  const own = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    "scrollHeight",
+  );
+  Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
+    configurable: true,
+    get(this: HTMLTextAreaElement) {
+      return Math.max(112, this.value.split("\n").length * 28);
+    },
+  });
+  try {
+    render(<PromptBar onDiscover={vi.fn()} />);
+    const box = screen.getByRole("textbox", { name: /主題/ }) as HTMLTextAreaElement;
+    expect(box.style.height).toBe("112px");
+
+    fireEvent.change(box, {
+      target: { value: Array.from({ length: 10 }, (_, i) => `第 ${i + 1} 行`).join("\n") },
+    });
+    expect(box.style.height).toBe("280px");
+
+    // 縮回去同樣重要:少了「先歸零再量」那一步,框只會單向長大。
+    fireEvent.change(box, { target: { value: "一行就好" } });
+    expect(box.style.height).toBe("112px");
+  } finally {
+    if (own) {
+      Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", own);
+    } else {
+      Reflect.deleteProperty(HTMLTextAreaElement.prototype, "scrollHeight");
+    }
+  }
+});
+
 test("輸出格式收斂成單一 ODP 簡報標示", () => {
   render(<PromptBar onDiscover={vi.fn()} />);
   expect(screen.getByLabelText("輸出格式：ODP 簡報")).toBeInTheDocument();
@@ -147,20 +195,81 @@ test("輸出格式收斂成單一 ODP 簡報標示", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 客製化欄位一律攤在畫面上。收進「輸出設定」抽屜的版本,等於把「能讓生成更準的
-// 輸入」藏在一個沒人展開的加號後面——使用者看不到,就當它不存在。
+// 客製化與封面署名收在 +／− 後面(2026-08-17 使用者決定,推翻先前「一律攤開」的
+// 做法:攤開後的表單長到需求欄位自己被推出畫面)。收起來可以,但兩件事必須成立:
+// 標題本身就是那顆開關(不是另一顆小圖示),而且收起時要看得見自己設過什麼。
 // ---------------------------------------------------------------------------
 
-test("客製化欄位不必展開任何抽屜就看得到", () => {
+test("客製化與封面署名預設收起,標題就是開關", async () => {
   render(<PromptBar onDiscover={vi.fn()} />);
-  expect(screen.queryByRole("button", { name: /輸出設定/ })).toBeNull();
+  await sourcesSettled();
+  const custom = screen.getByRole("button", { name: "客製化" });
+  const cover = screen.getByRole("button", { name: "封面署名與校徽" });
+  expect(custom).toHaveAttribute("aria-expanded", "false");
+  expect(cover).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByLabelText(/頁數/)).toBeNull();
+  // 「封面署名」也是那個區塊的 aria 標籤,所以要指名是輸入欄位,不是整個 section。
+  expect(screen.queryByRole("textbox", { name: /封面署名/ })).toBeNull();
+
+  fireEvent.click(custom);
+  expect(custom).toHaveAttribute("aria-expanded", "true");
   expect(screen.getByLabelText(/閱讀文件/)).toBeInTheDocument();
   expect(screen.getByLabelText(/頁數/)).toBeInTheDocument();
   expect(screen.getByLabelText(/聽眾對象/)).toBeInTheDocument();
   expect(screen.getByRole("group", { name: "簡報場合" })).toBeInTheDocument();
   expect(screen.getByRole("group", { name: "講述時間" })).toBeInTheDocument();
   expect(screen.getByRole("group", { name: "語氣風格" })).toBeInTheDocument();
-  expect(screen.getByRole("radiogroup", { name: "視覺主題" })).toBeInTheDocument();
+
+  // 再按一次收回去,而且是真的從 DOM 移除(不是只有視覺上藏起來)。
+  fireEvent.click(custom);
+  expect(screen.queryByLabelText(/頁數/)).toBeNull();
+});
+
+test("收起時仍看得見自己設過什麼;沒設過就不多話", () => {
+  render(<PromptBar onDiscover={vi.fn()} />);
+  expect(screen.queryByText(/已指定/)).toBeNull();
+
+  openCustom();
+  fireEvent.change(screen.getByLabelText(/頁數/), { target: { value: "12" } });
+  fireEvent.click(screen.getByRole("button", { name: "課堂教學" }));
+  openCustom(); // 收回去
+
+  const summary = screen.getByText(/已指定/);
+  expect(summary).toHaveTextContent("12 頁");
+  expect(summary).toHaveTextContent("課堂教學");
+});
+
+test("收起來的欄位不會被清掉:展開時值還在,送出也照樣帶著", () => {
+  const onDiscover = vi.fn();
+  render(<PromptBar onDiscover={onDiscover} />);
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
+  openCustom();
+  fireEvent.change(screen.getByLabelText(/頁數/), { target: { value: "12" } });
+  openCustom();
+  openCustom();
+  expect(screen.getByLabelText(/頁數/)).toHaveValue(12);
+
+  openCustom();
+  fireEvent.click(screen.getByRole("button", { name: "繼續" }));
+  expect(onDiscover.mock.calls[0][0].pages).toBe(12);
+});
+
+test("視覺主題不再出現在需求頁,而且不送 theme／design／style", async () => {
+  // 使用者 2026-08-17 決定把主題選格移出需求頁:配色與版式一律由 AI 依題目定調。
+  const onDiscover = vi.fn();
+  render(<PromptBar onDiscover={onDiscover} />);
+  openCustom();
+  // 清單真的載進來了(語言那組出現),而主題選格依然不存在——不是「還沒載到」。
+  await templatesSettled();
+  expect(screen.queryByRole("radiogroup", { name: "視覺主題" })).toBeNull();
+  expect(screen.queryByLabelText(/學術藍/)).toBeNull();
+
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
+  fireEvent.click(screen.getByRole("button", { name: "繼續" }));
+  const body = onDiscover.mock.calls[0][0];
+  expect("theme" in body).toBe(false);
+  expect("design" in body).toBe(false);
+  expect("style" in body).toBe(false);
 });
 
 test("參考文件是第一層的區塊，不再收在輸出設定裡", () => {
@@ -173,6 +282,7 @@ test("內容密度與頁數照常進 body", () => {
   const onDiscover = vi.fn();
   render(<PromptBar onDiscover={onDiscover} />);
   fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
+  openCustom();
   fireEvent.click(screen.getByLabelText(/閱讀文件/));
   fireEvent.change(screen.getByLabelText(/頁數/), { target: { value: "12" } });
   fireEvent.click(screen.getByRole("button", { name: "繼續" }));
@@ -187,6 +297,7 @@ test("場合／聽眾／語氣／時間附加在需求尾端,留白的不出現"
   const onDiscover = vi.fn();
   render(<PromptBar onDiscover={onDiscover} />);
   fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
+  openCustom();
   fireEvent.click(screen.getByRole("button", { name: "專題提案" }));
   fireEvent.change(screen.getByLabelText(/聽眾對象/), { target: { value: "系上老師" } });
   fireEvent.click(screen.getByRole("button", { name: "15 分鐘" }));
@@ -204,6 +315,7 @@ test("晶片再點一次可取消，回到交給 AI 判斷", () => {
   const onDiscover = vi.fn();
   render(<PromptBar onDiscover={onDiscover} />);
   fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
+  openCustom();
   const chip = screen.getByRole("button", { name: "課堂教學" });
   fireEvent.click(chip);
   expect(chip).toHaveAttribute("aria-pressed", "true");
@@ -214,72 +326,6 @@ test("晶片再點一次可取消，回到交給 AI 判斷", () => {
   expect(onDiscover.mock.calls[0][0].prompt).not.toContain("場合");
 });
 
-test("視覺主題預設交給 AI；選了內建範本才送 theme", async () => {
-  const onDiscover = vi.fn();
-  render(<PromptBar onDiscover={onDiscover} />);
-  await templatesSettled();
-  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
-  expect(screen.getByLabelText(/AI 決定/)).toBeChecked();
-  fireEvent.click(screen.getByRole("button", { name: "繼續" }));
-  expect("theme" in onDiscover.mock.calls[0][0]).toBe(false);
-  expect("design" in onDiscover.mock.calls[0][0]).toBe(false);
-
-  fireEvent.click(screen.getByLabelText(/深夜藍/));
-  fireEvent.click(screen.getByRole("button", { name: "繼續" }));
-  expect(onDiscover.mock.calls[1][0].theme).toBe("dark");
-  // 版式跟著範本一起送:畫廊裡看到的構圖,就是生成出來的構圖。
-  expect(onDiscover.mock.calls[1][0].style).toBe("keynote");
-
-  // 再選回「AI 決定」→ 欄位必須整個消失,不是送一個空字串。
-  fireEvent.click(screen.getByLabelText(/AI 決定/));
-  fireEvent.click(screen.getByRole("button", { name: "繼續" }));
-  expect("theme" in onDiscover.mock.calls[2][0]).toBe(false);
-});
-
-test("自訂範本送 design 而不是 theme", async () => {
-  // 內建預設渲染器認得,自訂範本不認得——它必須整包送設計代幣。兩個都送會讓
-  // 後端在兩種「使用者指定的樣子」之間挑一個,而使用者只挑過一次。
-  const onDiscover = vi.fn();
-  render(<PromptBar onDiscover={onDiscover} />);
-  await templatesSettled();
-  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
-  fireEvent.click(screen.getByLabelText(/系上公版/));
-  fireEvent.click(screen.getByRole("button", { name: "繼續" }));
-
-  const body = onDiscover.mock.calls[0][0];
-  expect("theme" in body).toBe(false);
-  expect(body.design.palette.accent).toBe("#A3212F");
-  expect(body.style).toBe("editorial");
-});
-
-test("選中的自訂範本被刪掉後，選擇作廢而不是送出死 id", async () => {
-  const onDiscover = vi.fn();
-  const { rerender } = render(<PromptBar onDiscover={onDiscover} />);
-  await templatesSettled();
-  fireEvent.click(screen.getByLabelText(/系上公版/));
-
-  // 另一個分頁把它刪了,清單重新載入時就沒有這一列了。
-  mockTemplates([
-    {
-      id: "academic",
-      name: "學術藍",
-      design: design("#1A4B8C"),
-      style: "classic",
-      builtin: true,
-      source: "builtin",
-      created_at: 0,
-    },
-  ]);
-  rerender(<PromptBar onDiscover={onDiscover} key="reload" />);
-  await waitFor(() => expect(screen.queryByLabelText(/系上公版/)).toBeNull());
-
-  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
-  fireEvent.click(screen.getByRole("button", { name: "繼續" }));
-  const body = onDiscover.mock.calls[0][0];
-  expect("design" in body).toBe(false);
-  expect("theme" in body).toBe(false);
-});
-
 // ---------------------------------------------------------------------------
 // 輸出語言
 // ---------------------------------------------------------------------------
@@ -287,9 +333,8 @@ test("選中的自訂範本被刪掉後，選擇作廢而不是送出死 id", as
 test("輸出語言預設繁中(不送欄位)，選了才送", async () => {
   const onDiscover = vi.fn();
   render(<PromptBar onDiscover={onDiscover} />);
-  await waitFor(() =>
-    expect(screen.getByRole("button", { name: "English" })).toBeInTheDocument(),
-  );
+  openCustom();
+  await templatesSettled();
   fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
   fireEvent.click(screen.getByRole("button", { name: "繼續" }));
   expect("language" in onDiscover.mock.calls[0][0]).toBe(false);
@@ -303,10 +348,10 @@ test("語言選單讀後端註冊表；讀不到就整組不出現", async () =>
   vi.mocked(getTemplates).mockRejectedValue(new Error("offline"));
   const onDiscover = vi.fn();
   render(<PromptBar onDiscover={onDiscover} />);
+  openCustom();
   await waitFor(() => expect(vi.mocked(getTemplates)).toHaveBeenCalled());
-  // 拿不到清單是加分項失效,不是故障:主題與語言收起來,但簡報照樣生成得出來。
+  // 拿不到清單是加分項失效,不是故障:語言那一組收起來,但簡報照樣生成得出來。
   expect(screen.queryByRole("button", { name: "English" })).toBeNull();
-  expect(screen.getByLabelText(/AI 決定/)).toBeChecked();
 
   fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
   fireEvent.click(screen.getByRole("button", { name: "繼續" }));
@@ -324,17 +369,19 @@ test("署名原樣送出，留白則不送", async () => {
   fireEvent.click(screen.getByRole("button", { name: "繼續" }));
   expect("byline" in onDiscover.mock.calls[0][0]).toBe(false);
 
+  openCover();
   fireEvent.change(screen.getByRole("textbox", { name: /封面署名/ }), {
-    target: { value: "輔仁大學資工系 · 王小明" },
+    target: { value: "XX大學資工系 · 王小明" },
   });
   fireEvent.click(screen.getByRole("button", { name: "繼續" }));
-  expect(onDiscover.mock.calls[1][0].byline).toBe("輔仁大學資工系 · 王小明");
+  expect(onDiscover.mock.calls[1][0].byline).toBe("XX大學資工系 · 王小明");
 });
 
 test("校徽選了才出現位置選項，並隨 body 送出", async () => {
   const onDiscover = vi.fn();
   render(<PromptBar onDiscover={onDiscover} />);
   fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
+  openCover();
   // 沒有校徽時,「放在哪些頁」是對一張不存在的圖做設定。
   expect(screen.queryByTestId("logo-placement")).toBeNull();
 
@@ -353,6 +400,7 @@ test("校徽選了才出現位置選項，並隨 body 送出", async () => {
 
 test("PDF 不能當校徽", async () => {
   render(<PromptBar onDiscover={vi.fn()} />);
+  openCover();
   fireEvent.change(screen.getByTestId("logo-input"), {
     target: { files: [new File(["%PDF-1.7"], "簡章.pdf", { type: "application/pdf" })] },
   });
@@ -366,6 +414,7 @@ test("頁數超界時擋住送出,並把使用者帶回出問題的欄位", () =
   const onDiscover = vi.fn();
   render(<PromptBar onDiscover={onDiscover} />);
   fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
+  openCustom();
   const pages = screen.getByLabelText(/頁數/);
   fireEvent.change(pages, { target: { value: "100" } });
 
@@ -379,6 +428,22 @@ test("頁數超界時擋住送出,並把使用者帶回出問題的欄位", () =
   expect(pages).toHaveFocus();
 });
 
+test("收起來的時候頁數非法:按繼續要自己展開,不能只是不動", () => {
+  // 收起來 + 錯誤訊息藏在裡面 = 一顆按不動又沒有解釋的按鈕,正是最難排除的故障。
+  const onDiscover = vi.fn();
+  render(<PromptBar onDiscover={onDiscover} />);
+  fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
+  openCustom();
+  fireEvent.change(screen.getByLabelText(/頁數/), { target: { value: "100" } });
+  openCustom(); // 收起來,連錯誤訊息一起藏了
+
+  fireEvent.click(screen.getByRole("button", { name: /繼續/ }));
+  expect(onDiscover).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "客製化" })).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByLabelText(/頁數/)).toHaveFocus();
+  expect(screen.getByRole("alert").textContent).toMatch(/3.*30/);
+});
+
 // 非數字("abc")不在列:`type="number"` 的輸入框根本收不下,value 直接是空字串
 // ——那等同「留白 = 交給 AI」,是正確行為,不是被靜默丟掉的非法值。
 test.each(["0", "-1", "2", "31", "3.5", "999"])(
@@ -387,6 +452,7 @@ test.each(["0", "-1", "2", "31", "3.5", "999"])(
     const onDiscover = vi.fn();
     render(<PromptBar onDiscover={onDiscover} />);
     fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
+    openCustom();
     fireEvent.change(screen.getByLabelText(/頁數/), { target: { value: bad } });
     fireEvent.click(screen.getByRole("button", { name: /繼續/ }));
     expect(onDiscover).not.toHaveBeenCalled();
@@ -397,6 +463,7 @@ test("合法頁數照常送出", () => {
   const onDiscover = vi.fn();
   render(<PromptBar onDiscover={onDiscover} />);
   fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
+  openCustom();
   fireEvent.change(screen.getByLabelText(/頁數/), { target: { value: "12" } });
   fireEvent.click(screen.getByRole("button", { name: /繼續/ }));
   expect(onDiscover.mock.calls[0][0].pages).toBe(12);
@@ -413,12 +480,15 @@ test("不暴露模型與 pipeline 開關", () => {
 // 這台伺服器做不到的事——qa:true 依舊只在探測成功且來源可用時才送出。
 // ---------------------------------------------------------------------------
 
-test("設計品質檢查沒有開關，可用時一律送 qa:true", async () => {
+test("設計品質檢查沒有開關,可用時一律送 qa:true 而且畫面上一個字都不說", async () => {
+  // 「會跑」是預設,不值得佔一條版面;只有「跑不成」才必須說出口(下面幾個測試)。
   const onDiscover = vi.fn();
   render(<PromptBar onDiscover={onDiscover} />);
   await sourcesSettled();
   expect(screen.queryByRole("checkbox", { name: /設計品質檢查/ })).toBeNull();
-  expect(screen.getByTestId("qa-status").textContent).toMatch(/一律執行/);
+  expect(screen.queryByTestId("qa-status")).toBeNull();
+  expect(screen.queryByText(/一律執行/)).toBeNull();
+  expect(screen.queryByText(/第四道閘/)).toBeNull();
 
   fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), { target: { value: "樹" } });
   fireEvent.click(screen.getByRole("button", { name: "繼續" }));
@@ -452,13 +522,14 @@ test("視覺來源存在但不可用時,顯示供應商給的真正原因", asyn
   expect(screen.getByTestId("qa-status")).toHaveAttribute("data-state", "off");
 });
 
-test("來源還在確認時不會送出 qa:true", async () => {
+test("來源還在確認時不會送出 qa:true,也不先講任何一種結論", async () => {
   // A probe that never settles: exactly the first few hundred ms of every load.
   vi.mocked(getSources).mockReturnValue(new Promise(() => {}));
   const onDiscover = vi.fn();
   render(<PromptBar onDiscover={onDiscover} />);
 
-  expect(screen.getByTestId("qa-status")).toHaveAttribute("data-state", "checking");
+  // 暫態不出聲:既不承諾會跑,也不宣告跑不成——兩種說法在這一刻都還沒有依據。
+  expect(screen.queryByTestId("qa-status")).toBeNull();
 
   fireEvent.change(screen.getByRole("textbox", { name: /主題/ }), {
     target: { value: "樹" },
@@ -493,9 +564,8 @@ test("探測失敗可以重試,而且真的會再問一次", async () => {
   mockSources("claude", true);
   fireEvent.click(screen.getByTestId("retry-sources"));
 
-  await waitFor(() =>
-    expect(screen.getByTestId("qa-status")).toHaveAttribute("data-state", "on"),
-  );
+  // 重問成功 → 沒有什麼要報告了,整條狀態列消失(而不是留在錯誤狀態)。
+  await waitFor(() => expect(screen.queryByTestId("qa-status")).toBeNull());
 });
 
 // ---------------------------------------------------------------------------

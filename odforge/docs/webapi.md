@@ -144,6 +144,7 @@ CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：�
 | DELETE | `/api/templates/{id}` | 刪除自訂範本 → `{ok: true}`；內建 `422`、不存在 `404` |
 | POST | `/api/templates/extract` | `{data_url}`（.otp/.odp/.ott/.odt 的 base64 data URI，≤ 12 MiB）→ `{design}`。只抽出、不存檔——命名與儲存是下一步 |
 | GET | `/api/sessions` | 最近 session `{sessions: [{id, title, prompt, status, page_count, preview_url?, download_url?, ...}]}` |
+| DELETE | `/api/sessions/{id}` | 刪除一份工作紀錄與它在伺服器上的檔案（`.odp`、預覽圖）→ `{ok: true}`；不存在 `404`。工作仍在進行、已取消但外部呼叫尚未結束、或正在重生時回 `409` 並附中文原因——目錄被抽掉會讓還在跑的 worker 寫進不存在的路徑 |
 | GET | `/api/sources` | 可用模型來源 `{text: [{name, available, reason}], vision: [...], defaults: {text, vision}}`。前端據此決定這一輪的「設計品質檢查」算不算數——第四道閘沒有開關,但沒有可用的視覺來源時不會送 `qa: true`,介面會直接說明只跑前三道 |
 | GET | `/api/jobs/{id}/events` | SSE 事件流（見「SSE 事件」） |
 | POST | `/api/jobs/{id}/outline` | `{action: "approve"}` 或 `{action: "edit", outline: Outline}` → `{ok, status}` |
@@ -157,7 +158,8 @@ CORS 採「明確白名單」（**非**萬用 `*`、且不帶 credentials）：�
 ### POST `/api/discovery/questions`
 
 這是生成工作建立前的短回合，不會建立 job。模型會根據已知 prompt 與介面設定，
-只詢問尚未提供且最影響簡報品質的 2–5 個問題：
+只詢問尚未提供且最影響簡報品質的問題：一般 3–5 題，需求龐大時最多 8 題（`questions`
+上限 8、`known_context` 上限 10，超出的部分由後端裁掉，不會讓整場訪談失敗）：
 
 ```json
 {

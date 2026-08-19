@@ -84,7 +84,7 @@ odforge new "建立一張三項商品的銷售統計表，含小計公式" -o sa
 - `--logo PATH` / `--logo-placement cover | cover-closing | all`：封面校徽與它出現的頁面，
   預設封面與結尾頁。
 - `--from-template PATH`：吃現有 `.otp`/`.odp` 公版，抽出樣式並鎖定設計，LLM 只寫內容。
-- `--backend deepseek | ollama | custom`：選擇 LLM 後端。
+- `--backend codex | deepseek | ollama | custom`：選擇 LLM 後端。
 - `--image PATH`：加入 PNG/JPEG 素材，可重複指定；模型只會看到伺服器產生的
   `asset://id` 與描述，不會取得本機路徑。
 - `odforge benchmark` 的分數是可重現的結構代理指標；請搭配輸出的預覽與人工／
@@ -107,6 +107,30 @@ $env:ODFORGE_CUSTOM_API_KEY = "你的金鑰"
 $env:ODFORGE_CUSTOM_MODEL = "model-name"
 odforge new "做一份產品簡報" -o product.odp --backend custom
 ```
+
+**`codex`** 走本機已安裝的 [Codex CLI](https://github.com/openai/codex),以你自己的
+ChatGPT 登入認證——沒有 API 金鑰,也沒有 per-key 額度可以用完:
+
+```powershell
+npm i -g @openai/codex   # 需要 >= 0.147.0(見下)
+codex login              # 只登入一次(無瀏覽器環境用 codex login --device-auth)
+odforge new "做一份產品簡報" -o product.odp --backend codex
+```
+
+它把提示交給 `codex exec`,並以 `--output-schema` 取代強制 tool call——那是 OpenAI
+的 **strict** 結構化輸出,schema 由伺服器端強制執行,所以回來的 JSON 幾乎一定合格。
+模型以 `ODFORGE_CODEX_MODEL` 指定(預設 `gpt-5.6-terra`),逾時
+`ODFORGE_CODEX_TIMEOUT`(預設 1800 秒:逐頁那一步要填完整份簡報)。
+
+模型與 CLI 版本是綁在一起的:太舊的 CLI 會被伺服器以
+「requires a newer version of Codex」擋下(`gpt-5.6-terra` 需要 codex-cli
+**0.147.0** 以上;0.142.5 會失敗)。升級後若 `codex` 指令報
+`Missing optional dependency @openai/codex-win32-x64`,照它說的重跑一次
+`npm i -g @openai/codex@latest` 即可——那一包是平台專屬的 optional dependency,
+第一次升級偶爾會漏裝。
+
+> `codex` 後端**僅限本機**:這個服務沒有身分驗證,對外綁定時任何人都能花用你的
+> ChatGPT 訂閱額度,因此 `serve` 綁到 loopback 以外時它會直接拒絕啟用。
 
 第四道閘（設計品質）另外用一個**視覺**模型；沒設定時是 `off`，此時它照樣會算圖，
 但沒有任何模型看過那些圖，永遠回報零個問題：
@@ -134,8 +158,9 @@ adapter（`ODFORGE_IMAGE_BACKEND=http`）；遠端圖片則必須把精確 HTTPS
 
 ## Web 介面與 AI 需求訪談
 
-Web 介面不會把需求直接送去生成。按下「繼續」後，discovery 模型會先提出 2–5 個
-依題目動態產生的高價值問題；回答完成後，介面會整理成可編輯的 Brief，確認後才進入
+Web 介面不會把需求直接送去生成。按下「繼續」後，discovery 模型會先提出依題目動態
+產生的高價值問題——一般 3–5 題，需求龐大、缺口確實很多時最多 8 題（題數由缺口決定，
+不會為湊數而問）；回答完成後，介面會整理成可編輯的 Brief，確認後才進入
 大綱與逐頁生成。讀題期間會以 NDJSON 顯示實際工作階段與耗時，但不會暴露或捏造
 模型的私密推理。
 

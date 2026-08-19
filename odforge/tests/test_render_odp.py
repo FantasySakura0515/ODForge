@@ -2415,10 +2415,10 @@ def _logo_part(width: int = 240, height: int = 80) -> _LogoAsset:
 
 
 def test_byline_is_drawn_on_the_cover_verbatim():
-    deck = _branded_deck(byline="輔仁大學資訊工程學系 · 王小明 · 2026/08")
+    deck = _branded_deck(byline="XX大學資訊工程學系 · 王小明 · 2026/08")
     root = _content_root(deck, THEMES["academic"])
     pages = root.findall(".//draw:page", NS)
-    assert _text_p_with(pages[0], "輔仁大學資訊工程學系 · 王小明 · 2026/08") is not None
+    assert _text_p_with(pages[0], "XX大學資訊工程學系 · 王小明 · 2026/08") is not None
     # Only the cover carries it — a署名 repeated on every page is a watermark.
     for page in pages[1:]:
         assert not [x for x in page.findall(".//text:p", NS) if x.text and "王小明" in x.text]
@@ -2760,3 +2760,148 @@ def test_the_byline_follows_the_cover_it_sits_under():
     # The bottom-anchored keynote cover pushes its subtitle far down the page,
     # so a fixed byline line would have printed on top of it.
     assert byline_y("keynote") > byline_y("classic")
+
+
+
+# ---------------------------------------------------------------------------
+# diagram:邊標籤互相蓋住(2026-08-18,第四道閘在一次實跑中抓到:「左下連線標籤
+# 『驗證格式』與『回饋修正』彼此重疊,文字難以閱讀」)。
+#
+# 原因是每條邊只看自己的幾何決定標籤位置:hub 版型把節點排成中心 + 外環,環上
+# 相鄰兩條邊的中點只差一點點,兩張 chip 就疊在一起。節點卡片同樣算障礙物——卡片
+# 在標籤「之後」才畫,壓上去的標籤不是變擠,是整個被蓋掉。
+#
+# 下面用的就是那次實跑真的產生的那張圖(四道品質閘的環狀流程),不是另外編一個
+# 剛好會壞的案例。
+# ---------------------------------------------------------------------------
+
+_GATE_CYCLE = {
+    "kind": "hub",
+    "nodes": [
+        {"id": "engine", "title": "生成引擎", "detail": "自然語言轉為原生 ODF",
+         "emphasis": True},
+        {"id": "structure", "title": "結構層", "detail": "確認文件骨架完整"},
+        {"id": "content", "title": "內容層", "detail": "確認需求與資訊一致"},
+        {"id": "visual", "title": "視覺層", "detail": "確認版面清晰可讀"},
+        {"id": "format", "title": "格式層", "detail": "確認 ODF 可正常開啟"},
+    ],
+    "edges": [
+        {"source": "engine", "target": "structure", "label": "建立結構"},
+        {"source": "structure", "target": "content", "label": "檢核內容"},
+        {"source": "content", "target": "visual", "label": "調校呈現"},
+        {"source": "visual", "target": "format", "label": "驗證格式"},
+        {"source": "format", "target": "engine", "label": "回饋修正"},
+    ],
+}
+_GATE_LABELS = [edge["label"] for edge in _GATE_CYCLE["edges"]]
+
+
+def _boxes_named(page, names):
+    """(x, y, w, h) in cm for every text frame whose content is in ``names``."""
+    boxes = {}
+    for frame in page.findall(".//draw:frame", NS):
+        text = "".join(frame.itertext()).strip()
+        if text in names:
+            boxes[text] = tuple(
+                float(frame.get(_q("svg", k)).removesuffix("cm"))
+                for k in ("x", "y", "width", "height")
+            )
+    return boxes
+
+
+def _rect_boxes(rects):
+    return [
+        tuple(
+            float(rect.get(_q("svg", k)).removesuffix("cm"))
+            for k in ("x", "y", "width", "height")
+        )
+        for rect in rects
+    ]
+
+
+def _area_shared(a, b):
+    dx = min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0])
+    dy = min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])
+    return dx * dy if dx > 0 and dy > 0 else 0.0
+
+
+def _gate_cycle_page(theme_name="academic"):
+    p = Presentation(
+        title="t",
+        slides=[Slide(layout="diagram", title="四道品質閘", diagram=_GATE_CYCLE)],
+    )
+    return _content_root(p, THEMES[theme_name]).find(".//draw:page", NS)
+
+
+def test_diagram_edge_labels_never_overlap_each_other():
+    page = _gate_cycle_page()
+    boxes = _boxes_named(page, set(_GATE_LABELS))
+
+    assert set(boxes) == set(_GATE_LABELS), "每個標籤都要畫出來,不得為了閃避而丟掉"
+    for i, first in enumerate(_GATE_LABELS):
+        for second in _GATE_LABELS[i + 1 :]:
+            assert _area_shared(boxes[first], boxes[second]) == 0, (
+                f"標籤「{first}」與「{second}」重疊:"
+                f"{boxes[first]} vs {boxes[second]}"
+            )
+
+
+def test_diagram_edge_labels_stay_off_the_node_cards():
+    """卡片畫在標籤之後——疊上去的標籤會被整個蓋掉,那比重疊更糟。"""
+    page = _gate_cycle_page()
+    boxes = _boxes_named(page, set(_GATE_LABELS))
+    cards = _rect_boxes(_visual_cards(page))
+
+    for label, box in boxes.items():
+        for card in cards:
+            assert _area_shared(box, card) == 0, f"標籤「{label}」壓在節點卡片上"
+
+
+@pytest.mark.parametrize("theme_name", ["academic", "dark", "navy"])
+def test_diagram_edge_labels_clear_on_every_theme(theme_name):
+    """字級與配色隨主題變,標籤寬度跟著變——閃避不能只在預設主題成立。"""
+    page = _gate_cycle_page(theme_name)
+    boxes = _boxes_named(page, set(_GATE_LABELS))
+    obstacles = _rect_boxes(_visual_cards(page)) + list(boxes.values())
+    for label, box in boxes.items():
+        for other in obstacles:
+            if other == box:
+                continue
+            assert _area_shared(box, other) == 0, f"{theme_name}:「{label}」被蓋住"
+
+
+def test_edge_label_candidates_start_with_todays_placement():
+    """第一順位仍是「騎在連線中點上」:沒有擁擠時版面不該因這次修正而改變。"""
+    from odforge.render.odp import _edge_label_candidates
+
+    # A long horizontal connector: 10cm of line for a 2cm label.
+    candidates = _edge_label_candidates(2.0, 5.0, 12.0, 5.0, 2.0, 0.6)
+    x, y, on_line = candidates[0]
+    assert on_line is True
+    assert x == pytest.approx(7.0 - 1.0)  # centred on the midpoint
+    assert y == pytest.approx(5.0 - 0.3)
+    # 其後是同一點的左右兩側,仍然貼著自己的線。
+    assert [c[2] for c in candidates[1:3]] == [False, False]
+    sides = sorted(c[1] for c in candidates[1:3])
+    assert sides == pytest.approx([5.0 - 0.3 - 1.35, 5.0 - 0.3 + 1.35])
+
+
+def test_edge_label_candidates_offer_no_on_line_slot_on_a_short_connector():
+    """線比標籤還短時,chip 不能騎上去——騎上去就把整條線吃掉了。"""
+    from odforge.render.odp import _edge_label_candidates
+
+    candidates = _edge_label_candidates(2.0, 5.0, 3.0, 5.0, 2.5, 0.6)
+    assert all(not on_line for _x, _y, on_line in candidates)
+    assert candidates, "短線也必須給得出候選位置"
+
+
+def test_place_edge_label_takes_the_least_bad_spot_rather_than_dropping_it():
+    """全部候選都撞得到時,寧可放一個被擠到的標籤,也不要靜靜地不畫。"""
+    from odforge.render.odp import Frame, _place_edge_label
+
+    area = Frame(role="diagram-area", x=0.0, y=0.0, w=20.0, h=10.0, size_pt=12)
+    candidates = [(1.0, 1.0, True), (5.0, 1.0, False)]
+    taken = [(0.0, 0.0, 20.0, 10.0)]  # 整個區域都被佔住
+    x, y, on_line = _place_edge_label(candidates, 2.0, 0.6, taken, area)
+
+    assert (x, y, on_line) == (1.0, 1.0, True)

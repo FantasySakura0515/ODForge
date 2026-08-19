@@ -58,7 +58,7 @@ from openai import OpenAI
 from pydantic import BaseModel, ValidationError, computed_field
 
 from odforge.ir import Outline, PageRole, Presentation
-from odforge.llm import DroppedContent, generate_slides
+from odforge.llm import CODEX_MODEL_DEFAULT, DroppedContent, generate_slides
 from odforge.media import AssetInput
 from odforge.pagefacts import grounding_text
 from odforge.preview import PreviewUnavailable, render_pages
@@ -672,9 +672,10 @@ def _codex_auth_path() -> Path:
     return (Path(home) if home else Path.home() / ".codex") / "auth.json"
 
 
-# The CLI's own default model can outrun the installed CLI ("requires a newer
-# version of Codex"), so the backend names one it can drive.
-_CODEX_MODEL_DEFAULT = "gpt-5.5"
+# The text side owns this constant (llm.CODEX_MODEL_DEFAULT); the design gate
+# follows it. Two copies would drift the first time one of them is bumped, and
+# "the codex backend" would quietly mean two different models.
+_CODEX_MODEL_DEFAULT = CODEX_MODEL_DEFAULT
 
 
 def _make_codex() -> VisionBackend:

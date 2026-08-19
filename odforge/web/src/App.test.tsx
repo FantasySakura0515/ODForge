@@ -476,6 +476,35 @@ test("?job= 復原:自動重連中(readyState=CONNECTING)的暫時錯誤不誤�
   expect(new URLSearchParams(window.location.search).get("job")).toBe("reconnecting");
 });
 
+test("後端送來的真錯誤不會被自己造成的斷線蓋成「無法連上後端」", async () => {
+  // 實測踩到的:模型端回 403「免費額度已用完」,畫面卻寫「無法連上後端」,還掛上
+  // 「後端未連線」chip——使用者於是去檢查一台好好活著的伺服器,而真正該做的事
+  // (換來源或加值)一個字都沒出現。
+  window.history.replaceState({}, "", "/");
+  vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+  vi.mocked(postGenerate).mockResolvedValue({ job_id: "j-403" });
+
+  render(<App />);
+  await submitThroughDiscovery("額度用完的那一次");
+  await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+  const es = FakeEventSource.instances[0];
+
+  es.emit("error", {
+    message: "Error code: 403 - The free quota has been exhausted.",
+    stage: "outline",
+  });
+  // 終局事件讓訂閱端自己 close();瀏覽器仍會為「連線結束」再叫一次 onerror,而
+  // 那時 readyState 已是 CLOSED——舊版據此判定「放棄重連」並補一個 stage=connect。
+  es.fail();
+
+  await waitFor(() =>
+    expect(screen.getAllByText("AI 構思大綱時出錯").length).toBeGreaterThan(0),
+  );
+  expect(screen.getByText(/free quota has been exhausted/)).toBeInTheDocument();
+  expect(screen.queryByText(/無法連上後端/)).toBeNull();
+  expect(screen.queryByText("後端未連線")).toBeNull();
+});
+
 test("錯誤區「重試」以同樣參數重新送出上一次 generate", async () => {
   window.history.replaceState({}, "", "/");
   vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);

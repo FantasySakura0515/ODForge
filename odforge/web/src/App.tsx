@@ -12,6 +12,7 @@ import { TemplatesPage } from "./components/TemplatesPage";
 import { SideNav } from "./components/SideNav";
 import {
   ApiHttpError,
+  deleteSession,
   getSessions,
   postCancel,
   postDiscoveryQuestions,
@@ -95,6 +96,14 @@ export default function App() {
     } finally {
       setSessionsLoading(false);
     }
+  }
+
+  // 刪除成功才把那一列從畫面上拿掉,而且是就地拿掉、不重抓整份清單:重抓會讓
+  // 其餘卡片閃一次載入狀態,使用者剛剛做的那一個動作反而看起來像整頁重來。
+  // 失敗時把錯誤往上拋,由 HomeDashboard 顯示後端那句中文原因(例如工作還在跑)。
+  async function removeSession(id: string) {
+    await deleteSession(id);
+    setSessions((current) => current.filter((session) => session.id !== id));
   }
 
   useEffect(() => {
@@ -402,6 +411,7 @@ export default function App() {
               error={sessionsError}
               onNew={startNew}
               onReload={() => void loadSessions()}
+              onDelete={removeSession}
             />
           )}
         </div>

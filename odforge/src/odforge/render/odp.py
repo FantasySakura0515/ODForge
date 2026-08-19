@@ -1565,6 +1565,114 @@ def _visual_text_xml(
     return _frame_box_xml(frame, inner)
 
 
+def _rect_overlap(
+    a: tuple[float, float, float, float], b: tuple[float, float, float, float]
+) -> float:
+    """Area two ``(x, y, w, h)`` rectangles share; ``0.0`` when they miss."""
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    dx = min(ax + aw, bx + bw) - max(ax, bx)
+    dy = min(ay + ah, by + bh) - max(ay, by)
+    return dx * dy if dx > 0 and dy > 0 else 0.0
+
+
+def _edge_label_candidates(
+    x1: float, y1: float, x2: float, y2: float, w: float, h: float
+) -> list[tuple[float, float, bool]]:
+    """Where an edge label could go, best first.
+
+    Two independent freedoms, and the order below spends the cheap one first:
+    slide *along* the connector (the label stays with its own line, which is
+    what a reader needs to pair them) before stepping further *away* from it.
+    The first entry is the placement the renderer has always used, so an
+    uncrowded diagram is laid out exactly as before.
+
+    ``True`` marks an on-connector spot — the caller draws the masking chip
+    there and nowhere else, so a label that stepped aside leaves the line whole.
+    """
+    dx, dy = x2 - x1, y2 - y1
+    span = (dx * dx + dy * dy) ** 0.5
+    norm = span or 1.0
+    # Perpendicular unit vector; the two signs are the two sides of the line.
+    nx, ny = -dy / norm, dx / norm
+    base_push = w / 2 + _EDGE_LABEL_CLEARANCE
+
+    def at(t: float) -> tuple[float, float]:
+        return x1 + dx * t, y1 + dy * t
+
+    def fits_on_line(t: float) -> bool:
+        """Does a chip centred at ``t`` still leave a readable run either side?"""
+        centre = span * t
+        return (
+            centre - w / 2 >= _EDGE_LABEL_CLEARANCE
+            and centre + w / 2 <= span - _EDGE_LABEL_CLEARANCE
+        )
+
+    slots = (0.5, 0.32, 0.68)
+    candidates: list[tuple[float, float, bool]] = []
+    for t in slots[:1]:
+        if fits_on_line(t):
+            cx, cy = at(t)
+            candidates.append((cx - w / 2, cy - h / 2, True))
+    for t in slots[:1]:
+        cx, cy = at(t)
+        for side in (1.0, -1.0):
+            push = base_push * side
+            candidates.append((cx + nx * push - w / 2, cy + ny * push - h / 2, False))
+    for t in slots[1:]:
+        if fits_on_line(t):
+            cx, cy = at(t)
+            candidates.append((cx - w / 2, cy - h / 2, True))
+    for factor in (1.0, 1.7, 2.4):
+        for t in slots[1:] if factor == 1.0 else slots:
+            cx, cy = at(t)
+            for side in (1.0, -1.0):
+                push = base_push * factor * side
+                candidates.append(
+                    (cx + nx * push - w / 2, cy + ny * push - h / 2, False)
+                )
+    return candidates
+
+
+def _place_edge_label(
+    candidates: list[tuple[float, float, bool]],
+    w: float,
+    h: float,
+    taken: list[tuple[float, float, float, float]],
+    area: Frame,
+) -> tuple[float, float, bool]:
+    """Choose where an edge label goes: the first candidate that hits nothing.
+
+    Each edge used to place its label from its own geometry alone, which is
+    fine until two connectors run close: a hub's neighbouring spokes put their
+    midpoints within a couple of millimetres of each other and the two chips
+    printed on top of one another (the design gate caught exactly that — 「左下
+    連線標籤『驗證格式』與『回饋修正』彼此重疊」).
+
+    ``taken`` therefore carries the node cards as well as every label already
+    placed. The cards matter because they are drawn *after* the labels: a label
+    that lands on one is not crowded, it is painted over and gone.
+
+    Candidates are tried in preference order, so an uncrowded diagram keeps the
+    placement it has always had. When every candidate collides — a diagram too
+    dense for any free spot — the least-overlapping one wins rather than the
+    label being dropped: a label nobody can read is still recoverable by
+    editing the deck, a label that was never drawn is not.
+    """
+    best: tuple[float, float, float, bool] | None = None
+    for x, y, on_line in candidates:
+        # Never leave the diagram's own area, however far the push wanted to go.
+        x = min(max(x, area.x), area.x + area.w - w)
+        y = min(max(y, area.y), area.y + area.h - h)
+        overlap = sum(_rect_overlap((x, y, w, h), other) for other in taken)
+        if overlap == 0:
+            return x, y, on_line
+        if best is None or overlap < best[0]:
+            best = (overlap, x, y, on_line)
+    assert best is not None  # candidates is never empty (see _diagram_xml)
+    return best[1], best[2], best[3]
+
+
 def _trim_to_boxes(
     source: tuple[float, float, float, float],
     target: tuple[float, float, float, float],
@@ -2583,6 +2691,9 @@ def _diagram_xml(
     parts: list[str] = []
 
     label_pt = min(theme.caption_pt, 11)
+    # Everything a label must not land on. The node cards go in first because
+    # they are drawn last: a label under a card is not crowded, it is gone.
+    taken: list[tuple[float, float, float, float]] = list(positions.values())
     for edge in diagram.edges:
         sx, sy, sw, sh = positions[edge.source]
         tx, ty, tw, th = positions[edge.target]
@@ -2610,15 +2721,12 @@ def _diagram_xml(
                 + 2 * _FRAME_INSET_X
                 + 2 * _EDGE_LABEL_PAD
             )
-            span = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
-            mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
-            # A chip may only sit *on* the connector when it still leaves a
-            # readable run of line either side of it; otherwise it steps aside
-            # and the connector stays whole.
-            on_line = span >= label_w + 2 * _EDGE_LABEL_CLEARANCE
+            candidates = _edge_label_candidates(x1, y1, x2, y2, label_w, label_h)
+            label_x, label_y, on_line = _place_edge_label(
+                candidates, label_w, label_h, taken, area
+            )
+            taken.append((label_x, label_y, label_w, label_h))
             if on_line:
-                label_x = mid_x - label_w / 2
-                label_y = mid_y - label_h / 2
                 label_bg = graphics.name_for_fill(theme.bg)
                 parts.append(
                     _rect_xml(
@@ -2631,14 +2739,6 @@ def _diagram_xml(
                         style_name=label_bg,
                     )
                 )
-            else:
-                # Offset perpendicular to the edge, on the side away from the
-                # hub, so the label reads beside its line instead of over it.
-                nx, ny = -(y2 - y1), (x2 - x1)
-                norm = (nx * nx + ny * ny) ** 0.5 or 1.0
-                push = label_w / 2 + _EDGE_LABEL_CLEARANCE
-                label_x = mid_x + nx / norm * push - label_w / 2
-                label_y = mid_y + ny / norm * push - label_h / 2
             parts.append(
                 _visual_text_xml(
                     edge.label,

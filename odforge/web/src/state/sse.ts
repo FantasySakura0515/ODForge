@@ -23,6 +23,15 @@ export function subscribeJob(
   onOpen?: () => void,
 ): () => void {
   const es = new EventSourceCtor(eventsUrl(jobId));
+  // 我們自己收線之後,任何 onerror 都不是「傳輸壞了」——是我們關的。
+  //
+  // 少了這個旗標,終局事件會被自己造成的斷線蓋掉:後端送出 error 事件後就結束
+  // 回應,瀏覽器把「訊息送達」與「連線結束」排在相鄰的兩個 task 裡。第一個讓
+  // 我們 close()(readyState 變 2),第二個仍會叫到 onerror,而呼叫端看到的
+  // readyState 已經是 CLOSED —— 它據此判定「放棄重連」,補送一個 stage=connect
+  // 的錯誤,把真正的原因(例如供應商回 403:免費額度用完)整句換成「無法連上
+  // 後端」。使用者於是去查一台好好活著的伺服器,而真的該做的事沒有一處寫著。
+  let closedByUs = false;
   // 每次連線「開啟」都會觸發——含 EventSource 斷線後的自動重連。後端無
   // Last-Event-ID,重連必從頭重播;呼叫端用這個時機重設節流器的去重狀態,
   // 讓重播完整走一遍(reducer 冪等,重建後牆與進度正確)。
@@ -34,13 +43,18 @@ export function subscribeJob(
       onEvent(parsed);
       // The backend ends the stream after a terminal event; close our side too so
       // the browser's EventSource doesn't auto-reconnect and replay the whole history.
-      if (parsed.type === "complete" || parsed.type === "error") es.close();
+      if (parsed.type === "complete" || parsed.type === "error") {
+        closedByUs = true;
+        es.close();
+      }
     });
   }
   // Transport-level failures (e.g. the job id is 404 after a server restart) surface
   // through onerror, not the named `error` event. Resume flow uses this to detect an
-  // expired job. Named-event errors above already close the stream, so a late
-  // reconnect onerror won't reach here in the happy path.
-  if (onError) es.onerror = onError;
-  return () => es.close();
+  // expired job.
+  if (onError) es.onerror = (e) => { if (!closedByUs) onError(e); };
+  return () => {
+    closedByUs = true;
+    es.close();
+  };
 }

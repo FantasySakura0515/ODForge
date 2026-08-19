@@ -84,6 +84,10 @@ class LogoPlacement(str, Enum):
 
 
 class Backend(str, Enum):
+    # Must stay in step with llm.BACKENDS — a backend the registry offers but
+    # this enum omits is one typer rejects before it ever reaches the registry
+    # (test_cli_backend_choices_match_the_registry holds the two together).
+    codex = "codex"
     deepseek = "deepseek"
     ollama = "ollama"
     custom = "custom"

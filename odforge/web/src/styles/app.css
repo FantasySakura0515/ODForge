@@ -389,6 +389,7 @@ button { color: inherit; }
 }
 
 .session-card {
+  flex-wrap: wrap;
   border: 1px solid transparent;
   transition: background 160ms ease, border-color 160ms ease;
 }
@@ -496,6 +497,45 @@ button { color: inherit; }
 
 .session-download:hover { color: var(--on-accent); background: var(--accent); }
 .session-download:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+
+/* 刪除鈕安靜地待在下載鈕旁邊(同一條尺寸帶),但用 --muted 而不是 --crit:一整
+   排紅字會讓「刪除」看起來像這一頁的主要動作,它不是。紅色留給真的按下去之後
+   的那一列確認。 */
+.session-delete {
+  display: grid;
+  width: 72px;
+  flex: none;
+  place-items: center;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease;
+}
+
+.session-delete:hover { color: var(--crit); background: var(--crit-soft); }
+.session-delete:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+
+/* 確認列佔滿整列(flex-basis 100% 讓它換行到卡片下方),而不是擠在右側那條
+   72px 的帶子裡:一句「無法復原」被壓成三行,等於沒有人會讀它。 */
+.session-confirm {
+  display: flex;
+  flex: 1 0 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 11px 14px 12px;
+  background: var(--crit-soft);
+  border-top: 1px solid var(--line);
+}
+
+.session-confirm p { margin: 0; color: var(--text); font-size: 11.5px; line-height: 1.6; }
+.session-confirm-actions { display: flex; gap: 4px; margin-left: auto; }
+.session-confirm .text-action.danger { color: var(--crit); }
+.session-confirm-error { flex: 1 0 100%; color: var(--crit); font-weight: 700; }
 
 @keyframes archive-spin { to { transform: rotate(360deg); } }
 
@@ -641,13 +681,17 @@ button { color: inherit; }
   line-height: 1;
 }
 
+/* 高度由 PromptBar 的 layout effect 依內容量出來寫進 inline style;這裡只定兩端。
+   min-height 是空框的樣子,max-height 是它長到哪裡就該改捲動——沒有上限的話,貼
+   一份講稿進來會把繼續鈕與底下所有區塊推到畫面外。 */
 .promptbar textarea {
   width: 100%;
   min-width: 0;
-  height: 112px;
+  min-height: 112px;
+  max-height: min(46vh, 460px);
   padding: 0;
   resize: none;
-  overflow: auto;
+  overflow-y: auto;
   color: var(--text);
   background: transparent;
   border: 0;
@@ -1261,6 +1305,58 @@ button { color: inherit; }
   line-height: 1.55;
 }
 
+/* 收起／展開的區塊:標題本身就是那顆開關,所以按鈕要看起來仍然是標題——
+   +／− 是唯一的裝飾,靠字級與字重維持它在區塊層級的位階。 */
+.block-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.block-sign {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--line-interactive);
+  border-radius: 5px;
+  font-family: var(--f-mono);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.block-toggle:hover .block-sign { border-color: var(--accent); }
+
+.block-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+/* 收起時的摘要:唯一還看得見「自己設過什麼」的地方,所以用 accent 而不是 muted。 */
+.block-set {
+  margin: 0;
+  color: var(--accent);
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.block-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .advchip {
   padding: 3px 7px;
   color: var(--accent);
@@ -1397,78 +1493,7 @@ button { color: inherit; }
 
 .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* 視覺主題:色票 + 名稱的單選格。AI 決定排第一,而且是預設。 */
-.themeset {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.theme-option {
-  position: relative;
-  display: flex;
-  min-height: 44px;
-  align-items: center;
-  gap: 9px;
-  padding: 8px 10px;
-  color: var(--muted);
-  background: var(--surface);
-  border: 1px solid var(--line-interactive);
-  border-radius: 8px;
-  cursor: pointer;
-  transition: color 180ms ease, background 180ms ease, border-color 180ms ease;
-}
-
-.theme-option.on {
-  color: var(--text);
-  background: var(--accent-soft);
-  border-color: var(--accent);
-}
-
-.theme-option input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-}
-
-.theme-option:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
-
-.theme-name { font-size: 11px; font-weight: 650; }
-
-/* 底色是色票本身,兩個小方塊是 accent 與內文色——三個顏色就足以認出一組配色。 */
-.theme-swatch {
-  display: flex;
-  flex: none;
-  width: 26px;
-  height: 26px;
-  align-items: flex-end;
-  justify-content: center;
-  gap: 2px;
-  padding-bottom: 4px;
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-}
-
-.theme-swatch i {
-  width: 6px;
-  height: 6px;
-  border-radius: 2px;
-}
-
-.theme-swatch.auto {
-  background: conic-gradient(
-    from 210deg,
-    #1a4b8c,
-    #0f766e,
-    #2c6e49,
-    #c0560e,
-    #b49bf5,
-    #1a4b8c
-  );
-}
-
-/* 第四道閘的狀態列:它不是開關,只報告這一輪跑不跑得成。 */
+/* 第四道閘的狀態列:只在這一輪跑不成時出現(能跑是預設,不必宣告)。 */
 .qa-status {
   display: flex;
   align-items: flex-start;
@@ -1478,12 +1503,6 @@ button { color: inherit; }
   border: 1px solid var(--line);
   border-left: 3px solid var(--line-strong);
   border-radius: 8px;
-}
-
-.qa-status[data-state="on"] {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 32%, var(--line));
-  border-left-color: var(--accent);
 }
 
 .qa-status[data-state="off"] { border-left-color: var(--warn); }
@@ -3600,7 +3619,10 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
   .session-copy { grid-column: 2; }
   .session-arrow { grid-column: 3; }
   .session-copy strong { font-size: 15px; }
-  .session-download { width: 54px; }
+  .session-download,
+  .session-delete { width: 54px; }
+  .session-confirm { padding: 10px 10px 11px; }
+  .session-confirm-actions { margin-left: 0; }
 
   .welcome-shell {
     width: calc(100% - 24px);
@@ -3623,8 +3645,10 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
     padding: 15px;
   }
 
+  /* 手機上的上限收得更緊:軟鍵盤已經吃掉半個畫面,需求框再長下去就看不到繼續鈕。 */
   .promptbar textarea {
-    height: 136px;
+    min-height: 136px;
+    max-height: 44vh;
     font-size: 16px;
   }
 
@@ -3732,7 +3756,6 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
   .settings-grid.even { grid-template-columns: 1fr; }
   .density-options,
   .density-options.three { grid-template-columns: 1fr; }
-  .themeset { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .template-gallery { padding: 20px 14px 22px; }
   .shell-with-nav {
     grid-template-columns: 1fr;
@@ -3821,7 +3844,7 @@ button.finding:focus-visible { outline: 2px solid var(--accent); outline-offset:
   /* 核取方塊本身維持看得順眼的尺寸;可觸區域交給包住它的 label(下一條),
      那才是使用者真正按下去的東西。 */
   input[type="checkbox"], input[type="radio"] { min-height: 24px; min-width: 24px; }
-  label.theme-option, label.seg, .advfield > label { min-height: 44px; }
+  label.seg, .advfield > label { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,10 +1,17 @@
 """ODForge LLM backend abstraction layer.
 
-Turns a natural-language prompt into a validated Document IR by driving an
-OpenAI-compatible chat endpoint with forced function calling. A single
-``OpenAICompatBackend`` covers DeepSeek (the default), Ollama and any other
-OpenAI-compatible server; the ``BACKENDS`` registry makes adding a source a
-one-liner.
+Turns a natural-language prompt into a validated Document IR. Everything that
+decides *what* to ask — the prompts, the retries, the gates — lives once, in
+``StructuredLLMBackend``; each transport implements a single method:
+
+* ``OpenAICompatBackend`` drives an OpenAI-compatible chat endpoint with forced
+  function calling — DeepSeek, Ollama, or any hosted provider (``custom``).
+* ``CodexCliBackend`` drives the locally installed Codex CLI as a subprocess,
+  where ``--output-schema`` plays the part the forced tool call plays above.
+  It authenticates through the operator's own ChatGPT login, so it spends no
+  API key and hits no per-key quota.
+
+The ``BACKENDS`` registry makes adding a source a one-liner.
 
 This module contains no rendering logic. API-key material is read from
 environment variables only and never hard-coded.
@@ -15,6 +22,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 from typing import (
     Callable,
     Dict,
@@ -283,7 +294,8 @@ DISCOVERY_SYSTEM_PROMPT = """\
 【任務】
 - 先用一句繁體中文 summary 重述你已經理解的需求。
 - known_context 只列出使用者已明確提供的事實，不得自行補完。
-- 提出 2 到 5 個高資訊量問題；一般情況以 3 到 5 題為佳。
+- 提出 2 到 8 個高資訊量問題；一般情況以 3 到 5 題為佳，需求龐大、缺口確實很多時
+  最多問到 8 題。題數由缺口決定，不得為湊滿而問。
 - 優先釐清：受眾要做的決策、核心訊息、具體內容／證據、目前進度、
   風險、可用圖片或數據。依題目動態選擇，不要每次照同一份問卷。
 - 簡報是立刻生成的，交期不存在：絕對不要詢問這份簡報何時要用、截稿日、
@@ -342,13 +354,70 @@ class DiscoveryQuestion(BaseModel):
         return cleaned
 
 
+# The two list caps live here, not inline in Field(...), because the validators
+# below have to trim to exactly the same numbers.
+#
+# 已知資訊的上限放寬到 10:6 是憑空訂的,而需求越長、模型越會列出 7、8 條——那些
+# 條目全是使用者自己給過的事實,沒有一條該被丟掉。10 條 bullet 對 prompt 預算不
+# 痛不癢,卻能讓「裁切」退回它該待的位置:最後一道防線,不是日常行為。
+DISCOVERY_MAX_KNOWN_CONTEXT = 10
+# 問題數的上限是刻意的產品決定而非技術限制:每多一題都是使用者多按一次的成本。
+# 8 是 2026-08-17 使用者定的上限;系統提示仍然要求「一般 3 到 5 題」,8 是留給
+# 需求龐大、缺口真的很多的那種案子,不是預設題數。
+DISCOVERY_MAX_QUESTIONS = 8
+
+
 class DiscoveryPlan(BaseModel):
-    """Structured pre-generation interview produced from a short prompt."""
+    """Structured pre-generation interview produced from a short prompt.
+
+    Both lists are *trimmed* to their cap rather than rejected for exceeding it.
+    Over-supply used to end the interview with a raw pydantic ``too_long`` on
+    screen, and the retry — same long prompt — overshoots again, so the user
+    simply never got past this screen.
+
+    Trimming is not free, so the caps carry the weight: ``known_context`` is set
+    high enough that a real plan fits inside it, and what it restates reaches
+    generation anyway (the user's prompt goes in verbatim, and reference PDFs
+    are re-attached at generation time). ``questions`` is capped by choice at a
+    number the user picked, so anything past it is a question nobody wanted.
+    """
 
     summary: str = Field(min_length=1, max_length=500)
-    known_context: list[str] = Field(default_factory=list, max_length=6)
-    questions: list[DiscoveryQuestion] = Field(min_length=2, max_length=5)
+    known_context: list[str] = Field(
+        default_factory=list, max_length=DISCOVERY_MAX_KNOWN_CONTEXT
+    )
+    questions: list[DiscoveryQuestion] = Field(
+        min_length=2, max_length=DISCOVERY_MAX_QUESTIONS
+    )
     completeness: int = Field(ge=0, le=100)
+
+    @field_validator("known_context", mode="before")
+    @classmethod
+    def known_context_fits(cls, value: object) -> object:
+        """Drop blank/duplicate facts, then keep at most the cap.
+
+        Blanks and duplicates go first on purpose: they are the cheapest things
+        to lose, and clearing them usually means the real facts all fit.
+        """
+        if not isinstance(value, list) or not all(
+            isinstance(item, str) for item in value
+        ):
+            # Not our shape — let the field's own validation report it properly.
+            return value
+        kept: list[str] = []
+        for item in value:
+            text = item.strip()
+            if text and text not in kept:
+                kept.append(text)
+        return kept[:DISCOVERY_MAX_KNOWN_CONTEXT]
+
+    @field_validator("questions", mode="before")
+    @classmethod
+    def questions_fit(cls, value: object) -> object:
+        """Keep the first N questions; asking six is not worth a failed run."""
+        if isinstance(value, list) and len(value) > DISCOVERY_MAX_QUESTIONS:
+            return value[:DISCOVERY_MAX_QUESTIONS]
+        return value
 
 
 # Generation is immediate, so this deck has no delivery date: asking when it is
@@ -693,27 +762,96 @@ def _degrade_slide(slide, theme: Theme, slide_no: int = 0) -> Optional[DroppedCo
     return DroppedContent(slide_no=slide_no, title=slide.title, items=removed)
 
 
-class OpenAICompatBackend:
-    """Backend for any OpenAI-compatible chat-completions endpoint."""
+class StructuredOutputError(RuntimeError):
+    """The backend answered, but not with a payload we can use.
 
-    def __init__(
+    Kept distinct from every other failure because the response is *different*:
+    this one is the model's mistake, so the policy layer feeds the reason back
+    and retries once. A provider 403 or a CLI that will not start is not this —
+    those propagate, because asking again spends another minute to print the
+    same sentence.
+    """
+
+
+# JSON Schema keywords that carry documentation, not constraints. They are
+# dropped before a schema is handed to a strict validator: `title` in
+# particular is both an annotation *and* a legal field name, and conflating the
+# two is how a schema ends up requiring a key it just deleted.
+_SCHEMA_ANNOTATIONS = frozenset({"title", "default", "examples", "$comment"})
+# Keywords whose value maps *names* to schemas. Their keys are field names, so
+# the walk must recurse into the values without filtering the keys.
+_SCHEMA_MAPS = frozenset({"properties", "$defs", "definitions", "patternProperties"})
+
+
+def _strict_schema(schema: object) -> object:
+    """A pydantic JSON schema in OpenAI structured-output *strict* form.
+
+    Strict mode rejects any object that does not carry ``additionalProperties:
+    false`` and list every property in ``required``. Pydantic emits neither, so
+    the schema is walked and tightened rather than maintained by hand beside the
+    models — a second copy would drift the first time a field is added.
+
+    Making every property required is safe here precisely because the models are
+    the gate: an optional field arrives as ``null`` and pydantic puts the default
+    back. Nothing downstream can tell the difference.
+    """
+    if isinstance(schema, list):
+        return [_strict_schema(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out: dict = {}
+    for key, value in schema.items():
+        if key in _SCHEMA_ANNOTATIONS:
+            continue
+        if key in _SCHEMA_MAPS and isinstance(value, dict):
+            out[key] = {name: _strict_schema(sub) for name, sub in value.items()}
+        else:
+            out[key] = _strict_schema(value)
+    if "properties" in out:
+        out["type"] = "object"
+        out["additionalProperties"] = False
+        out["required"] = list(out["properties"])
+    return out
+
+
+class StructuredLLMBackend:
+    """Everything a backend does *except* carry the bytes to a model.
+
+    The four pipeline entry points below — 訪談、大綱、逐頁、單檔 IR — are policy:
+    which prompt, how many retries, what gets fed back, when a bad palette may be
+    stripped instead of raised, when an over-budget page is degraded instead of
+    retried. None of that depends on whether the model is reached over HTTP or
+    through a subprocess, so it lives here once and each transport implements
+    :meth:`_structured_call`.
+
+    Subclasses also supply the four model names the policy picks between
+    (``model`` / ``discovery_model`` / ``outline_model`` / ``slides_model``);
+    a backend with one model just points all four at it.
+    """
+
+    model: str
+    discovery_model: str
+    outline_model: str
+    slides_model: str
+
+    def _structured_call(
         self,
-        base_url: str,
-        api_key: str,
-        model: str,
         *,
-        discovery_model: str | None = None,
-        outline_model: str | None = None,
-        slides_model: str | None = None,
-        extra_body: dict | None = None,
-    ):
-        self.base_url = base_url
-        self.model = model
-        self.outline_model = outline_model or model
-        self.discovery_model = discovery_model or self.outline_model
-        self.slides_model = slides_model or model
-        self.extra_body = dict(extra_body or {})
-        self._client = OpenAI(base_url=base_url, api_key=api_key)
+        model: str,
+        system: str,
+        user: str,
+        schema: dict,
+        name: str,
+        description: str,
+        max_tokens: int,
+    ) -> dict:
+        """One request → the structured payload it produced, as a dict.
+
+        Raises :class:`StructuredOutputError` when the backend answered but the
+        answer is unusable (no tool call, unreadable JSON, not an object) — the
+        caller retries those. Anything else propagates untouched.
+        """
+        raise NotImplementedError
 
     def discover_questions(
         self,
@@ -734,21 +872,6 @@ class OpenAICompatBackend:
                 pass
 
         report("preparing")
-        schema = DiscoveryPlan.model_json_schema()
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": DISCOVERY_TOOL_NAME,
-                    "description": "輸出需求摘要、已知資訊與高價值追問",
-                    "parameters": schema,
-                },
-            }
-        ]
-        tool_choice = {
-            "type": "function",
-            "function": {"name": DISCOVERY_TOOL_NAME},
-        }
         base_content = (
             f"【使用者原始需求】\n{prompt.strip()}\n\n"
             f"【介面已有設定】\n{context.strip() or '無'}"
@@ -758,37 +881,31 @@ class OpenAICompatBackend:
         for _attempt in range(2):
             user_content = _with_error_feedback(base_content, error_summary)
             report("requesting" if _attempt == 0 else "retrying")
-            resp = self._client.chat.completions.create(
-                model=self.discovery_model,
-                messages=[
-                    {"role": "system", "content": DISCOVERY_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_content},
-                ],
-                tools=tools,
-                tool_choice=tool_choice,
-                max_tokens=int(
-                    os.environ.get("ODFORGE_DISCOVERY_MAX_TOKENS", "2048")
-                ),
-                **({"extra_body": self.extra_body} if self.extra_body else {}),
-            )
-            report("validating")
-            tool_calls = resp.choices[0].message.tool_calls
-            if not tool_calls:
-                error_summary = (
-                    "模型未呼叫 emit_discovery_questions，請務必透過該工具輸出。"
-                )
-                last_exc = RuntimeError(
-                    "model did not return a discovery tool call"
-                )
-                continue
             try:
-                data = _loads_tool_args(tool_calls[0].function.arguments)
+                data = self._structured_call(
+                    model=self.discovery_model,
+                    system=DISCOVERY_SYSTEM_PROMPT,
+                    user=user_content,
+                    schema=DiscoveryPlan.model_json_schema(),
+                    name=DISCOVERY_TOOL_NAME,
+                    description="輸出需求摘要、已知資訊與高價值追問",
+                    max_tokens=int(
+                        os.environ.get("ODFORGE_DISCOVERY_MAX_TOKENS", "2048")
+                    ),
+                )
+                report("validating")
                 plan = DiscoveryPlan.model_validate(data)
-                report("complete")
-                return plan
-            except (json.JSONDecodeError, TypeError, ValidationError) as exc:
+            except (
+                StructuredOutputError,
+                json.JSONDecodeError,
+                TypeError,
+                ValidationError,
+            ) as exc:
                 error_summary = str(exc)
                 last_exc = exc
+                continue
+            report("complete")
+            return plan
         assert last_exc is not None
         raise last_exc
 
@@ -801,29 +918,10 @@ class OpenAICompatBackend:
                 f"未知的 doc_type: {doc_type!r};可用值:{sorted(DOC_TYPES)}"
             )
 
-        schema = ir_cls.model_json_schema()
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": TOOL_NAME,
-                    "description": "輸出結構化文件內容",
-                    "parameters": schema,
-                },
-            }
-        ]
-        tool_choice = {"type": "function", "function": {"name": TOOL_NAME}}
-
         # First attempt, then exactly one retry on failure.
         error_summary: Optional[str] = None
         last_exc: Optional[Exception] = None
         for _attempt in range(2):
-            messages = [
-                {
-                    "role": "system",
-                    "content": system_prompt_for(SYSTEM_PROMPT, language),
-                }
-            ]
             user_content = prompt
             if error_summary is not None:
                 user_content = (
@@ -831,45 +929,24 @@ class OpenAICompatBackend:
                     f"[系統提示] 上一次的輸出無法通過驗證,錯誤如下,請修正後重新輸出:\n"
                     f"{error_summary}"
                 )
-            messages.append({"role": "user", "content": user_content})
-
-            resp = self._client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                tools=tools,
-                tool_choice=tool_choice,
-                max_tokens=int(os.environ.get("ODFORGE_MAX_TOKENS", "8192")),
-                **({"extra_body": self.extra_body} if self.extra_body else {}),
-            )
-
-            tool_calls = resp.choices[0].message.tool_calls
-            if not tool_calls:
-                error_summary = "模型未呼叫 emit_document 工具,請務必透過該工具輸出。"
-                last_exc = RuntimeError("model did not return a tool call")
-                continue
-
-            args_json = tool_calls[0].function.arguments
             try:
-                try:
-                    data = json.loads(args_json)
-                except json.JSONDecodeError:
-                    # DeepSeek occasionally emits malformed JSON in tool
-                    # arguments (e.g. an unquoted CJK-bracket-initial string
-                    # value). Attempt a best-effort repair; pydantic below
-                    # remains the correctness gate — repair never bypasses it.
-                    data = json_repair.loads(args_json)
-                    if not isinstance(data, dict):
-                        raise  # repair failed too: original JSONDecodeError
-                if not isinstance(data, dict):
-                    # Valid JSON that is not an object (e.g. the string "123");
-                    # route into the retry path instead of letting the ensuing
-                    # item assignment raise an unhandled TypeError.
-                    raise TypeError(
-                        f"tool arguments must be a JSON object, got {type(data).__name__}"
-                    )
+                data = self._structured_call(
+                    model=self.model,
+                    system=system_prompt_for(SYSTEM_PROMPT, language),
+                    user=user_content,
+                    schema=ir_cls.model_json_schema(),
+                    name=TOOL_NAME,
+                    description="輸出結構化文件內容",
+                    max_tokens=int(os.environ.get("ODFORGE_MAX_TOKENS", "8192")),
+                )
                 data["type"] = doc_type  # guard against a missing discriminator
                 return parse_ir(data)
-            except (json.JSONDecodeError, TypeError, ValidationError) as exc:
+            except (
+                StructuredOutputError,
+                json.JSONDecodeError,
+                TypeError,
+                ValidationError,
+            ) as exc:
                 error_summary = str(exc)
                 last_exc = exc
                 continue
@@ -906,29 +983,10 @@ class OpenAICompatBackend:
                 f"{prompt}\n\n"
                 f"【目標頁數】整份簡報約 {pages} 頁(含封面與結尾,可 ±1)。"
             )
-        schema = Outline.model_json_schema()
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": OUTLINE_TOOL_NAME,
-                    "description": "輸出簡報的美術方向(DesignSpec)與 page-role 大綱",
-                    "parameters": schema,
-                },
-            }
-        ]
-        tool_choice = {"type": "function", "function": {"name": OUTLINE_TOOL_NAME}}
-
         error_summary: Optional[str] = None
         last_exc: Optional[Exception] = None
         for attempt in range(2):
             is_last = attempt == 1
-            messages = [
-                {
-                    "role": "system",
-                    "content": system_prompt_for(OUTLINE_SYSTEM_PROMPT, language),
-                }
-            ]
             user_content = base_prompt
             if error_summary is not None:
                 user_content = (
@@ -936,27 +994,17 @@ class OpenAICompatBackend:
                     f"[系統提示] 上一次的輸出無法通過驗證,錯誤如下,請修正後重新輸出:\n"
                     f"{error_summary}"
                 )
-            messages.append({"role": "user", "content": user_content})
-
-            resp = self._client.chat.completions.create(
-                model=self.outline_model,
-                messages=messages,
-                tools=tools,
-                tool_choice=tool_choice,
-                max_tokens=int(os.environ.get("ODFORGE_MAX_TOKENS", "8192")),
-                **({"extra_body": self.extra_body} if self.extra_body else {}),
-            )
-
-            tool_calls = resp.choices[0].message.tool_calls
-            if not tool_calls:
-                error_summary = "模型未呼叫 emit_outline 工具,請務必透過該工具輸出。"
-                last_exc = RuntimeError("model did not return a tool call")
-                continue
-
-            args_json = tool_calls[0].function.arguments
             try:
-                data = _loads_tool_args(args_json)
-            except (json.JSONDecodeError, TypeError) as exc:
+                data = self._structured_call(
+                    model=self.outline_model,
+                    system=system_prompt_for(OUTLINE_SYSTEM_PROMPT, language),
+                    user=user_content,
+                    schema=Outline.model_json_schema(),
+                    name=OUTLINE_TOOL_NAME,
+                    description="輸出簡報的美術方向(DesignSpec)與 page-role 大綱",
+                    max_tokens=int(os.environ.get("ODFORGE_MAX_TOKENS", "8192")),
+                )
+            except (StructuredOutputError, json.JSONDecodeError, TypeError) as exc:
                 error_summary = str(exc)
                 last_exc = exc
                 continue
@@ -988,37 +1036,30 @@ class OpenAICompatBackend:
 
     def _emit_slides(
         self,
-        messages: list,
+        system: str,
+        user: str,
         outline: Outline,
-        tools: list,
-        tool_choice: dict,
     ) -> tuple[Optional[Presentation], Optional[Exception]]:
-        """One stage-2 LLM round.
+        """One stage-2 round.
 
         Returns ``(Presentation, None)`` when the call yields a structurally
         valid deck (outline's design re-attached, slide count + layouts aligned),
         otherwise ``(None, exc)`` whose ``str(exc)`` is fed back as the retry hint.
         """
-        resp = self._client.chat.completions.create(
-            model=self.slides_model,
-            messages=messages,
-            tools=tools,
-            tool_choice=tool_choice,
-            # Stage-2 fills every page, so it defaults higher than the one-shot
-            # generate_ir/generate_outline paths (8192). Env override still wins.
-            max_tokens=int(os.environ.get("ODFORGE_MAX_TOKENS", "16384")),
-            **({"extra_body": self.extra_body} if self.extra_body else {}),
-        )
-
-        tool_calls = resp.choices[0].message.tool_calls
-        if not tool_calls:
-            return None, RuntimeError(
-                "模型未透過 emit_slides 工具輸出,請務必以該工具回傳完整簡報。"
-            )
-
         try:
-            data = _loads_tool_args(tool_calls[0].function.arguments)
-        except (json.JSONDecodeError, TypeError) as exc:
+            data = self._structured_call(
+                model=self.slides_model,
+                system=system,
+                user=user,
+                schema=Presentation.model_json_schema(),
+                name=SLIDES_TOOL_NAME,
+                description="輸出填好每頁內容的完整簡報(Presentation)",
+                # Stage-2 fills every page, so it defaults higher than the
+                # one-shot generate_ir/generate_outline paths (8192). Env
+                # override still wins.
+                max_tokens=int(os.environ.get("ODFORGE_MAX_TOKENS", "16384")),
+            )
+        except (StructuredOutputError, json.JSONDecodeError, TypeError) as exc:
             return None, exc
 
         data["type"] = "presentation"
@@ -1064,18 +1105,6 @@ class OpenAICompatBackend:
         stage 1 / the caller), so no call site has to pass it twice.
         """
         slides_system = system_prompt_for(SLIDES_SYSTEM_PROMPT, outline.language)
-        schema = Presentation.model_json_schema()
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": SLIDES_TOOL_NAME,
-                    "description": "輸出填好每頁內容的完整簡報(Presentation)",
-                    "parameters": schema,
-                },
-            }
-        ]
-        tool_choice = {"type": "function", "function": {"name": SLIDES_TOOL_NAME}}
         base_user = _slides_user_content(outline)
 
         # -- Gate 1: obtain a structurally valid deck (retry once, then raise) --
@@ -1083,14 +1112,11 @@ class OpenAICompatBackend:
         last_exc: Optional[Exception] = None
         presentation: Optional[Presentation] = None
         for _attempt in range(2):
-            messages = [
-                {"role": "system", "content": slides_system},
-                {
-                    "role": "user",
-                    "content": _with_error_feedback(base_user, error_summary),
-                },
-            ]
-            pres, exc = self._emit_slides(messages, outline, tools, tool_choice)
+            pres, exc = self._emit_slides(
+                slides_system,
+                _with_error_feedback(base_user, error_summary),
+                outline,
+            )
             if pres is not None:
                 presentation = pres
                 break
@@ -1106,16 +1132,13 @@ class OpenAICompatBackend:
         if not overloads:
             return presentation
 
-        messages = [
-            {"role": "system", "content": slides_system},
-            {
-                "role": "user",
-                "content": base_user
-                + "\n\n"
-                + _budget_feedback(overloads, presentation.model_dump_json()),
-            },
-        ]
-        retry_pres, _exc = self._emit_slides(messages, outline, tools, tool_choice)
+        retry_pres, _exc = self._emit_slides(
+            slides_system,
+            base_user
+            + "\n\n"
+            + _budget_feedback(overloads, presentation.model_dump_json()),
+            outline,
+        )
         if retry_pres is not None:
             # A structurally valid (hopefully lighter) deck. If the retry itself
             # failed structurally we keep the previous deck and degrade that.
@@ -1129,9 +1152,261 @@ class OpenAICompatBackend:
         return presentation
 
 
+class OpenAICompatBackend(StructuredLLMBackend):
+    """Backend for any OpenAI-compatible chat-completions endpoint."""
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        *,
+        discovery_model: str | None = None,
+        outline_model: str | None = None,
+        slides_model: str | None = None,
+        extra_body: dict | None = None,
+    ):
+        self.base_url = base_url
+        self.model = model
+        self.outline_model = outline_model or model
+        self.discovery_model = discovery_model or self.outline_model
+        self.slides_model = slides_model or model
+        self.extra_body = dict(extra_body or {})
+        self._client = OpenAI(base_url=base_url, api_key=api_key)
+
+    def _structured_call(
+        self,
+        *,
+        model: str,
+        system: str,
+        user: str,
+        schema: dict,
+        name: str,
+        description: str,
+        max_tokens: int,
+    ) -> dict:
+        """A forced function call; its ``arguments`` are the payload.
+
+        The schema goes over the wire exactly as pydantic emits it — no strict
+        tightening. Chat-completions tool schemas are a *description* of the
+        shape, not a validator the provider enforces, and every provider here
+        already tolerates the pydantic dialect.
+        """
+        resp = self._client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": description,
+                        "parameters": schema,
+                    },
+                }
+            ],
+            tool_choice={"type": "function", "function": {"name": name}},
+            max_tokens=max_tokens,
+            **({"extra_body": self.extra_body} if self.extra_body else {}),
+        )
+        tool_calls = resp.choices[0].message.tool_calls
+        if not tool_calls:
+            raise StructuredOutputError(
+                f"模型未呼叫 {name} 工具,請務必透過該工具輸出。"
+            )
+        return _loads_tool_args(tool_calls[0].function.arguments)
+
+
+# One CLI, one model choice: the design gate imports this rather than keeping
+# its own copy (critic.py), because a text/vision split here would mean two
+# different models claiming to be "the codex backend".
+#
+# Naming a model explicitly rather than taking the CLI's own default is not
+# caution about taste — an id the installed CLI cannot drive fails with
+# "requires a newer version of Codex" (that is exactly what `gpt-5.6-terra`
+# did on codex-cli 0.142.5; it needs >= 0.147.0).
+CODEX_MODEL_DEFAULT = "gpt-5.6-terra"
+# Stage 2 fills every page of a deck in one call; 600s (the design gate's
+# budget) is not enough headroom for a long one.
+_CODEX_TIMEOUT_DEFAULT = "1800"
+
+
+class CodexCliBackend(StructuredLLMBackend):
+    """Text generation driven through the local Codex CLI as a subprocess.
+
+    The sibling of :class:`odforge.critic.CodexCliVisionBackend`, and it inherits
+    that class's hard-won argv: the prompt rides **stdin** (on Windows the CLI is
+    ``codex.CMD``, whose cmd.exe command line caps at 8,191 characters — a
+    stage-2 prompt is far past that), reasoning effort is pinned rather than
+    inherited from the operator's ``~/.codex/config.toml``, and the sandbox is
+    read-only because writing a deck is this process's job, not the model's.
+
+    ``--output-schema`` plays the part forced function calling plays on the HTTP
+    backends — with one difference that matters: the CLI hands the schema to
+    OpenAI's *strict* structured-output mode, which enforces it. Hence
+    :func:`_strict_schema`, and hence a payload that is almost always already
+    valid by the time pydantic sees it.
+
+    There is no API key and no per-key quota here: the CLI authenticates with the
+    operator's own ChatGPT login.
+    """
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        executable: str = "codex",
+        discovery_model: str | None = None,
+        outline_model: str | None = None,
+        slides_model: str | None = None,
+        timeout: int | None = None,
+        runner=subprocess.run,
+    ):
+        self.model = model
+        self.outline_model = outline_model or model
+        self.discovery_model = discovery_model or self.outline_model
+        self.slides_model = slides_model or model
+        # The *resolved* path, not the bare name: on Windows the CLI installs as
+        # ``codex.CMD``, which ``subprocess.run(["codex", ...])`` cannot execute.
+        self.executable = executable
+        self.timeout = (
+            timeout
+            if timeout is not None
+            else int(os.environ.get("ODFORGE_CODEX_TIMEOUT", _CODEX_TIMEOUT_DEFAULT))
+        )
+        self._run = runner
+
+    def _structured_call(
+        self,
+        *,
+        model: str,
+        system: str,
+        user: str,
+        schema: dict,
+        name: str,
+        description: str,
+        max_tokens: int,
+    ) -> dict:
+        # ``max_tokens`` has no CLI equivalent — the length budget belongs to the
+        # model's own configuration here. It stays in the signature because the
+        # policy layer is transport-agnostic, not because this backend needs it.
+        with tempfile.TemporaryDirectory(prefix="odforge-codex-") as tmp:
+            work = Path(tmp)
+            schema_path = work / "schema.json"
+            # UTF-8 explicitly: the CLI rejects a schema file it cannot decode,
+            # and Python's default encoding on Windows is not UTF-8.
+            schema_path.write_text(
+                json.dumps(_strict_schema(schema), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            out_path = work / "payload.json"
+            argv = [
+                self.executable,
+                "exec",
+                "-m",
+                model,
+                "--output-schema",
+                str(schema_path),
+                "-o",
+                str(out_path),
+                "-c",
+                "model_reasoning_effort="
+                + os.environ.get("ODFORGE_CODEX_REASONING_EFFORT", "medium"),
+                "--sandbox",
+                "read-only",
+                "--skip-git-repo-check",
+                # Explicit "read the prompt from stdin" marker; omitting the
+                # positional is merely today's synonym for it.
+                "-",
+            ]
+            # ``codex exec`` has no system/user split, so the system prompt
+            # travels at the head of the one prompt there is.
+            prompt = f"{system}\n\n{user}"
+            try:
+                proc = self._run(
+                    argv,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=self.timeout,
+                )
+            except (subprocess.TimeoutExpired, OSError, UnicodeError) as exc:
+                raise RuntimeError(
+                    f"codex exec 無法執行:{type(exc).__name__}: {exc}"
+                ) from exc
+            returncode = getattr(proc, "returncode", 0)
+            if returncode:
+                # Not a StructuredOutputError: the CLI never got as far as
+                # answering, so there is nothing to feed back and retrying just
+                # spends the time again.
+                detail = " ".join((getattr(proc, "stderr", "") or "").split())[-300:]
+                raise RuntimeError(
+                    f"codex exec 結束碼 {returncode}"
+                    + (f":{detail}" if detail else "")
+                )
+            try:
+                data = json.loads(out_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise StructuredOutputError(
+                    f"codex exec 沒有輸出可解析的 {name} JSON:{type(exc).__name__}"
+                ) from exc
+        if not isinstance(data, dict):
+            raise StructuredOutputError(
+                f"codex exec 的 {name} 輸出不是 JSON 物件,而是 {type(data).__name__}"
+            )
+        return data
+
+
 # ---------------------------------------------------------------------------
 # Backend registry + facade
 # ---------------------------------------------------------------------------
+
+
+def _codex_auth_path() -> Path:
+    """Where the Codex CLI keeps its OAuth credentials."""
+    home = os.environ.get("CODEX_HOME")
+    return (Path(home) if home else Path.home() / ".codex") / "auth.json"
+
+
+def _make_codex() -> LLMBackend:
+    """Text backend through the local Codex CLI (subscription-authenticated).
+
+    Refuses on three conditions, each with a fixable message: no CLI, no login,
+    and — the one that is not about convenience — a publicly-bound server.
+    ODForge's web console has no authentication, and OpenAI's own guidance is not
+    to expose Codex execution in untrusted environments; on a non-loopback bind
+    this backend would spend the operator's ChatGPT subscription for whoever
+    reaches the port. ``serve`` sets ``ODFORGE_PUBLIC_BIND`` when it binds beyond
+    loopback. (The design gate's codex source refuses on the same three — see
+    ``critic._make_codex``.)
+    """
+    executable = shutil.which("codex")
+    if executable is None:
+        raise RuntimeError(
+            "找不到 codex CLI。請先安裝 Codex(npm i -g @openai/codex)後再使用此後端。"
+        )
+    if not _codex_auth_path().exists():
+        raise RuntimeError(
+            "Codex 尚未登入。請先執行 codex login(無瀏覽器環境用 "
+            "codex login --device-auth)。"
+        )
+    if os.environ.get("ODFORGE_PUBLIC_BIND"):
+        raise RuntimeError(
+            "codex 後端僅限本機使用:此服務沒有身分驗證,對外綁定時任何人都能"
+            "花用你的 ChatGPT 訂閱額度。請改用 API key 後端,或只綁定 127.0.0.1。"
+        )
+    return CodexCliBackend(
+        os.environ.get("ODFORGE_CODEX_MODEL", CODEX_MODEL_DEFAULT),
+        executable=executable,
+        discovery_model=os.environ.get("ODFORGE_CODEX_DISCOVERY_MODEL"),
+        outline_model=os.environ.get("ODFORGE_CODEX_OUTLINE_MODEL"),
+        slides_model=os.environ.get("ODFORGE_CODEX_SLIDES_MODEL"),
+    )
 
 
 def _custom_extra_body() -> dict | None:
@@ -1154,6 +1429,7 @@ def _custom_extra_body() -> dict | None:
 
 
 BACKENDS: Dict[str, Callable[[], LLMBackend]] = {
+    "codex": _make_codex,
     "deepseek": lambda: OpenAICompatBackend(
         "https://api.deepseek.com",
         _require_env("DEEPSEEK_API_KEY"),

@@ -2361,6 +2361,35 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
         )
         return {"sessions": sessions}
 
+    @app.delete("/api/sessions/{job_id}")
+    async def delete_session(job_id: str) -> Dict[str, Any]:
+        """Delete one session: drop it from memory and remove its artifacts.
+
+        Refused while anything about the job is still moving. ``_occupies_a_slot``
+        is the honest test — not ``status``, which says "cancelled" the instant
+        the user clicks while the provider call keeps running in its thread. The
+        regeneration lock is the second half: that work runs inside the HTTP
+        request, not ``job.task``, so between two offloads the job can look idle
+        while a new deck is halfway written. Pulling the directory out from under
+        either one leaves a worker writing into deleted paths (and re-creating
+        the directory as it goes).
+        """
+        job = _get_job(job_id)
+        if _occupies_a_slot(job) or job.mutation_lock.locked():
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "這份工作還在進行(或已取消但外部呼叫尚未結束),"
+                    "請等它停下來再刪除。"
+                ),
+            )
+        # Out of the registry first, then off the disk: a concurrent request must
+        # not be able to find a job whose files are already going away.
+        app.state.jobs.pop(job_id, None)
+        await asyncio.to_thread(shutil.rmtree, job.dir, ignore_errors=True)
+        logger.info("session_deleted job_id=%s", job_id)
+        return {"ok": True}
+
     @app.get("/api/sources")
     async def sources() -> Dict[str, Any]:
         """Which model sources exist, which can run, and which are in force.

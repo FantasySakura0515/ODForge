@@ -1501,6 +1501,78 @@ def test_incomplete_session_is_marked_interrupted_after_restart(tmp_path):
     assert restored.events[-1]["event"] == "error"
 
 
+def test_delete_session_removes_the_record_and_its_artifacts(app):
+    job = webapi.create_job(app, prompt="要刪掉的簡報")
+    job.status = "complete"
+    job.finished_at = time.time()
+    job.odp_path.write_bytes(b"PK\x03\x04 deck")
+    webapi._persist_job(job)
+
+    with TestClient(app) as client:
+        response = client.delete(f"/api/sessions/{job.id}")
+        listed = client.get("/api/sessions").json()["sessions"]
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert job.id not in app.state.jobs
+    assert listed == []
+    # 磁碟也要乾淨:留著 deck.odp 的話,使用者刪掉的東西其實還在伺服器上。
+    assert not job.dir.exists()
+
+
+def test_delete_session_404_for_unknown_id(app):
+    with TestClient(app) as client:
+        assert client.delete("/api/sessions/does-not-exist").status_code == 404
+
+
+def test_delete_session_refuses_while_the_job_is_running(app):
+    """進行中的工作不能刪:目錄被抽掉,還在跑的 worker 會寫進不存在的路徑。"""
+    job = webapi.create_job(app, prompt="還在跑的簡報")
+    job.status = "generating_slides"
+
+    with TestClient(app) as client:
+        response = client.delete(f"/api/sessions/{job.id}")
+
+    assert response.status_code == 409
+    assert "還在進行" in response.json()["detail"]
+    assert job.id in app.state.jobs
+    assert job.dir.exists()
+
+
+def test_delete_session_refuses_while_a_cancelled_job_still_has_workers(app):
+    """狀態已是 cancelled,但供應商呼叫還在執行緒裡跑——那一樣不能刪。"""
+    job = webapi.create_job(app, prompt="已取消但還沒停下來")
+    job.status = "cancelled"
+    job.finished_at = time.time()
+    with job.worker_lock:
+        job.active_workers = 1
+
+    with TestClient(app) as client:
+        response = client.delete(f"/api/sessions/{job.id}")
+
+    assert response.status_code == 409
+    assert job.dir.exists()
+
+
+def test_delete_session_refuses_during_regeneration(app):
+    """重生跑在 HTTP 請求裡而不是 job.task:靠 mutation_lock 才看得出它在忙。"""
+    job = webapi.create_job(app, prompt="正在重生的簡報")
+    job.status = "complete"
+    job.finished_at = time.time()
+
+    async def scenario():
+        await job.mutation_lock.acquire()
+        try:
+            with TestClient(app) as client:
+                return client.delete(f"/api/sessions/{job.id}")
+        finally:
+            job.mutation_lock.release()
+
+    response = asyncio.run(scenario())
+    assert response.status_code == 409
+    assert job.dir.exists()
+
+
 # ---------------------------------------------------------------------------
 # gate_result — real four-gate signals (zip / xml / libreoffice / design)
 # ---------------------------------------------------------------------------
@@ -2492,7 +2564,7 @@ def test_byline_and_logo_land_on_the_deck(app, monkeypatch):
             client,
             {
                 "prompt": "x",
-                "byline": "  輔仁大學資工系 · 王小明  ",
+                "byline": "  XX大學資工系 · 王小明  ",
                 "logo": {"description": "校徽", "credit": "", "data_url": logo},
                 "logo_placement": "all",
             },
@@ -2500,7 +2572,7 @@ def test_byline_and_logo_land_on_the_deck(app, monkeypatch):
     assert snapshot["status"] == "complete"
     job = app.state.jobs[job_id]
     assert job.ir.branding is not None
-    assert job.ir.branding.byline == "輔仁大學資工系 · 王小明"  # trimmed
+    assert job.ir.branding.byline == "XX大學資工系 · 王小明"  # trimmed
     assert job.ir.branding.logo == "asset://logo"
     assert job.ir.branding.placement == "all"
     # The bytes have to be in the asset map the renderer is handed, and on disk.

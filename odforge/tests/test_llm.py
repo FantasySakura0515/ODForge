@@ -6,6 +6,7 @@ preprogrammed chat-completion responses.
 """
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -226,6 +227,189 @@ def test_discovery_option_starting_with_other_is_a_real_answer():
     assert question.options == ["本部門主導", "其他部門主導"]
 
 
+def test_discovery_plan_keeps_a_long_known_context_intact():
+    """需求一長,模型就會列到 7、8 條已知資訊——那些是使用者自己給的事實,全都要留。"""
+    facts = [f"事實 {i}" for i in range(1, 9)]
+    plan = llm.DiscoveryPlan.model_validate({**_VALID_DISCOVERY, "known_context": facts})
+    assert plan.known_context == facts
+
+
+def test_discovery_plan_trims_known_context_past_the_cap():
+    """上限之外仍然裁切而不是報錯:少一條複述,好過整場訪談死在這一頁。"""
+    cap = llm.DISCOVERY_MAX_KNOWN_CONTEXT
+    plan = llm.DiscoveryPlan.model_validate(
+        {
+            **_VALID_DISCOVERY,
+            "known_context": [f"事實 {i}" for i in range(cap + 3)],
+        }
+    )
+    assert plan.known_context == [f"事實 {i}" for i in range(cap)]
+
+
+def test_discovery_plan_drops_blank_and_duplicate_known_context():
+    """空白與重複先剔除,再算上限:七條裡有一條是水,剩下的六條就全都留得下來。"""
+    plan = llm.DiscoveryPlan.model_validate(
+        {
+            **_VALID_DISCOVERY,
+            "known_context": [
+                "受眾是系上老師",
+                "  ",
+                "受眾是系上老師",
+                " 內容包含系統架構 ",
+            ],
+        }
+    )
+    assert plan.known_context == ["受眾是系上老師", "內容包含系統架構"]
+
+
+def test_discovery_plan_trims_overlong_questions():
+    extra = dict(_VALID_DISCOVERY["questions"][0])
+    plan = llm.DiscoveryPlan.model_validate(
+        {
+            **_VALID_DISCOVERY,
+            "questions": [
+                {**extra, "id": f"q{i}"} for i in range(llm.DISCOVERY_MAX_QUESTIONS + 2)
+            ],
+        }
+    )
+    assert [q.id for q in plan.questions] == [
+        f"q{i}" for i in range(llm.DISCOVERY_MAX_QUESTIONS)
+    ]
+
+
+# ---------------------------------------------------------------------------
+# CodexCliBackend — text generation through the local Codex CLI
+#
+# 沒有網路、沒有 CLI:subprocess.run 換成一個假的 runner,它把 argv 與 stdin 記
+# 下來,再照 --output-schema/-o 的契約把 payload 寫進 CLI 該寫的那個檔。
+# ---------------------------------------------------------------------------
+
+
+class _FakeCodex:
+    """A stand-in for ``subprocess.run`` that behaves like ``codex exec``."""
+
+    def __init__(self, payloads, returncode: int = 0, stderr: str = "", write=True):
+        self._payloads = list(payloads)
+        self.returncode = returncode
+        self.stderr = stderr
+        self.write = write
+        self.calls: list[dict] = []
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append({"argv": list(argv), **kwargs})
+        out = Path(argv[argv.index("-o") + 1])
+        schema = json.loads(
+            Path(argv[argv.index("--output-schema") + 1]).read_text(encoding="utf-8")
+        )
+        self.calls[-1]["schema"] = schema
+        if self.write:
+            payload = self._payloads.pop(0)
+            out.write_text(
+                payload if isinstance(payload, str) else json.dumps(payload),
+                encoding="utf-8",
+            )
+        return SimpleNamespace(returncode=self.returncode, stderr=self.stderr, stdout="")
+
+
+def _codex(payloads, **kwargs) -> tuple[llm.CodexCliBackend, _FakeCodex]:
+    runner = _FakeCodex(payloads, **kwargs)
+    backend = llm.CodexCliBackend("gpt-5.5", executable="codex", runner=runner)
+    return backend, runner
+
+
+def test_codex_backend_generates_a_deck_through_the_cli():
+    backend, runner = _codex([_VALID_PRESENTATION])
+    result = backend.generate_ir("光合作用", "presentation")
+
+    assert isinstance(result, Presentation)
+    assert result.title == "光合作用入門"
+    argv = runner.calls[0]["argv"]
+    assert argv[:4] == ["codex", "exec", "-m", "gpt-5.5"]
+    # 提示走 stdin,不走 argv:Windows 的 cmd.exe 命令列上限是 8,191 字元。
+    assert argv[-1] == "-"
+    assert "光合作用" in runner.calls[0]["input"]
+    # 只讀沙箱:寫檔是本程式的工作,不是模型的。
+    assert argv[argv.index("--sandbox") + 1] == "read-only"
+
+
+def test_codex_backend_sends_a_strict_schema():
+    """CLI 會把 schema 交給 OpenAI 的 strict 模式,不合規會直接 400。"""
+    backend, runner = _codex([_VALID_DISCOVERY])
+    backend.discover_questions("畢業專題")
+
+    schema = runner.calls[0]["schema"]
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == list(schema["properties"])
+    # 註解關鍵字要清掉,但同名的「欄位」不能被誤刪。
+    assert "title" not in schema
+    assert "summary" in schema["properties"]
+
+
+def test_strict_schema_keeps_a_field_named_title():
+    """`title` 既是 JSON Schema 註解也是合法欄位名——刪錯那個就會 400。"""
+    strict = llm._strict_schema(Outline.model_json_schema())
+    page = strict["$defs"]["PageRole"]
+    assert "title" in page["properties"]
+    assert page["required"] == list(page["properties"])
+    assert page["additionalProperties"] is False
+
+
+def test_codex_backend_retries_once_on_an_unusable_payload():
+    backend, runner = _codex(["{not json", json.dumps(_VALID_DISCOVERY)])
+    plan = backend.discover_questions("畢業專題")
+
+    assert len(plan.questions) == 2
+    assert len(runner.calls) == 2
+    # 第二次要帶著上一次的錯誤原因回去。
+    assert "[系統提示]" in runner.calls[1]["input"]
+
+
+def test_codex_backend_raises_when_the_cli_fails():
+    """CLI 根本沒跑起來 → 直接拋,不重試:沒有東西可以回饋給模型。"""
+    backend, runner = _codex([], returncode=1, stderr="not logged in", write=False)
+    with pytest.raises(RuntimeError, match="codex exec 結束碼 1"):
+        backend.discover_questions("x")
+    assert len(runner.calls) == 1
+
+
+def test_codex_backend_stage_models_are_independent():
+    backend = llm.CodexCliBackend(
+        "gpt-5.5",
+        discovery_model="gpt-5.5-mini",
+        runner=_FakeCodex([_VALID_DISCOVERY]),
+    )
+    assert backend.discovery_model == "gpt-5.5-mini"
+    assert backend.outline_model == "gpt-5.5"
+    assert backend.slides_model == "gpt-5.5"
+
+
+def test_codex_backend_refuses_on_a_public_bind(monkeypatch, tmp_path):
+    """對外綁定 + 沒有身分驗證 = 任何人都能花用操作者的 ChatGPT 訂閱。"""
+    monkeypatch.setattr(llm.shutil, "which", lambda _name: "codex")
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(llm, "_codex_auth_path", lambda: auth)
+    monkeypatch.setenv("ODFORGE_PUBLIC_BIND", "1")
+
+    with pytest.raises(RuntimeError, match="僅限本機使用"):
+        llm.get_backend("codex")
+
+
+def test_codex_backend_refuses_without_a_login(monkeypatch, tmp_path):
+    monkeypatch.setattr(llm.shutil, "which", lambda _name: "codex")
+    monkeypatch.setattr(llm, "_codex_auth_path", lambda: tmp_path / "missing.json")
+    monkeypatch.delenv("ODFORGE_PUBLIC_BIND", raising=False)
+
+    with pytest.raises(RuntimeError, match="尚未登入"):
+        llm.get_backend("codex")
+
+
+def test_codex_backend_refuses_without_the_cli(monkeypatch):
+    monkeypatch.setattr(llm.shutil, "which", lambda _name: None)
+    with pytest.raises(RuntimeError, match="找不到 codex CLI"):
+        llm.get_backend("codex")
+
+
 def _question(id_: str, question: str) -> llm.DiscoveryQuestion:
     return llm.DiscoveryQuestion(
         id=id_, question=question, why="測試用。", options=["A", "B"]
@@ -405,11 +589,12 @@ def test_non_dict_arguments_retries_then_succeeds(monkeypatch):
 
 
 def test_no_tool_call_raises_runtime_error(monkeypatch):
+    """兩次都沒回工具呼叫 → 拋出的訊息就是使用者會在錯誤面板上讀到的那句中文。"""
     client = _install_fake_openai(
         monkeypatch, [_make_response(None), _make_response(None)]
     )
     backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
-    with pytest.raises(RuntimeError, match="did not return a tool call"):
+    with pytest.raises(llm.StructuredOutputError, match="模型未呼叫 emit_document 工具"):
         backend.generate_ir("x", "presentation")
     assert len(client.completions.calls) == 2
 
@@ -709,7 +894,7 @@ def test_generate_outline_no_tool_call_raises(monkeypatch):
         monkeypatch, [_make_response(None), _make_response(None)]
     )
     backend = llm.OpenAICompatBackend("https://example.test", "tok", "m")
-    with pytest.raises(RuntimeError, match="did not return a tool call"):
+    with pytest.raises(llm.StructuredOutputError, match="模型未呼叫 emit_outline 工具"):
         backend.generate_outline("x")
     assert len(client.completions.calls) == 2
 

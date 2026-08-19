@@ -571,6 +571,18 @@ def test_backend_passthrough(tmp_path, monkeypatch, sample_presentation):
     assert seen["backend"] == "ollama"
 
 
+def test_cli_backend_choices_match_the_registry():
+    """CLI 的選項與後端註冊表必須同步。
+
+    少一個的後果不是「少一個選項」:typer 會在抵達註冊表之前就擋下來,於是
+    README 寫得出來、`--backend codex` 卻直接報錯——文件與程式各說各話。
+    """
+    from odforge.cli import Backend
+    from odforge.llm import BACKENDS
+
+    assert {b.value for b in Backend} == set(BACKENDS)
+
+
 def test_serve_rejects_remote_bind_without_explicit_acknowledgement():
     result = runner.invoke(app, ["serve", "--host", "0.0.0.0"])
 

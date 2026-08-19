@@ -277,7 +277,7 @@ export function TemplateGallery() {
       </header>
 
       <p className="tpl-lead">
-        生成時可在「視覺主題」選一套；留白則由 AI 依題目定調。
+        每一套是一組配色、字體與版式；生成時由 AI 依題目定調。
         匯入學校或公司的公版 .otp／.odp，會抽出它的配色與字體存成你的範本。
       </p>
 

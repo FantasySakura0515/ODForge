@@ -172,6 +172,17 @@ export async function getSessions(): Promise<SessionSummary[]> {
   return data.sessions ?? [];
 }
 
+/** 刪除一份工作紀錄(連同伺服器上的 .odp 與預覽圖)。
+ *
+ * 用 httpError 而不是自製訊息:進行中的工作會回 409 並附上一句中文原因,那句話
+ * 比「刪除失敗」有用得多——它說得出為什麼現在不能刪。 */
+export async function deleteSession(id: string): Promise<void> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw await httpError(res, "刪除工作紀錄失敗");
+}
+
 export interface SourceStatus {
   name: string;
   available: boolean;
