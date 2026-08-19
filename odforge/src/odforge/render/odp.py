@@ -29,6 +29,7 @@ from odforge.ir import (
     Presentation,
     ProcessStep,
     Slide,
+    TableSpec,
     TimelineEvent,
 )
 from odforge.media import (

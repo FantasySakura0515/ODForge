@@ -369,6 +369,19 @@ LAYOUTS: dict[str, list[Frame]] = {
         Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
         Frame("diagram-area", 1.5, 3.5, 25, 10.3, 16),
     ],
+    # Composite editorial page: a compact stat strip over a card grid — the
+    # "consulting one-pager" pattern (headline numbers + the ideas they carry).
+    # Both areas reuse the metrics/cards shape renderers unchanged.
+    "dashboard": [
+        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("metrics-area", 1.5, 3.1, 25, 3.6, 16),
+        Frame("cards-area", 1.5, 7.1, 25, 7.0, 16),
+    ],
+    # Comparison matrix: header row + up to 8 rows, one optionally highlighted.
+    "table": [
+        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("table-area", 1.5, 3.3, 25, 10.7, 14),
+    ],
     "image-focus": [
         Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
         Frame("image-area", 1.5, 3.25, 25, 10.45, 16),

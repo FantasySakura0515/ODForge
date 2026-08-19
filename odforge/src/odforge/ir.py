@@ -282,6 +282,45 @@ class MetricSpec(StrictModel):
         return _reject_blank("metric text", value)
 
 
+class TableSpec(StrictModel):
+    """A compact comparison table: header ``columns``, text ``rows``, and an
+    optional ``highlight`` row index (e.g. one's own product in a competitor
+    matrix). Deliberately small — beyond 8 rows it reads as a spreadsheet, and
+    the .ods renderer is the right tool for that."""
+
+    columns: List[str] = Field(min_length=2, max_length=6)
+    rows: List[List[str]] = Field(min_length=1, max_length=8)
+    highlight: Optional[int] = None
+
+    @field_validator("columns")
+    @classmethod
+    def _column_labels(cls, value: List[str]) -> List[str]:
+        for label in value:
+            _reject_blank("a table column label", label)
+            if len(label) > 16:
+                raise ValueError("table column labels must be ≤16 characters")
+        return value
+
+    @model_validator(mode="after")
+    def _rows_match_columns(self) -> TableSpec:
+        width = len(self.columns)
+        for i, row in enumerate(self.rows):
+            if len(row) != width:
+                raise ValueError(
+                    f"table row {i} has {len(row)} cells; expected {width} "
+                    "(one per column)"
+                )
+            for cell in row:
+                if len(cell) > 40:
+                    raise ValueError("table cells must be ≤40 characters")
+        if self.highlight is not None and not 0 <= self.highlight < len(self.rows):
+            raise ValueError(
+                f"table highlight index {self.highlight} is out of range "
+                f"(0..{len(self.rows) - 1})"
+            )
+        return self
+
+
 class DiagramNode(StrictModel):
     """One editable node in a relationship or hierarchy diagram."""
 
@@ -412,7 +451,7 @@ PageRoleName = Literal[
     "title", "title-content", "two-col", "section", "big-fact",
     "quote", "agenda", "comparison", "chart", "closing",
     "process", "timeline", "metrics", "cards", "diagram",
-    "image-focus", "image-split",
+    "image-focus", "image-split", "dashboard", "table",
 ]
 
 
@@ -441,6 +480,10 @@ class Slide(StrictModel):
     metrics: List[MetricSpec] = Field(default_factory=list, max_length=4)
     diagram: Optional[DiagramSpec] = None
     image: Optional[ImageSpec] = None
+    table: Optional[TableSpec] = None
+    # A one-sentence conclusion rendered as an inverted band at the foot of a
+    # content page — the "so what" of the slide, visually distinct from bullets.
+    takeaway: str = Field(default="", max_length=90)
     sources: List[SourceRef] = Field(default_factory=list, max_length=3)
     notes: str = Field(default="", max_length=MAX_NOTES_CHARS)
 
@@ -525,6 +568,22 @@ class Slide(StrictModel):
         if self.layout == "cards" and not 2 <= len(bullets) <= 4:
             raise ValueError(
                 'layout="cards" requires 2 to 4 items in Slide.bullets.'
+            )
+        if self.layout == "dashboard":
+            # The composite page draws both: a stat strip AND a card grid.
+            if len(self.metrics) < 2:
+                raise ValueError(
+                    'layout="dashboard" requires 2 to 4 metrics in '
+                    "Slide.metrics (the stat strip)."
+                )
+            if not 2 <= len(bullets) <= 4:
+                raise ValueError(
+                    'layout="dashboard" requires 2 to 4 items in '
+                    "Slide.bullets (the card grid)."
+                )
+        if self.layout == "table" and self.table is None:
+            raise ValueError(
+                'layout="table" requires a TableSpec in Slide.table.'
             )
         if self.layout == "diagram" and self.diagram is None:
             raise ValueError(
