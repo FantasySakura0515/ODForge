@@ -48,6 +48,22 @@ def test_run_soffice_convert_builds_env_arg(tmp_path, monkeypatch):
     assert any(str(a).startswith("-env:UserInstallation=") for a in captured["cmd"])
     assert "odt" in captured["cmd"]
 
+
+def test_run_soffice_convert_detaches_stdin(tmp_path, monkeypatch):
+    # Regression: without an explicit stdin, soffice inherits the host's. Under
+    # an MCP/stdio server that handle is an overlapped named pipe and soffice
+    # blocks on it forever after profile init — every gate and preview then
+    # dies at the timeout instead of converting (observed on Windows).
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(cmd, 0, "out", "")
+
+    monkeypatch.setattr(validate.subprocess, "run", fake_run)
+    run_soffice_convert(Path("soffice"), tmp_path / "s.odp", "pdf", tmp_path)
+    assert captured.get("stdin") == subprocess.DEVNULL
+
 def test_valid_odt_passes(tmp_path, sample_text_doc):
     out = render_odt(sample_text_doc, tmp_path / "d.odt")
     r = validate_odf(out)

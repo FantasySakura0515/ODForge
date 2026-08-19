@@ -216,6 +216,12 @@ def run_soffice_convert(
     try:
         return subprocess.run(
             _build_soffice_cmd(soffice, src, fmt, outdir, profile_dir),
+            # stdin must NOT be inherited: under an MCP/stdio host the parent's
+            # stdin is an overlapped named pipe (anyio/Node create these on
+            # Windows), and soffice blocks forever on it after profile init —
+            # every conversion then dies at the timeout. A headless converter
+            # has no business reading stdin, so hand it the null device.
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=timeout,
