@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "odforge": {
+      "command": "c:\\Users\\User\\Desktop\\project\\ODF\\odforge\\.venv312\\Scripts\\python.exe",
+      "args": ["-m", "odforge.mcp_server"]
+    }
+  }
+}
