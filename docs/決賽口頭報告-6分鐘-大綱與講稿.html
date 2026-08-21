@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.9.33">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>quarto-input543af385c8a940a9</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+</style>
+
+
+<script src="決賽口頭報告-6分鐘-大綱與講稿_files/libs/clipboard/clipboard.min.js"></script>
+<script src="決賽口頭報告-6分鐘-大綱與講稿_files/libs/quarto-html/quarto.js" type="module"></script>
+<script src="決賽口頭報告-6分鐘-大綱與講稿_files/libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="決賽口頭報告-6分鐘-大綱與講稿_files/libs/quarto-html/popper.min.js"></script>
+<script src="決賽口頭報告-6分鐘-大綱與講稿_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="決賽口頭報告-6分鐘-大綱與講稿_files/libs/quarto-html/anchor.min.js"></script>
+<link href="決賽口頭報告-6分鐘-大綱與講稿_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="決賽口頭報告-6分鐘-大綱與講稿_files/libs/quarto-html/quarto-syntax-highlighting-6d4e4c6c342646cac9792aff734a6985.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="決賽口頭報告-6分鐘-大綱與講稿_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="決賽口頭報告-6分鐘-大綱與講稿_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="決賽口頭報告-6分鐘-大綱與講稿_files/libs/bootstrap/bootstrap-138a6193a3bd40baf1e627da441a4734.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+
+
+</head>
+
+<body class="fullcontent quarto-light">
+
+<div id="quarto-content" class="page-columns page-rows-contents page-layout-article">
+
+<main class="content" id="quarto-document-content">
+
+
+
+
+<section id="odforge-文鍛-決賽-6-分鐘口頭報告大綱講稿" class="level1">
+<h1>ODForge 文鍛 — 決賽 6 分鐘口頭報告（大綱＋講稿）</h1>
+<blockquote class="blockquote">
+<p>2026-08-24 決賽用。完全依照最終簡報（12 主頁 + 2 附錄）逐頁編寫。 學生組配分：工具 60% ／ 優化建議 30% ／ 心得 10% —— 時間分配對齊配分： 工具（P1–P8）約 3 分 55 秒、優化建議（P9–P10）約 1 分 15 秒、心得＋結語（P11–P12）約 50 秒。 全文約 1,340 字，以每分鐘 220 字計約 6 分 05 秒；<strong>排練請壓在 5 分 40 秒</strong>，留緩衝。</p>
+</blockquote>
+<hr>
+<section id="一大綱總表" class="level2">
+<h2 class="anchored" data-anchor-id="一大綱總表">一、大綱總表</h2>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 20%">
+<col style="width: 20%">
+<col style="width: 20%">
+<col style="width: 20%">
+<col style="width: 20%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>頁</th>
+<th>章節</th>
+<th>標題</th>
+<th>時間</th>
+<th>這一頁只講一件事</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>P1</td>
+<td>封面</td>
+<td>ODForge 文鍛</td>
+<td>0:00–0:15</td>
+<td>一句定位：把一句話鍛造成正式文件</td>
+</tr>
+<tr class="even">
+<td>P2</td>
+<td>動機</td>
+<td>ODF 已具備完整標準，但缺乏現代工具</td>
+<td>0:15–0:45</td>
+<td>有標準、沒工具；主流 AI 支援 ODP 輸出＝0 個</td>
+</tr>
+<tr class="odd">
+<td>P3</td>
+<td>問題</td>
+<td>現有流程缺乏原生 ODF 支援</td>
+<td>0:45–1:20</td>
+<td>四條現有路都親手走過，全都不通</td>
+</tr>
+<tr class="even">
+<td>P4</td>
+<td>目的</td>
+<td>把 ODF 變成方便好用的 AI 工具</td>
+<td>1:20–1:40</td>
+<td>一句自然語言 → 合規原生 ODF</td>
+</tr>
+<tr class="odd">
+<td>P5</td>
+<td>方法</td>
+<td>內容 AI 寫，格式引擎保證</td>
+<td>1:40–2:25</td>
+<td>骰子換機器＋中文字級陷阱＋三道驗證（<strong>核心頁</strong>）</td>
+</tr>
+<tr class="even">
+<td>P6</td>
+<td>成果</td>
+<td>一行指令，一份 .odp</td>
+<td>2:25–2:55</td>
+<td>一套引擎三種格式；這份簡報就是它生的</td>
+</tr>
+<tr class="odd">
+<td>P7</td>
+<td>使用體驗</td>
+<td>先問清楚，再開始寫</td>
+<td>2:55–3:20</td>
+<td>AI 逐題追問、確認後才生成</td>
+</tr>
+<tr class="even">
+<td>P8</td>
+<td>生態貢獻</td>
+<td>任何 AI 助理，掛上就能產 ODF</td>
+<td>3:20–3:55</td>
+<td>MCP server：0 行程式、0 金鑰、5 個工具</td>
+</tr>
+<tr class="odd">
+<td>P9</td>
+<td>優化建議 1/2</td>
+<td>Python 的 ODF 函式庫斷層</td>
+<td>3:55–4:35</td>
+<td>odfpy 停更、odfdo 陽春 → 建議官方維護參考實作</td>
+</tr>
+<tr class="even">
+<td>P10</td>
+<td>優化建議 2/2</td>
+<td>AI 工具鏈裡沒有 ODF</td>
+<td>4:35–5:10</td>
+<td>建議推廣單位主動把 ODF 出口做進工具鏈</td>
+</tr>
+<tr class="odd">
+<td>P11</td>
+<td>心得與推廣</td>
+<td>讓 ODF 變成最省力的選項</td>
+<td>5:10–5:40</td>
+<td>推廣不是講道理，是把路修平</td>
+</tr>
+<tr class="even">
+<td>P12</td>
+<td>結語</td>
+<td>我們把這條路修出來了</td>
+<td>5:40–6:00</td>
+<td>3 格式／5 工具／0 金鑰，收尾＋邀請實測</td>
+</tr>
+<tr class="odd">
+<td>A1–A2</td>
+<td>附錄</td>
+<td>三道閘門／MCP 明細與資安</td>
+<td>不講</td>
+<td>統問統答備援，被問到再翻</td>
+</tr>
+</tbody>
+</table>
+<hr>
+</section>
+<section id="二逐頁講稿" class="level2">
+<h2 class="anchored" data-anchor-id="二逐頁講稿">二、逐頁講稿</h2>
+<section id="p1-封面000015" class="level3">
+<h3 class="anchored" data-anchor-id="p1-封面000015">P1 封面（0:00–0:15）</h3>
+<p>各位評審好，我們是學生組的王巧晰、江慶于。我們的作品是 ODForge，中文名「文鍛」——把一句話，鍛造成一份正式的 ODF 文件。</p>
+</section>
+<section id="p2-動機015045" class="level3">
+<h3 class="anchored" data-anchor-id="p2-動機015045">P2 動機（0:15–0:45）</h3>
+<p>ODF 其實不缺地位：2006 年成為國際標準，2009 年納入國家標準，今天更是政府公文交換的標準格式。但在這波 AI 浪潮裡，支援 ODP 輸出的主流 AI 文件工具，是零個。大家不是不想用 ODF，是用起來比較累。所以我們把力氣花在一件事：讓 ODF 變省力。</p>
+</section>
+<section id="p3-問題045120" class="level3">
+<h3 class="anchored" data-anchor-id="p3-問題045120">P3 問題（0:45–1:20）</h3>
+<p>動手之前，我們把現有的路都親手走過一遍。AI 文件工具像 Gamma，只出 PPTX；Copilot 產的 PPTX 拆開來看，其實是 HTML 轉檔；PPTX 轉 ODP 會跑版，字級、母片、公式全壞；LibreOffice 的 AI 擴充，只能改寫選取的文字。也就是說，「一句話變一份原生 ODF」這條路，是空的。為什麼空了這麼多年？因為轉檔看似堪用、實則有損；Python 函式庫斷層；AI 生態根本不認識 ODF。</p>
+</section>
+<section id="p4-目的120140" class="level3">
+<h3 class="anchored" data-anchor-id="p4-目的120140">P4 目的（1:20–1:40）</h3>
+<p>所以我們的目的很單純：把 ODF 變成方便好用的 AI 工具。讓一句自然語言，變成一份合規、可以繼續編輯的原生 ODF。</p>
+</section>
+<section id="p5-方法140225-核心頁放慢" class="level3">
+<h3 class="anchored" data-anchor-id="p5-方法140225-核心頁放慢">P5 方法（1:40–2:25）★ 核心頁，放慢</h3>
+<p>方法上，我們把分工切得很乾淨：內容 AI 寫，格式引擎保證。直接叫 AI 吐檔案，是每次擲一次骰子；ODForge 把骰子換成機器。AI 只產出結構化 JSON，經過 schema 嚴格驗證；真正寫檔的，是我們自己開發的確定性渲染引擎，直接寫出 OpenDocument XML。我們還特別處理中文：ODF 的中文字級要另外設定 asian 屬性，只設一般字級，中文會掉回預設字級——多數工具沒處理，我們在引擎層強制寫對。每份檔案出廠前都過三道驗證：ZIP 結構、XML 正確性、LibreOffice 實際開檔。</p>
+</section>
+<section id="p6-成果225255" class="level3">
+<h3 class="anchored" data-anchor-id="p6-成果225255">P6 成果（2:25–2:55）</h3>
+<p>成果就是：一行指令，一份檔案。一套引擎，三種格式——.odt 文書、.odp 簡報、.ods 試算表，而且試算表是原生公式，開檔就會自動計算。包括各位眼前這份決賽簡報，也是 ODForge 生成的原生 .odp——直接補上 AI 簡報生成長年的空缺。</p>
+</section>
+<section id="p7-使用體驗255320" class="level3">
+<h3 class="anchored" data-anchor-id="p7-使用體驗255320">P7 使用體驗（2:55–3:20）</h3>
+<p>使用體驗上，我們不賭一把。Web 控制台會先問清楚、再開始寫：你用一句話描述需求，可以上傳講義或論文當取材；AI 針對缺少的資訊逐題追問——對象、頁數、重點、語氣——整理成一份可編輯的摘要，你點頭之後，它才動筆。</p>
+</section>
+<section id="p8-生態貢獻320355" class="level3">
+<h3 class="anchored" data-anchor-id="p8-生態貢獻320355">P8 生態貢獻（3:20–3:55）</h3>
+<p>更關鍵的是生態貢獻：ODForge 同時是一個 MCP server。任何 AI 助理——Claude、Cursor、Cline——一行設定掛上，就能直接產 ODF：不用改任何程式、不需要任何 API 金鑰，五個工具，涵蓋三種格式的生成，外加驗證與預覽。與其等 AI 生態想起 ODF，不如把 ODF 的出口，直接做進 AI 工具鏈。</p>
+</section>
+<section id="p9-優化建議-12355435-配分-30-從這裡開始口氣轉正式" class="level3">
+<h3 class="anchored" data-anchor-id="p9-優化建議-12355435-配分-30-從這裡開始口氣轉正式">P9 優化建議 1/2（3:55–4:35）★ 配分 30% 從這裡開始，口氣轉正式</h3>
+<p>接下來是我們對 ODF 生態的兩點優化建議，都是開發中親身踩到的。第一，Python 的 ODF 函式庫斷層：最知名的 odfpy，從 2020 年就停止更新，只支援 ODF 1.2；還在維護的 odfdo，簡報母片和版面的支援，連官方文件都承認陽春。結果就是：想做 ODF 工具的人，都得從零開始研究，我們的簡報渲染器最後只能全部手寫 XML。我們建議由官方或社群，維護一個有長期承諾的 ODF 參考實作；ODForge 的渲染引擎以 MIT 開源，可以直接作為這個起點。</p>
+</section>
+<section id="p10-優化建議-22435510" class="level3">
+<h3 class="anchored" data-anchor-id="p10-優化建議-22435510">P10 優化建議 2/2（4:35–5:10）</h3>
+<p>第二，AI 工具鏈裡沒有 ODF——等下去也不會有：開源簡報工具的 ODP 匯出請求，掛了好幾年沒人理。但反過來看，原生、可編輯、符合標準，正是 ODF 現在最大的優勢。我們建議推廣單位主動出擊：用 MCP server、編輯器外掛、對開源工具發 PR，把 ODF 的出口做進 AI 工具鏈——我們的 MCP server，已經示範這條路走得通。</p>
+</section>
+<section id="p11-心得與推廣510540" class="level3">
+<h3 class="anchored" data-anchor-id="p11-心得與推廣510540">P11 心得與推廣（5:10–5:40）</h3>
+<p>做完這個專案，最大的心得是：最有效的推廣不是講道理，是把路修平。對學生，一行指令，報告直接就是合規的 ODF；對老師，教材、簡報、成績表直出；對機關，省下文件撰寫的時間；對社群，全案 MIT 開源，歡迎接手。</p>
+</section>
+<section id="p12-結語540600" class="level3">
+<h3 class="anchored" data-anchor-id="p12-結語540600">P12 結語（5:40–6:00）</h3>
+<p>ODF 不缺標準，缺的是一條讓人願意走的路——我們把這條路修出來了。三種格式、五個 MCP 工具、零 API 金鑰。ODForge，把一句話，鍛造成一份正式文件。謝謝大家，歡迎現場出題實測。</p>
+<hr>
+</section>
+</section>
+<section id="三qa-備援附錄兩頁統問四題延伸-24-題" class="level2">
+<h2 class="anchored" data-anchor-id="三qa-備援附錄兩頁統問四題延伸-24-題">三、QA 備援（附錄兩頁＋統問四題＋延伸 24 題）</h2>
+<section id="qa-目錄" class="level3">
+<h3 class="anchored" data-anchor-id="qa-目錄">QA 目錄</h3>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 33%">
+<col style="width: 33%">
+<col style="width: 33%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>分類</th>
+<th>題號</th>
+<th>問題</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>統問四題</td>
+<td>Q1</td>
+<td>為何不做 PPTX？</td>
+</tr>
+<tr class="even">
+<td></td>
+<td>Q2</td>
+<td>為何不用 HTML 中間層？</td>
+</tr>
+<tr class="odd">
+<td></td>
+<td>Q3</td>
+<td>與 Gamma／NotebookLM 差異？</td>
+</tr>
+<tr class="even">
+<td></td>
+<td>Q4</td>
+<td>TAIDE 可否接？</td>
+</tr>
+<tr class="odd">
+<td>定位與比較</td>
+<td>Q5</td>
+<td>和政府推的 ODF 文件應用工具有什麼不同？會不會重複？</td>
+</tr>
+<tr class="even">
+<td></td>
+<td>Q6</td>
+<td>直接叫 ChatGPT 寫 ODF 的 XML，不行嗎？</td>
+</tr>
+<tr class="odd">
+<td></td>
+<td>Q7</td>
+<td>為什麼簡報渲染器要全部手寫 XML？</td>
+</tr>
+<tr class="even">
+<td></td>
+<td>Q8</td>
+<td>不會用終端機的老師、行政人員怎麼用？</td>
+</tr>
+<tr class="odd">
+<td></td>
+<td>Q9</td>
+<td>為什麼 Web 介面只支援簡報？</td>
+</tr>
+<tr class="even">
+<td>AI 品質與內容</td>
+<td>Q10</td>
+<td>AI 會亂編內容（幻覺），怎麼處理？</td>
+</tr>
+<tr class="odd">
+<td></td>
+<td>Q11</td>
+<td>文字太多塞不下、跑版怎麼辦？</td>
+</tr>
+<tr class="even">
+<td></td>
+<td>Q12</td>
+<td>生成的檔案怎麼證明符合標準？</td>
+</tr>
+<tr class="odd">
+<td></td>
+<td>Q13</td>
+<td>中文處理到底特別在哪？</td>
+</tr>
+<tr class="even">
+<td>資安與部署</td>
+<td>Q14</td>
+<td>上傳的資料會外流嗎？可以完全離線嗎？</td>
+</tr>
+<tr class="odd">
+<td></td>
+<td>Q15</td>
+<td>為什麼 MCP 模式不需要 API 金鑰？</td>
+</tr>
+<tr class="even">
+<td></td>
+<td>Q16</td>
+<td>處理外部檔案安全嗎？</td>
+</tr>
+<tr class="odd">
+<td>工程品質</td>
+<td>Q17</td>
+<td>兩個學生做的，品質可信嗎？測試怎麼做？</td>
+</tr>
+<tr class="even">
+<td></td>
+<td>Q18</td>
+<td>開發中學到最重要的一課？</td>
+</tr>
+<tr class="odd">
+<td>推廣與永續</td>
+<td>Q19</td>
+<td>比賽結束後，專案會不會就停了？</td>
+</tr>
+<tr class="even">
+<td></td>
+<td>Q20</td>
+<td>推廣單位想採用，第一步建議做什麼？</td>
+</tr>
+<tr class="odd">
+<td></td>
+<td>Q21</td>
+<td>既有的舊檔案（docx）有幫助嗎？</td>
+</tr>
+<tr class="even">
+<td></td>
+<td>Q22</td>
+<td>學校公版、機關範本能用嗎？</td>
+</tr>
+<tr class="odd">
+<td>團隊自行補答</td>
+<td>Q23</td>
+<td>兩位的分工是什麼？</td>
+</tr>
+<tr class="even">
+<td></td>
+<td>Q24</td>
+<td>生成一份簡報實際要多久？</td>
+</tr>
+</tbody>
+</table>
+<p>另有兩個翻附錄就能答的方向：<strong>品質保證 → 附錄 A</strong>、<strong>資安／離線 → 附錄 B</strong>（見下）。</p>
+<p><strong>被問品質怎麼保證 → 翻附錄 A</strong>：三道閘門——G1 ZIP 結構與 mimetype、G2 每個 XML 部件逐一驗證、G3 LibreOffice 實際開檔轉 PDF；沒過前兩道，檔案不交付。範圍聲明：引擎保證「格式正確、打得開、版面看過」，內容真偽需使用者自行查證，文件內有明確標示。</p>
+<p><strong>被問資安／離線 → 翻附錄 B</strong>：LLM 後端可插拔，接 Ollama 可全本機、資料不出門；MCP 模式 0 金鑰，內容由呼叫端 AI 寫。</p>
+<p><strong>統問四題速答</strong>： 1. <strong>為何不做 PPTX？</strong> PPTX 工具已經飽和，ODF 才是空缺；而且 ODF 是國家標準與公文格式，這是本競賽要解的問題。 2. <strong>為何不用 HTML 中間層？</strong> 轉檔漂移（conversion drift）正是我們要打的敵人；中間層等於把跑版裝回去。我們直接寫 OpenDocument XML。 3. <strong>與 Gamma／NotebookLM 差異？</strong> 它們輸出 PPTX 或不可編輯的成品；我們輸出原生、可編輯、合規的 ODF，且格式由確定性引擎保證，不是 LLM 直吐。 4. <strong>TAIDE 可否接？</strong> 可以。後端可插拔，任何 OpenAI 相容端點都能接，也支援 Ollama 本機模型。</p>
+</section>
+<section id="定位與比較" class="level3">
+<h3 class="anchored" data-anchor-id="定位與比較">定位與比較</h3>
+<p><strong>Q5｜和政府推的 ODF 文件應用工具（或 LibreOffice）有什麼不同？會不會重複？</strong></p>
+<p>完全互補。那些是「編輯器」，我們是「生成引擎」——我們明確不做線上編輯器，產出的檔案就是要用 LibreOffice 或 ODF 文件應用工具打開繼續改。我們補的是它們前面那一段：從一句話到第一版檔案。</p>
+<p><strong>Q6｜直接叫 ChatGPT 寫 ODF 的 XML，不行嗎？</strong></p>
+<p>試過，那是每次擲一次骰子：XML 可能壞、中文字級會掉、座標會亂。在 ODForge 裡，LLM 從頭到尾不碰 XML、不碰公分與 pt，只寫結構化內容；版面座標全部由確定性引擎計算，同樣輸入永遠得到同樣版面。</p>
+<p><strong>Q7｜為什麼簡報渲染器要全部手寫 XML，不用現成函式庫？</strong></p>
+<p>不是不想用，是沒得用——odfpy 停更、odfdo 的母片與版面支援連官方文件都承認陽春。這正是我們優化建議第一點的親身證據。</p>
+<p><strong>Q8｜不會用終端機的老師、行政人員怎麼用？</strong></p>
+<p>兩條路：Web 控制台（瀏覽器操作、逐題訪談、確認後生成），或者在他們已經在用的 AI 助理裡掛上 MCP，用聊天的方式產檔。CLI 只是給進階使用者的第三條路。</p>
+<p><strong>Q9｜為什麼 Web 介面只支援簡報，不支援文書和試算表？</strong></p>
+<p>刻意的產品決定，不是沒做完。控制台的核心體驗是「一頁＝一個可預覽、可單獨重生的單位」，簡報有這個天然單位，文書和試算表沒有；後兩者由 CLI 和 MCP 完整支援。</p>
+</section>
+<section id="ai-品質與內容正確性" class="level3">
+<h3 class="anchored" data-anchor-id="ai-品質與內容正確性">AI 品質與內容正確性</h3>
+<p><strong>Q10｜AI 會亂編內容（幻覺），你們怎麼處理？</strong></p>
+<p>誠實切分保證範圍：引擎保證「格式正確、打得開、版面看過」，內容真偽不在保證範圍，文件內明確標示「來源（未查證）」提醒使用者查證。流程上用兩道人工把關降低風險：生成前 AI 先追問確認需求、生成前先給可編輯大綱，人點頭才動筆。</p>
+<p><strong>Q11｜文字太多塞不下、跑版怎麼辦？</strong></p>
+<p>引擎內建版面預算檢查：用確定性的文字高度估算，逐頁逐框比對可用空間，超載時會指名「第幾頁哪個框、預估幾公分超過幾公分」。原則是「ODForge 量測，呼叫端重寫」——回報精確位置，讓 AI 或使用者針對性刪改，而不是偷偷縮字級破壞版面規範。</p>
+<p><strong>Q12｜生成的檔案怎麼證明符合標準？</strong></p>
+<p>三道閘門之外，最實際的證明是第三道：headless LibreOffice 真的開檔、真的轉出 PDF；試算表還會強制重算公式、掃描錯誤值。另外 <code>odforge check</code> 可以驗任何 ODF 檔——包括不是我們產的，歡迎評審拿檔案來測。</p>
+<p><strong>Q13｜中文處理到底特別在哪？</strong></p>
+<p>ODF 規範裡 CJK 文字的字級、粗體要另外設定 asian 系列屬性；只設一般屬性，中文會掉回預設字級。多數工具沒處理，我們在渲染層強制三軌齊備，這是寫進引擎的規則，不是用提示詞拜託 AI。</p>
+</section>
+<section id="資安與部署" class="level3">
+<h3 class="anchored" data-anchor-id="資安與部署">資安與部署</h3>
+<p><strong>Q14｜上傳的講義、公文會不會外流？可以完全離線嗎？</strong></p>
+<p>可以。LLM 後端可插拔，接本機 Ollama 就全程資料不出門；MCP 模式更是連金鑰都沒有，內容由呼叫端的 AI 寫，ODForge 只做本機渲染。Web 控制台預設只綁本機 127.0.0.1。</p>
+<p><strong>Q15｜為什麼 MCP 模式不需要 API 金鑰？</strong></p>
+<p>因為 MCP server 是純渲染引擎，刻意不含任何 LLM 呼叫——內容是掛上來的那個 AI 助理自己寫的，ODForge 負責把它變成合規檔案並驗證。所以零金鑰、零外連。</p>
+<p><strong>Q16｜處理外部檔案安全嗎？</strong></p>
+<p>有做防護：XML 解析器硬化（防 XXE、實體炸彈）、ZIP 有界讀取（防解壓縮炸彈）、上傳檔案大小與數量上限。專案跑過安全稽核，未修復發現為零。</p>
+</section>
+<section id="工程品質" class="level3">
+<h3 class="anchored" data-anchor-id="工程品質">工程品質</h3>
+<p><strong>Q17｜兩個學生做的，品質可信嗎？測試怎麼做？</strong></p>
+<p>產品碼約 1.6 萬行，測試碼約 1.4 萬行，接近一比一；分支覆蓋率 87.87%，門檻 85% 寫死在設定檔，低於就擋下。CI 有八條管線，涵蓋兩個 Python 版本、兩個作業系統，還有真的裝 LibreOffice 開檔的整合測試。</p>
+<p><strong>Q18｜開發中學到最重要的一課？</strong></p>
+<p>「測試全綠不等於做完。」我們做過對抗式複審：在測試全綠的基線上又找出二十多項可重現缺陷——包括乾淨環境安裝第一行就會 crash 的問題，因為開發機的舊套件把它遮住了。綠燈量的是「跑過的東西」，不是「該跑的東西」。</p>
+</section>
+<section id="推廣與永續" class="level3">
+<h3 class="anchored" data-anchor-id="推廣與永續">推廣與永續</h3>
+<p><strong>Q19｜比賽結束後，這個專案會不會就停了？</strong></p>
+<p>全案 MIT 開源在 GitHub，文件、測試、CI 齊備，任何人都能接手；渲染引擎本身就能作為 Python ODF 參考實作的起點——這正是我們優化建議想促成的事。</p>
+<p><strong>Q20｜如果教育部或 ODF 推廣單位想採用，第一步建議做什麼？</strong></p>
+<p>成本最低、槓桿最大的一步：把 MCP server 這條路推廣出去。一行設定，就讓師生已經在用的 AI 助理直接產出合規 ODF——不用教新工具，在他們原本的工作流裡把出口換成 ODF。</p>
+<p><strong>Q21｜既有的舊檔案（docx）有幫助嗎？</strong></p>
+<p>有。<code>odforge check</code> 支援 docx 轉 odt 的前後結構比對，自動偵測轉檔跑版的位置，輸出報告——這是給「手上有一堆舊格式檔案」的機關的遷移輔助。</p>
+<p><strong>Q22｜學校的公版、機關的範本能用嗎？</strong></p>
+<p>可以。範本抽取功能能從既有的 .otp／.odt 公版抽出設計規格（色彩、字型、版面），之後生成的檔案就長在自己單位的公版上；也有範本庫可以存自訂組合。</p>
+</section>
+<section id="需要團隊自行補答我無法代答" class="level3">
+<h3 class="anchored" data-anchor-id="需要團隊自行補答我無法代答">需要團隊自行補答（我無法代答）</h3>
+<p><strong>Q23｜兩位的分工是什麼？</strong> ——請按實際情況準備一句話分工說明。</p>
+<p><strong>Q24｜生成一份簡報實際要多久？</strong> ——渲染本身是毫秒級，時間主要花在 LLM 產內容，依後端而異；建議賽前用現場要 demo 的後端實測一次，記下「約 X 分鐘產一份 12 頁簡報」的實數。</p>
+</section>
+</section>
+<section id="四口播提醒" class="level2">
+<h2 class="anchored" data-anchor-id="四口播提醒">四、口播提醒</h2>
+<ul>
+<li>全文 1,340 字左右，排練目標 <strong>5 分 40 秒</strong>；P5、P9 是配分重點頁，寧可其他頁加速也要講完整。</li>
+<li>數字口徑統一用簡報上的：<strong>3 種格式、5 個 MCP 工具、0 API 金鑰、0 行程式、三道驗證</strong>。不要提「四道閘」「字型嵌入」等簡報上沒有的說法。</li>
+<li>P6 講到「這份簡報就是它生成的」時停半拍，手指一下畫面。</li>
+<li>結尾「歡迎現場出題實測」記得帶著筆電、環境先開好。</li>
+</ul>
+</section>
+</section>
+
+</main>
+<!-- /main column -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp('/' + window.location.host + '/');
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+</div> <!-- /content -->
+
+
+
+
+</body></html>
