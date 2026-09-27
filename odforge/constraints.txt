@@ -31,6 +31,7 @@ httpx==0.28.1
 httpx2==2.10.0
 idna==3.18
 iniconfig==2.3.0
+jieba==0.42.1
 jiter==0.16.0
 json_repair==0.63.1
 jsonschema==4.26.0
@@ -69,3 +70,4 @@ typer==0.27.1
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 uvicorn==0.52.2
+zhconv==1.4.3

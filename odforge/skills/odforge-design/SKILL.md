@@ -27,19 +27,23 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
 ## ① 生成前訪談（先問，別急著產）
 
 動手前先跟使用者確認三件事。**不要套罐頭模板**——針對這個主題現想。
+使用者不在（或只丟一句話就要成品）時不要卡住：依下列預設直接做，交件時一句話說明你的假設。
+預設：10 分鐘 ≈ 10–13 頁；審查／報告類 → `report` 版式、`detailed` 密度；其他 → 依場合挑版式。
 
-1. **三個客製美術方向候選**：讀懂主題後，提出 3 個**為這個題目量身**的方向，
-   而不是把 academic／minimal／dark 三個內建 preset 端出來。每個候選講清楚：
-   氛圍一句話、主色與強調色的角色、字型個性、適合的理由。例如題目是「深海生態
-   保育」，候選可以是「深海靛藍＋生物螢光青」「潮間帶砂與海泡沫的暖中性」「警訊
-   珊瑚白化的漂白灰＋一點警示紅」——每個都扣題，不是通用色票。你可以拿最接近的
-   內建主題當技術底（見 ③ 與主題規格書），但敘事要客製。
+1. **場合 → 版式（style）＋配色（theme）**：先判斷場合，再挑一組構圖與配色。
+   審查／計畫書／成果報告 → `passport`（白卡＋右側深色重點面板，最接近正式審查簡報）；
+   顧問式匯報／議會 → `report`；口試／課堂 → `academic`；人文／設計 → `editorial`；
+   演講／發表 → `keynote`（配暗底）；品牌／作品集 → `zen`；一般教學 → `classic`。
+   配色從 13 套內建主題挑最扣題的一套（④）。自訂 `design` 只在使用者有品牌色時才做，
+   而且只換 accent——自調五色是生成簡報最常見的「看起來很業餘」來源。
 2. **頁數**：問清楚大概幾頁、時間多長。10 分鐘口頭簡報 ≈ 10–15 頁；別把一場演講塞
    進 40 頁。
 3. **mode 二分法**：`presenter`（講者型）還是 `detailed`（自讀型）？
-   - `presenter`：大字、極簡、一頁一個想法，靠講者口述補完。
-   - `detailed`：文字完整，觀眾自己讀也懂（講義、寄出去的檔）。
-   這會影響每頁塞多少字。
+   - `presenter`：字少，但每條仍是完整觀點（≤20 字、每頁 ≤4 條）。
+   - `detailed`：文字完整，觀眾自己讀也懂（每條 15–40 字、每頁 3–6 條）。
+   審查、提案、計畫書、報告這類「會被拿來讀、會被追問」的簡報一律用 `detailed`。
+   注意：mode 是**你寫內容時的密度決定**，照上面的字數寫進 bullets／detail 即可，
+   **不必也不要寫進 IR**——`design` 一旦出現就必須帶完整的 palette 與 fonts。
 
 確認後再進大綱。
 
@@ -49,31 +53,72 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
 
 先用版型（layout）排出整份簡報的節奏骨架，一頁一角色，再逐頁填內容。守這些規矩：
 
-- **一頁一個想法**：一張投影片只講一件事。塞不下就拆成兩頁，別擠。
+- **一頁一個想法，標題就是那個想法**：每頁 title 寫成一句完整結論（10–22 字），
+  不是主題名詞。只讀標題就要能讀懂整份簡報（顧問業的 horizontal logic）。
 - **`title` 開場**：第一頁一定是封面（`title` 版型）。
-- **長簡報放 `agenda`**：超過約 8 頁就在封面後放一張大綱，給聽眾路線圖；短簡報可略。
-- **用 `section` 分段**：進入新的大段落時插一張 section 分隔頁，像書的章名。
-- **節奏穿插**：別整份都是 `title-content` 條列。用 `big-fact`（關鍵數字）、
-  `quote`（引述）、`chart`（真實數據圖）製造高低起伏，讓聽眾不睡著。
-- **同版型不連發 ≥3**：同一種 layout 不要連續出現 3 頁以上。連兩頁條列後，換個
-  節奏頁再繼續。
+- **結構頁要省**：`agenda` 只在 ≥ 15 頁時放（項目不要自己編號，頁面會自動編）；
+  `section` 分隔頁只在 ≥ 20 頁時用、最多 2 張（≥ 30 頁才可 3 張），並在 `kicker`
+  寫「02 章節名」（classic／report／keynote／editorial／passport 的分隔頁大編號取自這裡；
+  academic 用上下夾線、zen 用小圓點，刻意不畫編號）。短簡報把章節名寫進該段第一頁的
+  `kicker`（「02 研究方法」）。目錄＋分節＋引言＋大數字合計不超過全份約 18%；
+  big-fact 每 10 頁最多 1 張，quote 全份最多 1 張。
+- **版面不要重複**：cards／process／timeline／metrics 任一種不超過全份約 1/5，
+  其餘改用 table、chart、diagram、comparison。標題裡的數量（「三項」「五個建議」）
+  必須等於該頁列出的項目數。以上工具都會以警告回報。
+  一份 13 頁卻有 6 頁封面／目錄／分隔頁，是生成簡報看起來空洞的頭號原因。
+- **優先用視覺版型**：步驟→`process`、時間→`timeline`、2–4 個數字→`metrics`、
+  2–4 個並列觀點→`cards`、項目×屬性→`table`、數字＋觀點→`dashboard`、
+  架構／因果→`diagram`。`title-content` 整份最多 2 頁。
+- **相鄰不同版型**：相鄰兩頁不用同一種 layout；同一 layout 不超過內容頁的三分之一。
+
+### 每張內容頁的四件套
+
+內容頁（title／section／closing／quote 以外）都要有：
+
+- `kicker`：章節標籤，「兩位數編號＋章節名」。
+- `title`：一句結論。內頁一行約可放 24 字、封面約 17 字；超過會換行，
+  多出一兩個字時引擎會自動微縮字級避免孤字。
+- `subtitle`：標題下一行說明（15–40 字），交代脈絡或證據來源。
+- `takeaway`：這頁的「所以呢」（≤30 字），畫成頁底結論帶（`passport` 是右側深色面板）。
+  **只放在真的有結論的頁**，約三分之一內容頁即可——每頁都放就不再有強調效果；
+  而且要帶出標題沒說的新資訊（數字、影響、下一步），換句話重述標題的不如不放。
+
+### 實用字數（超過會縮字，再不行就以「…」截斷）
+
+- cards(3 張並排):小標 ≤ 10 字,每句 children ≤ 22 字;4 張(2×2)可再長一些。
+- process:4 步時每步 title ≤ 7 字、detail ≤ 18 字;5 步時 5 字 / 14 字。
+- timeline:5 個事件時 title ≤ 6 字、detail ≤ 18 字;4 個時 8 字 / 24 字。
+- metrics:value 含單位 ≤ 7 字(如「12,000」「≥ 90%」),label ≤ 10 字。
+- chart:每個 label ≤ 5 字。diagram:節點 title ≤ 6 字、detail ≤ 10 字。table:≤ 5 欄,每格 ≤ 12 字。
+- closing:每項 text ≤ 10 字(4 項時 ≤ 6 字),children 一句 ≤ 20 字。
+
+內容寫洞見而不是主題：「誤判率從 32% 降到 8%」勝過「降低誤判」。卡片、步驟、事件、
+指標的 `detail`／`children` 一律要填——只有小標的卡片就是「簡陋」的樣子。
 - **`chart` 只配真數據**：有實際數字才用 chart，最多 8 條長條。沒有數據就別硬畫圖。
 - **`closing` 收尾**：最後一頁用 closing（或 section）收束——結論／CTA／致謝／Q&A。
 
-### 10 種版型與必填欄位
+### 19 種版型與必填欄位
 
 | layout | 這頁的角色 | 必填／常用欄位 |
 | --- | --- | --- |
 | `title` | 封面 | `title`, `subtitle` |
-| `title-content` | 標題＋條列內頁（主力）| `title`, `bullets` |
-| `two-col` | 左右兩欄並列 | `title`, `left`, `right` |
-| `section` | 章節分隔頁 | `title` |
-| `big-fact` | 放大一個關鍵數字 | `fact`,（可加 `bullets` 當註腳）|
+| `cards` | 2–4 個並列觀點 | `bullets`：`{"text": 小標, "children": [1–2 句說明]}` |
+| `process` | 步驟／方法 | `steps`：2–5 個 `{"title", "detail"}` |
+| `timeline` | 時程／里程碑 | `events`：2–5 個 `{"label", "title", "detail"}` |
+| `metrics` | 2–4 個關鍵數字 | `metrics`：`{"value", "label", "detail"}` |
+| `dashboard` | 數字列＋觀點卡 | `metrics`（2–4，detail 不會畫出）＋ `bullets`（2–3 張卡，每張只放 1 條 ≤ 12 字的 children）|
+| `table` | 項目 × 屬性比較 | `table`：`{"columns", "rows", "highlight"}`（≤6 列）|
+| `comparison` | 對照（舊 vs 新）| `left`, `right`（各自第一項是欄標題）|
+| `two-col` | 左右兩欄並列 | `left`, `right` |
+| `diagram` | 架構／因果／層級 | `diagram`：`{"kind": "hub"\|"hierarchy", "nodes", "edges"}` |
+| `chart` | 資料長條圖 | `chart`（必填 ChartSpec，真數據才用）|
+| `big-fact` | 放大一個關鍵數字 | `title`（數字的意義）, `fact`, `bullets`（一行註腳）|
 | `quote` | 引述金句 | `quote`（必填非空）, `attribution` |
-| `agenda` | 大綱／議程 | `title`, `bullets` |
-| `comparison` | 對照表態 | `title`, `left`, `right` |
-| `chart` | 資料長條圖 | `title`, `chart`（必填 ChartSpec）|
-| `closing` | 結尾頁 | `title`（收束訊息）|
+| `image-focus` / `image-split` | 圖片為證據 | `image`（+ `bullets`）|
+| `title-content` | 條列（整份最多 2 頁）| `bullets` |
+| `agenda` | 議程（≥ 12 頁才用）| `bullets` |
+| `section` | 章節分隔（≥ 20 頁才用）| `title`, `kicker`（「02 章節名」）|
+| `closing` | 結尾 | `title`, `subtitle`, `bullets`（3–4 個下一步，含 children）, `kicker`（選填，「結語」）|
 
 ---
 
@@ -118,7 +163,7 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
 
 欄位（依 layout 取用；用不到的留空即可）：
 
-- `layout`（必填，上表 10 選 1）
+- `layout`（必填，上表 19 選 1）
 - `title`, `subtitle`, `fact`, `quote`, `attribution`, `kicker`（字串）
 - `bullets`：字串陣列；也可以是巢狀 `{"text": "...", "children": ["...", ...]}`（一層）
 - `left`, `right`：字串陣列（two-col／comparison 用）

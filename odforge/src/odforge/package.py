@@ -23,6 +23,8 @@ _MANIFEST_NS = "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"
 
 # Media types inferred from the file extension of binary (bytes) parts.
 _BINARY_MEDIA_TYPES = {
+    ".otf": "application/x-font-otf",
+    ".ttf": "application/x-font-ttf",
     ".png": "image/png",
     ".svg": "image/svg+xml",
     ".jpg": "image/jpeg",

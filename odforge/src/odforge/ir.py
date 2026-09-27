@@ -817,6 +817,13 @@ class Outline(StrictModel):
     """
 
     design: Optional[DesignSpec] = None
+    # 版式 chosen for the occasion (審查 → report, 口試 → academic, …). Without
+    # it every generated deck fell back to one composition, because a per-deck
+    # palette leaves ``theme`` at its default and the default's paired style is
+    # "classic". A user-picked style still overrides this downstream.
+    style: Optional[str] = Field(
+        default=None, json_schema_extra={"enum": sorted(STYLES)}
+    )
     mode: Literal["detailed", "presenter"] = "presenter"
     # Capped at the product's own page ceiling. A model that returns 80 pages is
     # not "ambitious", it is about to spend eighty stage-2 generations and render
@@ -836,6 +843,13 @@ class Outline(StrictModel):
     language: str = Field(
         default="zh-TW", json_schema_extra={"enum": sorted(LANGUAGES)}
     )
+
+    @field_validator("style")
+    @classmethod
+    def _known_outline_style(cls, value: Optional[str]) -> Optional[str]:
+        # An unknown style is dropped, not fatal: it is a taste call, and
+        # failing the whole outline over it would cost a retry for nothing.
+        return value if value in STYLES else None
 
     @field_validator("language")
     @classmethod

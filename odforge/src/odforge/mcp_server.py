@@ -48,9 +48,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by the other major
 from odforge.ir import Presentation, parse_ir
 from odforge.preview import PreviewUnavailable, render_pages
 from odforge.render import render
-from odforge.textmetrics import check_budget
+from odforge.textmetrics import check_budget, deck_warnings
 from odforge.textutil import concise
-from odforge.themes import resolve_design
+from odforge.themes import resolve_design, resolve_style
 from odforge.validate import find_soffice, validate_odf
 
 # One object either way: ``.tool()`` and ``.run()`` are identical across both
@@ -80,9 +80,13 @@ def _budget_warnings(ir: object) -> list[str]:
     if not isinstance(ir, Presentation):
         return []
     theme = resolve_design(ir)
+    style = resolve_style(ir)
     warnings: list[str] = []
     for n, slide in enumerate(ir.slides, start=1):
-        warnings.extend(f"第 {n} 頁:{message}" for message in check_budget(slide, theme))
+        warnings.extend(
+            f"第 {n} 頁:{message}" for message in check_budget(slide, theme, style)
+        )
+    warnings.extend(deck_warnings(ir.slides))
     return warnings
 
 
@@ -162,26 +166,103 @@ def forge_text_document(document: dict, out_path: str) -> str:
 def forge_presentation(document: dict, out_path: str) -> str:
     """Render a presentation (Document IR) to a native ``.odp`` file.
 
-    ``document`` is the IR for a presentation (``odforge.ir.Presentation``). Key
-    fields:
+    ``document`` is an ``odforge.ir.Presentation`` (full schema:
+    ``Presentation.model_json_schema()``). You write the content; the engine
+    owns geometry, so a good deck comes from rich, well-structured IR.
 
-    * ``title`` (str, required) — deck title.
-    * ``theme`` (str) — ``academic`` | ``minimal`` | ``dark`` | ``teal`` |
-      ``forest`` | ``navy`` | ``violet``.
-    * ``slides`` (list) — each slide has a ``layout``: ``title`` (``title``,
-      ``subtitle``), ``title-content`` (``title``, ``bullets``), ``two-col``
-      (``title``, ``left``, ``right``), ``section`` (``title``), ``big-fact``
-      (``fact``). Any slide may carry ``notes`` (speaker notes).
+    **Deck-level fields**
+
+    * ``title`` (required); ``theme`` — one of 13 curated palettes: academic,
+      minimal, dark, teal, forest, navy, violet, crimson, slate, gold, sky,
+      plum, clay (light grounds except dark/violet/slate/gold).
+    * ``style`` — the composition, pick by occasion: ``passport`` (審查、計畫書、
+      成果報告 — white framed cards, the takeaway as a dark right-hand panel;
+      the densest, most formal look), ``report`` (顧問式匯報、議會、商業提案),
+      ``academic`` (口試、課堂), ``editorial`` (人文、設計), ``keynote``
+      (演講、發表; pair with a dark theme), ``zen`` (品牌、極簡), ``classic``.
+      Styles change cards, heading marks, dividers and the takeaway band — two
+      decks in different styles should not look like one template.
+
+    **Every content page** (not title/section/closing/quote) should carry:
+    ``kicker`` (chapter tag, e.g. "02 研究方法"), ``title`` written as a
+    full-sentence conclusion (10–22 字, not a topic noun), ``subtitle`` (a
+    15–40 字 lede under the title), and — on about a third of the pages,
+    where the page really concludes something — ``takeaway`` (≤30 字 "so
+    what", drawn as a band at the foot or, in ``passport``, a dark side panel
+    (the panel only where the body still fits two-thirds of the width: 2 or 4
+    cards, ≤3 metrics, two-col / comparison / title-content / big-fact /
+    diagram — 3 cards or 4 metrics keep the band)
+    on cards / title-content / two-col / comparison / metrics / big-fact /
+    diagram pages — wide layouts keep the band).
+    A takeaway must add something the title does not say (a number, an
+    impact, a next step); one that paraphrases the title is noise.
+
+    **Layouts** (``slide.layout``) and what each needs:
+
+    * ``title`` — title, subtitle, kicker (the occasion, e.g. 「期末審查」),
+      bullets (2–4 cover facts — 單位、報告人、日期 — shown as the cover's
+      info card). ``closing`` — title, subtitle, bullets
+      (3–4 next steps as ``{"text", "children"}``), optional kicker
+      (「結語」「請求事項」, drawn above the message).
+    * ``cards`` — bullets: 2–4 ``{"text": 4–14 字小標, "children": [1–2 句
+      具體說明]}``. ``dashboard`` — metrics (2–4; value + label only, a
+      metric's detail is not drawn in the dashboard strip) + bullets (2–3
+      cards, each with ONE short child ≤12 字 — the cards sit under the strip
+      and have room for a single line).
+    * ``process`` — steps: 2–5 ``{"title", "detail"}``. ``timeline`` —
+      events: 2–5 ``{"label", "title", "detail"}``. ``metrics`` — metrics:
+      2–4 ``{"value", "label", "detail"}``.
+    * ``table`` — table: ``{"columns": [2–5], "rows": [[...], ...] (≤6; ≤5
+      with a takeaway), "highlight": row index}``. ``comparison`` — left/right, first item of
+      each is the column header. ``two-col`` — left/right.
+    * ``diagram`` — diagram: ``{"kind": "hub"|"hierarchy", "nodes": [{"id",
+      "title", "detail", "emphasis"}], "edges": [{"source", "target",
+      "label"}]}``. ``chart`` — chart: ``{"labels", "values", "unit",
+      "highlight"}``, real data only.
+    * ``big-fact`` — title (what the number means — never the number
+      itself), fact (the number), subtitle (the baseline: 相較去年、全國平均),
+      bullets (one caption line); at most one big-fact per ten pages — a
+      lone number is emphasis, not a page type. ``quote`` — quote,
+      attribution (at most one quote page per deck).
+    * ``title-content`` — bullets (at most 2 such pages per deck);
+      ``agenda`` — bullets, un-numbered (the page numbers them; only for decks
+      ≥ 15 pages); ``section`` — title, with ``kicker`` "02 章節名" (only
+      for decks ≥ 20 pages, at most 2 — 3 from 30 pages — otherwise put the
+      chapter in the next page's ``kicker``). The divider's big numeral is
+      taken from that kicker in classic / report / keynote / editorial /
+      passport; ``academic`` draws its divider between two rules and ``zen``
+      under a dot — no numeral, by design. Agenda, dividers, quotes and
+      big-facts together stay under ~18% of the deck, and no card layout
+      (cards / process / timeline / metrics) should carry more than a fifth
+      of the pages — a table, chart, diagram or comparison says the same
+      thing without the deck reading as one page repeated. A count in a
+      title (「三項」「五個建議」) must match the items the page shows. The
+      tool reports all of these as warnings.
+
+    Practical lengths (longer text is shrunk, then cut with "…"): cards (3
+    across) title ≤10 字, each child ≤22 字; process 4 steps title ≤7 字 /
+    detail ≤18 字 (5 steps: 5 / 14); timeline 5 events title ≤6 字 / detail
+    ≤18 字 (4 events: 8 / 24); metric value ≤7 字 incl. unit, label ≤10 字;
+    chart labels ≤5 字; diagram node title ≤6 字 / detail ≤10 字; table ≤5
+    columns, cells ≤12 字; closing text ≤10 字 (4 items: ≤6), child ≤20 字. Beside a
+    ``passport`` side panel the body is two-thirds wide: card titles ≤6 字.
+    ``two-col`` columns have no header — for 「改善前／改善後」 use
+    ``comparison`` (its left[0] / right[0] are the column headers).
+
+    Write insights, not topics ("誤判率從 32% 降到 8%" beats "降低誤判"); fill
+    every ``detail``; never use the same layout on two adjacent pages. Any
+    slide may carry ``notes`` (speaker notes).
 
     The ``type`` field is forced to ``"presentation"``. ``out_path`` is the target
     file path; missing parent directories are created. Returns an ``"ok: ..."``
     string with the absolute path and per-gate validation summary, or
-    ``"error: ..."``. See ``odforge.ir.Presentation.model_json_schema()``.
+    ``"error: ..."``.
 
     **If any text will overrun its frame**, the ``"ok: ..."`` string is followed
     by a ``warning:`` block naming each page and frame. The file is valid ODF and
     was written — but it will look wrong. Shorten the flagged pages and call this
-    tool again; do not present an overset deck as finished.
+    tool again; do not present an overset deck as finished. Then call
+    ``preview_odf`` and look at the pages before handing the deck over.
     """
     return _forge(document, out_path, "presentation")
 

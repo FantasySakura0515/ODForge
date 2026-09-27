@@ -14,7 +14,7 @@
 | bg | #171826 | 頁面背景：深靛藍，接近夜色 |
 | surface | #252842 | 卡片／色塊底：比 bg 亮一階的靛藍 |
 | text | #E8EAF2 | 主要內文：近白的冷灰，暗底上清楚可讀 |
-| muted | #9BA0C4 | 次要文字：註解、attribution、caption |
+| muted | #B4B9D8 | 次要文字：註解、attribution、caption |
 | accent | #3DD6E6 | 強調色：亮青，用在標題、highlight 長條、關鍵字 |
 | title_color | #E8EAF2 | 標題色：與 text 同（此主題不另外覆寫）|
 

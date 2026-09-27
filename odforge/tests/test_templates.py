@@ -324,7 +324,7 @@ def test_styles_are_served_with_the_gallery(app):
     with TestClient(app) as client:
         body = client.get("/api/templates").json()
     ids = {style["id"] for style in body["styles"]}
-    assert ids == {"classic", "report", "academic", "keynote", "editorial", "zen"}
+    assert ids == {"classic", "report", "academic", "keynote", "editorial", "zen", "passport"}
     # Each carries a human label + one-line blurb, so the gallery needs no copy
     # of its own that could drift from what the renderer actually does.
     assert all(style["label"] and style["blurb"] for style in body["styles"])

@@ -33,6 +33,9 @@ def isolated_sessions_dir(tmp_path, monkeypatch):
     instead of the operator's data.
     """
     monkeypatch.setenv("ODFORGE_SESSIONS_DIR", str(tmp_path / "sessions"))
+    # Font subsetting costs ~2s per render; the suite renders hundreds of
+    # decks. test_fontembed.py switches it back on where it is the subject.
+    monkeypatch.setenv("ODFORGE_EMBED_FONTS", "0")
 
 
 # Every environment variable that can point the code at a real provider: a key,

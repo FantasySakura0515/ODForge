@@ -783,7 +783,9 @@ def test_generate_outline_valid_roundtrip(monkeypatch):
     assert result.mode == "presenter"
     assert result.design is not None
     assert result.design.scale == "display"
-    assert [p.role for p in result.pages] == ["title", "agenda", "section", "closing"]
+    # A four-page deck has not earned an agenda or a divider (agenda ≥ 15,
+    # section ≥ 20 pages): stage 1 trims them before the outline is shown.
+    assert [p.role for p in result.pages] == ["title", "closing"]
     assert result.source_prompt == "做一份光合作用簡報"
 
 

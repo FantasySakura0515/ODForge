@@ -20,6 +20,7 @@ environment variables only and never hard-coded.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -43,6 +44,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from odforge.ir import (
     LANGUAGES,
+    MIN_OUTLINE_PAGES,
     BulletItem,
     Outline,
     Presentation,
@@ -50,8 +52,8 @@ from odforge.ir import (
     TextDoc,
     parse_ir,
 )
-from odforge.textmetrics import check_budget
-from odforge.themes import Theme, resolve_design
+from odforge.textmetrics import bare_cards, check_budget, count_mismatch
+from odforge.themes import THEME_LABELS, THEMES, Theme, resolve_design, resolve_style
 
 Document = Union[TextDoc, Presentation, Spreadsheet]
 
@@ -125,8 +127,9 @@ OUTLINE_SYSTEM_PROMPT = """\
 title、agenda、section、title-content、two-col、comparison、big-fact、quote、chart、closing。
 排版紀律:
 - 「一頁一個想法」:每頁只承載一個重點,gist 用一句話說清楚這頁要講什麼。
-- 開場第一頁一定是 title;若整份 ≥ 8 頁,title 之後緊接一頁 agenda。
-- 用 section 分節,把內容切成幾個段落區塊。
+- 開場第一頁一定是 title;整份 ≥ 15 頁才放 agenda,且緊接在 title 之後。
+- section 分節頁只在整份 ≥ 20 頁時使用,最多 3 頁;較短的簡報不要放 section,
+  改把章節名寫進該段第一頁的 kicker(例如「02 研究方法」)。
 - 適時穿插 big-fact(關鍵數據)、quote(引言)、chart(圖表)來調節敘事節奏。
 - 同一種 role 不得連續出現 ≥ 3 頁,避免版面單調。
 - 最後一頁一定是 closing 收尾;若需求含決策、風險或下一步,closing 的 gist
@@ -136,7 +139,9 @@ title、agenda、section、title-content、two-col、comparison、big-fact、quo
 【mode:講述型態】
 - presenter(講者型):大字級、極少字,靠講者口述;適合上台簡報。
 - detailed(自讀型):文字完整,能獨立閱讀;適合講義或寄送。
-從使用者意圖判斷該用哪一種;無明確線索時預設 presenter。
+從使用者意圖判斷該用哪一種:審查、提案、計畫書、報告、講義、會議資料等
+「會被拿來讀、會被追問」的簡報用 detailed;演講、發表、上台說服用 presenter。
+無明確線索時預設 detailed。
 
 請據此輸出一份「設計已定案、骨架已排好」的大綱。"""
 
@@ -157,8 +162,8 @@ SLIDES_SYSTEM_PROMPT = """\
   不得增刪、不得改動順序、不得換版型。
 
 【蒸餾鐵則(依講述型態 mode)】
-- presenter(講者型):每一條 bullet ≤ 16 字、每頁 ≤ 4 條;靠大字與口述,寧缺勿雜。
-- detailed(自讀型):每一條 bullet ≤ 30 字、每頁 ≤ 6 條;文字可完整、能獨立閱讀。
+- presenter(講者型):每一條 bullet ≤ 20 字、每頁 ≤ 4 條;字少,但每條都是一個完整觀點。
+- detailed(自讀型):每一條 bullet 15–40 字、每頁 3–6 條;文字完整、能獨立閱讀。
 - 內容文字裡「不要」寫出版型名稱(如「title-content」「two-col」),
   那是給引擎看的,不是給讀者看的。
 
@@ -240,6 +245,111 @@ SLIDES_VISUAL_GUIDANCE += """
 # visual-planning contract.
 OUTLINE_SYSTEM_PROMPT += OUTLINE_VISUAL_GUIDANCE
 SLIDES_SYSTEM_PROMPT += SLIDES_VISUAL_GUIDANCE
+
+
+# ---------------------------------------------------------------------------
+# Deck quality contract
+#
+# Generated decks read as sparse and interchangeable for three reasons the
+# prompts themselves caused: a presenter default that asked for "寧缺勿雜",
+# free-form palettes that left every deck on the default composition, and no
+# instruction to fill the lede / takeaway / kicker fields the renderer draws.
+# The rules below follow what the tools that do this well converge on —
+# action titles (consulting "horizontal logic"), a reading-deck density for
+# review/proposal decks (Duarte slidedoc), minimum as well as maximum content
+# per layout (Presenton's per-layout schemas), no adjacent repeat layouts, and
+# structural pages budgeted by deck length (agenda ≥ 12 pages).
+# ---------------------------------------------------------------------------
+
+
+def _palette_menu() -> str:
+    rows = []
+    for tid, t in THEMES.items():
+        rows.append(
+            f"  - {THEME_LABELS[tid]}:bg={t.bg} surface={t.surface} "
+            f"text={t.text} muted={t.muted} accent={t.accent};"
+            f"display 字體={t.font_display}"
+        )
+    return "\n".join(rows)
+
+
+OUTLINE_QUALITY_GUIDANCE = f"""
+
+【配色(覆寫第一步中「自行推導色盤」的做法)】
+- design.palette 的五色必須從下列精選配色「擇一、逐字照抄」,不要自行調色;
+  fonts.display 用該組建議字體,fonts.body 用 Noto Sans TC。
+- 審查、學術、公部門場合偏淺底穩重色;科技發表、上台演講可用深色底。
+{_palette_menu()}
+
+【版式(style)】
+- 另外填 style,決定整份簡報的構圖個性,依場合擇一:
+  - passport:審查、計畫書、成果報告、評鑑(白卡 + 右側深色重點面板,資訊密度最高)
+  - report:顧問式匯報、商業提案、議會與主管報告
+  - academic:論文口試、課堂講授、研究成果
+  - editorial:人文、設計、展覽、故事敘事
+  - keynote:演講、產品發表、上台說服(搭深色配色)
+  - zen:品牌、作品集、極簡發表
+  - classic:一般教學、通用
+- passport、report、academic、editorial 搭淺底配色;keynote 搭深色配色。
+
+【標題寫法】
+- 除 title、section、closing 外,每頁標題寫成一句完整的結論(10–22 字),
+  不要只寫主題名詞。例:「志工分不清入侵種,專家人力成了瓶頸」優於「研究動機」。
+- 依序只讀每頁標題,就要能讀懂整份簡報的論點。
+
+【版型多樣】
+- 相鄰兩頁不得使用相同版型。
+- cards、process、timeline、metrics 任一種不超過全份的五分之一;title-content
+  整份最多 2 頁。目錄、章節分隔、引言、大數字頁合計不超過全份約 18%。
+- 標題寫了數量(「三項」「五個建議」)時,該頁列出的項目數必須剛好相同。
+- 有「項目 × 屬性」的比較(評估方式、方案比較、經費明細)用 table;
+  同時有 2–4 個關鍵數字與 2–3 個觀點時用 dashboard。
+"""
+
+SLIDES_QUALITY_GUIDANCE = """
+
+【封面(title 頁)】
+- kicker 寫場合或活動(例:「國科會大專學生研究計畫 · 審查簡報」)。
+- bullets 放 2–4 條封面資訊:單位、報告人、日期或計畫期間(原始需求沒有的不要編)。
+
+【每頁結構(內容頁:title、section、closing、quote 以外的頁面)】
+- kicker:這頁所屬章節,格式為「兩位數編號 + 章節名」,例如「02 研究方法」;
+  同一章節的頁面用同一個 kicker。
+- subtitle:一句說明行(15–40 字),補充標題的脈絡、範圍或證據來源,不要重複標題。
+- takeaway:這頁的「所以呢」,一句 30 字以內的結論。只在這頁真的推得出結論時填,
+  大約三分之一的內容頁有即可(系統最多保留四成)。takeaway 必須帶出標題沒有的
+  新資訊——一個數字、一個影響或下一步;只是換句話重述標題的,寧可不填。
+
+【一致性】
+- 數字一律用阿拉伯數字(41.8 分、104.2%),標題與內文寫法一致,不要寫成「四十一點八分」。
+- 標題說「五件事」「三個原因」,頁面上就要剛好有五項、三項;標題裡的數字必須和
+  頁面上的數字相同。
+
+【內容密度下限】
+- 寫洞見,不寫主題:「誤判率從 32% 降到 8%」優於「降低誤判」。
+  原始需求裡的數字、名稱、條件要盡量帶進頁面。
+- cards:每個 bullets 項目的 text 寫 4–14 字小標,children 放 1–2 句具體說明
+  (每句 10–30 字)。
+- process 的每個步驟、timeline 的每個事件、metrics 的每個指標都要填 detail。
+- table:columns 2–5 欄、rows 2–6 列,每格 20 字以內;highlight 標出最關鍵的一列。
+- 需要「欄標題」的左右對照(改善前／改善後、既有／本計畫)用 comparison,
+  left[0]、right[0] 就是欄標題;two-col 是沒有欄標題的兩欄條列。
+- dashboard:metrics 放 2–4 個關鍵數字,bullets 放 2–3 個觀點(寫法同 cards)。
+- big-fact:title 寫這個數字代表的結論(不要重複數字本身),fact 只放數字,
+  subtitle 交代比較基準或來源(例:「相較去年同期」),bullets 放一行說明。
+- closing:bullets 放 3–4 個具體的下一步或請求,每項用 children 補一句說明。
+
+【實用字數(超過會縮字或被截斷)】
+- cards(3 張並排):小標 ≤ 10 字,每句 children ≤ 22 字;4 張(2×2)可再長一些。
+- process:4 步時每步 title ≤ 7 字、detail ≤ 18 字;5 步時 5 字 / 14 字。
+- timeline:5 個事件時 title ≤ 6 字、detail ≤ 18 字;4 個時 8 字 / 24 字。
+- metrics:value 含單位 ≤ 7 字(如「12,000」「≥ 90%」),label ≤ 10 字。
+- chart:每個 label ≤ 5 字。diagram:節點 title ≤ 6 字、detail ≤ 10 字。table:≤ 5 欄,每格 ≤ 12 字。
+- closing:每項 text ≤ 10 字,children 一句 ≤ 20 字。
+"""
+
+OUTLINE_SYSTEM_PROMPT += OUTLINE_QUALITY_GUIDANCE
+SLIDES_SYSTEM_PROMPT += SLIDES_QUALITY_GUIDANCE
 
 
 # ---------------------------------------------------------------------------
@@ -591,9 +701,9 @@ def _render_outline_for_prompt(outline: Outline) -> str:
             ]
         )
     if outline.mode == "presenter":
-        lines.append("【講述型態】presenter(講者型):每條 bullet ≤ 16 字、每頁 ≤ 4 條。")
+        lines.append("【講述型態】presenter(講者型):每條 bullet ≤ 20 字、每頁 ≤ 4 條,每條是完整觀點。")
     else:
-        lines.append("【講述型態】detailed(自讀型):每條 bullet ≤ 30 字、每頁 ≤ 6 條。")
+        lines.append("【講述型態】detailed(自讀型):每條 bullet 15–40 字、每頁 3–6 條,能獨立閱讀。")
     if outline.design is not None:
         d = outline.design
         pal = d.palette
@@ -672,11 +782,19 @@ def _slides_structure_errors(pres: Presentation, outline: Outline) -> Optional[s
     return " ".join(problems) if problems else None
 
 
-def _budget_overloads(pres: Presentation, theme: Theme) -> list[tuple[int, list[str]]]:
-    """List ``(page_number, messages)`` for every slide that overruns its frames."""
+def _budget_overloads(
+    pres: Presentation, theme: Theme, *, counts: bool = True
+) -> list[tuple[int, list[str]]]:
+    """List ``(page_number, messages)`` for every slide that overruns its frames
+    — and, for the rewrite turns, every title whose count 「三項」 its page does
+    not show (``counts=False`` for the degrade step: dropping bullets is not
+    how a wrong number gets fixed)."""
     overloads: list[tuple[int, list[str]]] = []
+    style = resolve_style(pres)
     for i, slide in enumerate(pres.slides, start=1):
-        msgs = check_budget(slide, theme)
+        msgs = check_budget(slide, theme, style)
+        if counts:
+            msgs = [*msgs, *filter(None, (count_mismatch(slide), bare_cards(slide)))]
         if msgs:
             overloads.append((i, msgs))
     return overloads
@@ -717,7 +835,159 @@ class DroppedContent(BaseModel):
     items: List[str] = Field(default_factory=list)
 
 
-def _degrade_slide(slide, theme: Theme, slide_no: int = 0) -> Optional[DroppedContent]:
+_MIN_BULLETS = {"cards": 2, "dashboard": 2}
+
+# Structural pages earn their place by deck length (consulting convention:
+# an agenda past ~15 slides, dividers only in long decks). Models kept adding
+# an agenda and three dividers to a 15-page talk — a quarter of the deck with
+# nothing on it.
+_AGENDA_MIN_PAGES = 15
+_SECTION_MIN_PAGES = 20
+_SECTION_MAX = 3
+# Pages _degrade_slide cannot rescue (it only sheds bullets); overruns there
+# earn a second rewrite instead of shipping as 「…」.
+_UNDEGRADABLE = frozenset({"process", "timeline", "metrics", "diagram", "chart", "table"})
+# Image pages with no image to show render an honest placeholder — which
+# reviewers read, correctly, as an unfinished deck. With no uploaded media and
+# no image generation, plan the page as cards instead.
+_IMAGE_ROLES = {"image-focus", "image-split"}
+# A takeaway band is emphasis; on every page it is wallpaper.
+_TAKEAWAY_SHARE = 0.4
+_EVIDENCE_LAYOUTS = (
+    "table", "chart", "comparison", "metrics", "dashboard", "process",
+    "timeline", "diagram", "big-fact",
+)
+
+
+_PAGE_CAP = re.compile(
+    r"(?:(\d{1,3})\s*(?:頁|張)(?:以內|以下|內)"
+    r"|(?:不超過|不要超過|最多|至多|上限)\s*(\d{1,3})\s*(?:頁|張))"
+)
+# Pages a cap gives up first, in order: the deck loses furniture before it
+# loses an argument.
+_CAP_DROP_ORDER = ("agenda", "section", "quote", "big-fact", "title-content")
+
+
+def _page_cap(prompt: str) -> int | None:
+    """An explicit upper bound in the request (「10 頁以內」「不超過 12 頁」)."""
+    m = _PAGE_CAP.search(prompt or "")
+    if not m:
+        return None
+    n = int(m.group(1) or m.group(2))
+    return n if n >= MIN_OUTLINE_PAGES else None
+
+
+def _cap_pages(outline: Outline, cap: int | None) -> Outline:
+    """Hold the outline to the user's page limit. A soft 「約 N 頁」 target
+    let the model return 11 pages for 「10 頁以內」 — a promise the user made
+    to an audience, so it is enforced, structural pages first."""
+    pages = list(outline.pages)
+    if cap is None or len(pages) <= cap:
+        return outline
+    for role in _CAP_DROP_ORDER:
+        while len(pages) > cap:
+            # Never the cover or the closing (first / last page).
+            idx = next(
+                (i for i in range(len(pages) - 2, 0, -1) if pages[i].role == role), None
+            )
+            if idx is None:
+                break
+            del pages[idx]
+    return outline.model_copy(update={"pages": pages})
+
+
+def _trim_structure(outline: Outline) -> Outline:
+    """Stage 1: drop structural pages the deck is too short to earn. Done
+    before the outline is shown, so what the user confirms is what renders."""
+    total = len(outline.pages)
+    kept = []
+    sections = 0
+    heroes = 0
+    hero_cap = max(1, total // 10)
+    section_cap = _SECTION_MAX if total >= 30 else 2
+    quotes = 0
+    for page in outline.pages:
+        if page.role == "big-fact":
+            # A lone number is a punctuation mark, not a page type: past one
+            # per eight pages, reviewers read them as empty slides.
+            heroes += 1
+            if heroes > hero_cap:
+                page = page.model_copy(update={"role": "metrics"})
+        if page.role == "agenda" and total < _AGENDA_MIN_PAGES:
+            continue
+        if page.role == "section":
+            sections += 1
+            if total < _SECTION_MIN_PAGES or sections > section_cap:
+                continue
+        if page.role == "quote":
+            # One opening line is a hook; a second is a structural page.
+            quotes += 1
+            if quotes > 1:
+                continue
+        kept.append(page)
+    if len(kept) < MIN_OUTLINE_PAGES or kept == list(outline.pages):
+        return outline
+    return outline.model_copy(update={"pages": kept})
+
+
+def _polish_outline(outline: Outline) -> Outline:
+    """Stage 2: image pages with nothing to show become cards (media is only
+    known once the caller attaches it, after stage 1)."""
+    if outline.media_assets or outline.image_generation_available:
+        return outline
+    if not any(page.role in _IMAGE_ROLES for page in outline.pages):
+        return outline
+    pages = [
+        page.model_copy(update={"role": "cards"}) if page.role in _IMAGE_ROLES else page
+        for page in outline.pages
+    ]
+    return outline.model_copy(update={"pages": pages})
+
+
+def _spread(items: list[int], k: int) -> list[int]:
+    """``k`` items evenly spaced through ``items`` (first and last included)."""
+    if k <= 0 or not items:
+        return []
+    if k >= len(items):
+        return list(items)
+    if k == 1:
+        return [items[len(items) // 2]]
+    return [items[round(j * (len(items) - 1) / (k - 1))] for j in range(k)]
+
+
+def _cap_takeaways(pres: Presentation) -> Presentation:
+    """Keep takeaway bands on at most ~60% of content pages, preferring the
+    pages that carry evidence (a table, a chart, numbers) over the rest."""
+    content = [
+        i for i, s in enumerate(pres.slides)
+        if s.layout not in {"title", "section", "closing", "quote", "agenda"}
+    ]
+    carrying = [i for i in content if pres.slides[i].takeaway.strip()]
+    limit = math.ceil(len(content) * _TAKEAWAY_SHARE)
+    if len(carrying) <= limit:
+        return pres
+    # Evidence pages first, and spread across the deck rather than the first
+    # N: capped by position, every takeaway landed in the opening half and the
+    # results / decision pages — where a conclusion matters most — had none.
+    evidence = [i for i in carrying if pres.slides[i].layout in _EVIDENCE_LAYOUTS]
+    others = [i for i in carrying if i not in evidence]
+    keep = set(_spread(evidence, limit))
+    keep |= set(_spread(others, limit - len(keep)))
+    slides = [
+        s if i in keep or not s.takeaway else s.model_copy(update={"takeaway": ""})
+        for i, s in enumerate(pres.slides)
+    ]
+    # Agenda pages never carry one.
+    slides = [
+        s.model_copy(update={"takeaway": ""}) if s.layout == "agenda" else s
+        for s in slides
+    ]
+    return pres.model_copy(update={"slides": slides})
+
+
+def _degrade_slide(
+    slide, theme: Theme, slide_no: int = 0, style=None
+) -> Optional[DroppedContent]:
     """Truncate an over-budget slide's bullets in place until it fits.
 
     Last resort only: the caller has already asked the model to rewrite the page
@@ -735,7 +1005,13 @@ def _degrade_slide(slide, theme: Theme, slide_no: int = 0) -> Optional[DroppedCo
     budget never raises.
     """
     removed: List[str] = []
-    while check_budget(slide, theme):
+    # Layouts whose schema demands more than one item keep that many: dropping
+    # a dashboard to one card produced a slide its own validator rejects, and
+    # the whole deck failed to generate.
+    min_keep = _MIN_BULLETS.get(slide.layout, 1)
+    warnings = check_budget(slide, theme, style)
+    while warnings:
+        before = (list(slide.bullets), warnings)
         child_idx: Optional[int] = None
         for i in range(len(slide.bullets) - 1, -1, -1):
             item = slide.bullets[i]
@@ -745,15 +1021,28 @@ def _degrade_slide(slide, theme: Theme, slide_no: int = 0) -> Optional[DroppedCo
         if child_idx is not None:
             item = slide.bullets[child_idx]
             children = list(item.children)
-            removed.append(children[-1])
-            item.children = children[:-1]
-        elif len(slide.bullets) > 1:
+            dropped = children[-1]
+            slide.bullets = [
+                *slide.bullets[:child_idx],
+                item.model_copy(update={"children": children[:-1]}),
+                *slide.bullets[child_idx + 1 :],
+            ]
+        elif len(slide.bullets) > min_keep:
             bullets = list(slide.bullets)
             last = bullets[-1]
-            removed.append(last if isinstance(last, str) else last.text)
+            dropped = last if isinstance(last, str) else last.text
             slide.bullets = bullets[:-1]
         else:
             break
+        warnings = check_budget(slide, theme, style)
+        if warnings == before[1]:
+            # Nothing moved — the overrun is somewhere bullets cannot fix (a
+            # metric label, a timeline detail): put it back rather than shed
+            # content for nothing. (A shrinking list overrun changes its
+            # message — the estimate drops — so it keeps going.)
+            slide.bullets = before[0]
+            break
+        removed.append(dropped)
     if not removed:
         return None
     removed.reverse()  # back into the order they appeared on the page
@@ -983,6 +1272,11 @@ class StructuredLLMBackend:
                 f"{prompt}\n\n"
                 f"【目標頁數】整份簡報約 {pages} 頁(含封面與結尾,可 ±1)。"
             )
+        cap = _page_cap(prompt)
+        if cap is not None:
+            base_prompt += (
+                f"\n\n【頁數上限】使用者要求最多 {cap} 頁(含封面與結尾),不得超過。"
+            )
         error_summary: Optional[str] = None
         last_exc: Optional[Exception] = None
         for attempt in range(2):
@@ -1010,9 +1304,9 @@ class StructuredLLMBackend:
                 continue
 
             try:
-                return Outline.model_validate(data).model_copy(
-                    update={"source_prompt": prompt, "language": language}
-                )
+                return _cap_pages(
+                    _trim_structure(Outline.model_validate(data)), cap
+                ).model_copy(update={"source_prompt": prompt, "language": language})
             except ValidationError as exc:
                 last_exc = exc
                 error_summary = str(exc)
@@ -1069,6 +1363,7 @@ class StructuredLLMBackend:
             if outline.design is not None
             else None
         )
+        data["style"] = outline.style
 
         try:
             pres = Presentation.model_validate(data)
@@ -1104,6 +1399,7 @@ class StructuredLLMBackend:
         The deck's output language rides along on ``outline.language`` (set by
         stage 1 / the caller), so no call site has to pass it twice.
         """
+        outline = _polish_outline(outline)
         slides_system = system_prompt_for(SLIDES_SYSTEM_PROMPT, outline.language)
         base_user = _slides_user_content(outline)
 
@@ -1127,6 +1423,7 @@ class StructuredLLMBackend:
             raise last_exc
 
         # -- Gate 2: layout budget (feed back once, then auto-degrade) ----------
+        presentation = _cap_takeaways(presentation)
         theme = resolve_design(presentation)
         overloads = _budget_overloads(presentation, theme)
         if not overloads:
@@ -1142,11 +1439,36 @@ class StructuredLLMBackend:
         if retry_pres is not None:
             # A structurally valid (hopefully lighter) deck. If the retry itself
             # failed structurally we keep the previous deck and degrade that.
-            presentation = retry_pres
+            presentation = _cap_takeaways(retry_pres)
+            # One more pass for pages still over budget: shape layouts (steps,
+            # timelines, node details) cannot be degraded by dropping bullets,
+            # so a second, narrower rewrite is the only way their text stops
+            # shipping as 「…」.
+            theme = resolve_design(presentation)
+            still = [
+                (n, m)
+                for n, m in _budget_overloads(presentation, theme)
+                if presentation.slides[n - 1].layout in _UNDEGRADABLE
+            ]
+            if still:
+                second, _exc = self._emit_slides(
+                    slides_system,
+                    base_user
+                    + "\n\n"
+                    + _budget_feedback(still, presentation.model_dump_json()),
+                    outline,
+                )
+                if second is not None and len(
+                    _budget_overloads(_cap_takeaways(second), resolve_design(second))
+                ) < len(_budget_overloads(presentation, theme)):
+                    presentation = _cap_takeaways(second)
 
         theme = resolve_design(presentation)
-        for n, _msgs in _budget_overloads(presentation, theme):
-            record = _degrade_slide(presentation.slides[n - 1], theme, slide_no=n)
+        for n, _msgs in _budget_overloads(presentation, theme, counts=False):
+            record = _degrade_slide(
+                presentation.slides[n - 1], theme, slide_no=n,
+                style=resolve_style(presentation),
+            )
             if record is not None and dropped is not None:
                 dropped.append(record)
         return presentation

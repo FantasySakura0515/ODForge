@@ -70,7 +70,7 @@ git clone https://github.com/FantasySakura0515/ODForge.git
 cd ODForge/odforge
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e .
+pip install -e ".[cjk]"   # [cjk]: word-aware CJK line breaking (optional)
 ```
 
 Pick an LLM backend:
@@ -158,10 +158,10 @@ odforge/src/odforge/
 
 ```powershell
 cd odforge
-.\.venv\Scripts\python.exe -m pytest -q --cov   # 711 passed, 87% branch
+.\.venv\Scripts\python.exe -m pytest -q --cov
 .\.venv\Scripts\ruff.exe check .          # lint
 npm.cmd --prefix web ci                    # install from the lockfile
-npm.cmd --prefix web test                  # 244 passed
+npm.cmd --prefix web test
 npm.cmd --prefix web run typecheck:tests   # typecheck INCLUDING the tests
 npm.cmd --prefix web run build             # production bundle
 ```

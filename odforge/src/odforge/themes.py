@@ -16,7 +16,7 @@ a built-in preset (:data:`THEMES`) or from a validated per-deck
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -134,6 +134,16 @@ class Style:
       編號 · ``numeral-huge`` 淺底、超大編號壓在標題後 · ``dot`` 標題上方小圓點。
     ``footer`` — master furniture: ``rule`` 頁尾線 + 眉標 + 頁碼 ·
       ``progress`` 進度條 + 頁碼 · ``number`` 只有頁碼 · ``none``。
+    ``card`` — how every visual-layout container (cards, process steps,
+      metrics, timeline events, comparison columns) is drawn: ``filled`` 圓角
+      底色卡 · ``ruled`` 無底色、頂端一條強調色線(顧問報告) · ``outlined``
+      細框線(Beamer block) · ``rule-ink`` 無底色、頂端墨色細線(Swiss) ·
+      ``plain`` 不畫容器,只靠留白分組。Without this every style drew the same
+      grey boxes, which is what made six styles read as one template.
+    ``takeaway`` — the "so what" band at the foot of a content page:
+      ``band`` 強調色實心帶 · ``bar`` 淺底 + 左側強調色條 · ``box`` 細框 +
+      強調色小標 · ``bleed`` 滿版出血強調色帶 · ``rule`` 上方短線 + 粗體大字 ·
+      ``quiet`` 置中、無裝飾。
     """
 
     id: str
@@ -145,6 +155,8 @@ class Style:
     section: str
     footer: str
     invert_closing: bool
+    card: str = "filled"
+    takeaway: str = "band"
 
 
 STYLES: dict[str, Style] = {
@@ -162,6 +174,8 @@ STYLES: dict[str, Style] = {
         section="bleed-numeral",
         footer="rule",
         invert_closing=True,
+        card="filled",
+        takeaway="band",
     ),
     "report": Style(
         id="report",
@@ -176,6 +190,8 @@ STYLES: dict[str, Style] = {
         section="numeral-left",
         footer="rule",
         invert_closing=False,
+        card="ruled",
+        takeaway="bar",
     ),
     "academic": Style(
         id="academic",
@@ -190,6 +206,8 @@ STYLES: dict[str, Style] = {
         section="centered-rules",
         footer="progress",
         invert_closing=False,
+        card="outlined",
+        takeaway="box",
     ),
     "keynote": Style(
         id="keynote",
@@ -201,6 +219,8 @@ STYLES: dict[str, Style] = {
         section="bleed-numeral",
         footer="number",
         invert_closing=True,
+        card="filled",
+        takeaway="band",
     ),
     "editorial": Style(
         id="editorial",
@@ -212,6 +232,28 @@ STYLES: dict[str, Style] = {
         section="numeral-huge",
         footer="number",
         invert_closing=False,
+        card="rule-ink",
+        takeaway="rule",
+    ),
+    # The reference deck's own composition (ODForge 決賽簡報 "PASSPORT"): white
+    # framed cards on a soft ground, a mono-tracked kicker under a short accent
+    # rule, and the page's conclusion as a dark panel down the right third —
+    # the asymmetric 2/3 + 1/3 split symmetric column layouts never produce.
+    "passport": Style(
+        id="passport",
+        label="護照",
+        blurb=(
+            "白色框線卡片、右側深色重點面板、頁首短線與字距標籤。"
+            "資訊密度最高的正式版式，適合審查、提案與成果報告。"
+        ),
+        cover="report",
+        cover_deco="rule-above",
+        title_mark="kicker-rule",
+        section="numeral-left",
+        footer="rule",
+        invert_closing=True,
+        card="framed",
+        takeaway="panel",
     ),
     "zen": Style(
         id="zen",
@@ -223,6 +265,8 @@ STYLES: dict[str, Style] = {
         section="dot",
         footer="none",
         invert_closing=False,
+        card="plain",
+        takeaway="quiet",
     ),
 }
 
@@ -311,20 +355,24 @@ LAYOUTS: dict[str, list[Frame]] = {
         Frame("subtitle", 2, 9, 24, 2, 20, center=True),
     ],
     "title-content": [
-        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("title", 1.5, 0.55, 25, 2.4, 28, bold=True),
         Frame("bullets", 1.5, 3.5, 25, 11, 18),
     ],
     "two-col": [
-        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("title", 1.5, 0.55, 25, 2.4, 28, bold=True),
         Frame("left", 1.5, 3.5, 12, 11, 16),
         Frame("right", 14.5, 3.5, 12, 11, 16),
     ],
     "section": [
         Frame("title", 2, 6.5, 24, 3, 36, bold=True, center=True),
     ],
+    # The heading is drawn when the slide names one — a number with no
+    # heading read as a stray figure, and the title field the model always
+    # filled was silently dropped.
     "big-fact": [
-        Frame("fact", 2, 5, 24, 4, 48, bold=True, center=True),
-        Frame("bullets", 2, 10, 24, 3, 16, center=True),
+        Frame("title", 1.5, 0.55, 25, 2.4, 28, bold=True),
+        Frame("fact", 2, 4.4, 24, 5.4, 48, bold=True, center=True),
+        Frame("bullets", 2, 10.4, 24, 2.8, 16, center=True),
     ],
     # -- Task 14.1 page-role layouts ----------------------------------------
     # size_pt values below are the 'standard' scale defaults; the renderer
@@ -336,69 +384,71 @@ LAYOUTS: dict[str, list[Frame]] = {
         Frame("attribution", 3, 10, 22, 1.2, 13, center=True),
     ],
     "agenda": [
-        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("title", 1.5, 0.55, 25, 2.4, 28, bold=True),
         Frame("items", 3, 3.8, 22, 10.5, 18),
     ],
+    # 11.9cm columns leave a 0.7cm gutter between the two cards (each overhangs
+    # its frame by 0.3cm); at 12.2 the cards touched and read as one box.
     "comparison": [
-        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
-        Frame("left", 1.5, 3.2, 12.2, 11.3, 18),
-        Frame("right", 14.3, 3.2, 12.2, 11.3, 18),
+        Frame("title", 1.5, 0.55, 25, 2.4, 28, bold=True),
+        Frame("left", 1.5, 3.6, 11.9, 10.9, 18),
+        Frame("right", 14.6, 3.6, 11.9, 10.9, 18),
     ],
     "chart": [
-        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("title", 1.5, 0.55, 25, 2.4, 28, bold=True),
         Frame("chart-area", 1.5, 3.5, 15.5, 11, 18),
         Frame("insights", 17.6, 3.5, 8.9, 11, 13),
     ],
     "process": [
-        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("title", 1.5, 0.55, 25, 2.4, 28, bold=True),
         Frame("process-area", 1.5, 3.5, 25, 10.5, 16),
     ],
     "timeline": [
-        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("title", 1.5, 0.55, 25, 2.4, 28, bold=True),
         Frame("timeline-area", 1.5, 3.4, 25, 10.6, 16),
     ],
     "metrics": [
-        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("title", 1.5, 0.55, 25, 2.4, 28, bold=True),
         Frame("metrics-area", 1.5, 3.5, 25, 10.5, 16),
     ],
     "cards": [
-        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("title", 1.5, 0.55, 25, 2.4, 28, bold=True),
         Frame("cards-area", 1.5, 3.5, 25, 10.5, 16),
     ],
     "diagram": [
-        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("title", 1.5, 0.55, 25, 2.4, 28, bold=True),
         Frame("diagram-area", 1.5, 3.5, 25, 10.3, 16),
     ],
     # Composite editorial page: a compact stat strip over a card grid — the
     # "consulting one-pager" pattern (headline numbers + the ideas they carry).
     # Both areas reuse the metrics/cards shape renderers unchanged.
     "dashboard": [
-        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
-        Frame("metrics-area", 1.5, 3.1, 25, 3.6, 16),
-        Frame("cards-area", 1.5, 7.1, 25, 7.0, 16),
+        Frame("title", 1.5, 0.55, 25, 2.4, 28, bold=True),
+        Frame("metrics-area", 1.5, 3.5, 25, 3.4, 16),
+        Frame("cards-area", 1.5, 7.3, 25, 6.8, 16),
     ],
     # Comparison matrix: header row + up to 8 rows, one optionally highlighted.
     "table": [
-        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("title", 1.5, 0.55, 25, 2.4, 28, bold=True),
         Frame("table-area", 1.5, 3.3, 25, 10.7, 14),
     ],
     "image-focus": [
-        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("title", 1.5, 0.55, 25, 2.4, 28, bold=True),
         Frame("image-area", 1.5, 3.25, 25, 10.45, 16),
     ],
     "image-split": [
-        Frame("title", 1.5, 0.8, 25, 2, 28, bold=True),
+        Frame("title", 1.5, 0.55, 25, 2.4, 28, bold=True),
         Frame("image-area", 1.5, 3.35, 13.4, 10.25, 16),
         Frame("bullets", 16.0, 3.55, 10.5, 9.8, 17),
     ],
     "closing": [
-        Frame("message", 2, 3.6, 24, 3, 28, bold=True, center=True),
+        Frame("message", 2, 3.0, 24, 3, 28, bold=True, center=True),
         # 5.8cm, not 4: the action cards are sized to their text, and four-across
         # cards are narrow enough that a real action wraps to three or four lines.
         # A closing page carries no footer furniture, so the room below is free —
         # the row stays centred in this area, and capping it at 4cm was what made
         # a long action clamp and print onto the inverted background.
-        Frame("closing-actions", 2, 8.2, 24, 5.8, 16),
+        Frame("closing-actions", 2, 6.9, 24, 6.2, 16),
     ],
 }
 
@@ -415,6 +465,176 @@ PLAIN_LAYOUTS: frozenset[str] = frozenset({"title", "section", "closing"})
 # Frame roles whose (left-aligned) multi-item content renders as a semantic
 # bullet list; centred frames (e.g. the big-fact caption) stay bare paragraphs.
 LIST_ROLES: frozenset[str] = frozenset({"bullets", "left", "right"})
+
+
+# ---------------------------------------------------------------------------
+# Page header + foot: the lede line and the "so what" band
+#
+# A content page used to be a title and a box of evidence — nothing said what
+# the evidence *meant*, and nothing told the reader what the page was about
+# before they parsed it. The two frames below are what every hand-designed deck
+# has and every generated one lacked: a one-line lede under the heading and a
+# conclusion band at the foot. Both are optional per slide (``Slide.subtitle`` /
+# ``Slide.takeaway``); when present, the body frames are re-flowed into the
+# space that is left, so content never collides with either.
+# ---------------------------------------------------------------------------
+
+# Below the heading mark (hairline/separator end at ≈3.18cm). The heading
+# frame is 2.4cm tall because a kicker (≈0.67cm) plus one 28pt CJK line
+# (≈1.43cm at Noto's 1.45 line box) needs 2.1cm — at 2.0 the budget gate
+# flagged every single content page, and an agent told "shorten flagged
+# pages" could never finish.
+LEDE_Y: float = 3.3
+LEDE_H: float = 1.05
+LEDE_PT: int = 16
+# The body starts here when a lede is present.
+CONTENT_TOP_WITH_LEDE: float = 4.85
+# The band sits above the sources line (14.08cm) and the footer rule (14.9cm).
+TAKEAWAY_Y: float = 12.5
+TAKEAWAY_H: float = 1.35
+TAKEAWAY_PT: int = 17
+# The body ends here when a takeaway is present.
+CONTENT_BOTTOM_WITH_TAKEAWAY: float = 11.8
+
+# Layouts that carry a content heading — and therefore a lede/takeaway. The
+# cover, divider and closing pages are compositions of their own; a quote page
+# is the quote.
+HEADED_LAYOUTS: frozenset[str] = frozenset(LAYOUTS) - PLAIN_LAYOUTS - {"quote"}
+
+
+# Layouts whose body can give up its right third to a takeaway panel. Wide
+# compositions (timelines, 5-step processes, tables, dashboards) keep the
+# bottom band instead — squeezing them into 17cm costs more than it adds.
+PANEL_LAYOUTS: frozenset[str] = frozenset(
+    {"cards", "title-content", "two-col", "comparison", "metrics", "big-fact", "diagram"}
+)
+PANEL_X: float = 19.2
+PANEL_W: float = 7.3
+PANEL_BODY_RIGHT: float = 18.6
+
+
+def page_frames(
+    layout: str,
+    *,
+    lede: bool = False,
+    takeaway: bool = False,
+    panel: bool = False,
+) -> list[Frame]:
+    """The frames a content page is drawn into, given its optional lede/band.
+
+    Shared by the renderer and the layout-budget gate (the same reason
+    :data:`LAYOUTS` lives here): both must reason about one geometry. Without a
+    lede or takeaway this is exactly ``LAYOUTS[layout]``. With them, the body
+    frames (everything but the title) are mapped linearly from their original
+    vertical span into the space between the lede and the band — one rule that
+    keeps multi-area layouts (dashboard, chart, image-split) proportioned
+    instead of a per-layout table that would drift.
+    """
+    frames = list(LAYOUTS[layout])
+    if layout not in HEADED_LAYOUTS or not (lede or takeaway):
+        return frames
+    if takeaway and panel and layout in PANEL_LAYOUTS:
+        return _panel_frames(frames, lede)
+    heads = [f for f in frames if f.role == "title"]
+    body = [f for f in frames if f.role != "title"]
+    old_top = min(f.y for f in body)
+    old_bottom = max(f.y + f.h for f in body)
+    new_top = max(old_top, CONTENT_TOP_WITH_LEDE) if lede else old_top
+    new_bottom = (
+        min(old_bottom, CONTENT_BOTTOM_WITH_TAKEAWAY) if takeaway else old_bottom
+    )
+    if layout == "dashboard":
+        # The stat strip has a floor (value + label need ≈3.3cm); scaling it
+        # with the card grid squeezed it to 2.5cm and printed labels over the
+        # cards. The strip keeps its height, the grid takes what is left.
+        strip, grid = body
+        strip = replace(strip, y=new_top, h=min(strip.h, 3.4))
+        grid_top = strip.y + strip.h + 0.4
+        body = [strip, replace(grid, y=grid_top, h=new_bottom - grid_top)]
+    else:
+        scale = (new_bottom - new_top) / (old_bottom - old_top)
+        body = [
+            replace(f, y=new_top + (f.y - old_top) * scale, h=f.h * scale)
+            for f in body
+        ]
+    out = heads
+    if lede:
+        out.append(Frame("lede", 1.5, LEDE_Y, 25, LEDE_H, LEDE_PT))
+    out.extend(body)
+    if takeaway:
+        out.append(
+            Frame("takeaway", 1.5, TAKEAWAY_Y, 25, TAKEAWAY_H, TAKEAWAY_PT, bold=True)
+        )
+    return out
+
+
+def _panel_frames(frames: list[Frame], lede: bool) -> list[Frame]:
+    """Body into the left two-thirds, the takeaway as a full-height panel on
+    the right. Body frames are mapped linearly on both axes, like the band
+    reflow, so multi-area layouts keep their proportions."""
+    heads = [f for f in frames if f.role == "title"]
+    body = [f for f in frames if f.role != "title"]
+    old_top = min(f.y for f in body)
+    old_bottom = max(f.y + f.h for f in body)
+    old_left = min(f.x for f in body)
+    old_right = max(f.x + f.w for f in body)
+    top = max(old_top, CONTENT_TOP_WITH_LEDE) if lede else max(old_top, 3.5)
+    bottom = min(old_bottom, 14.0)
+    sy = (bottom - top) / (old_bottom - old_top)
+    sx = (PANEL_BODY_RIGHT - old_left) / (old_right - old_left)
+    body = [
+        replace(
+            f,
+            x=old_left + (f.x - old_left) * sx,
+            w=f.w * sx,
+            y=top + (f.y - old_top) * sy,
+            h=f.h * sy,
+        )
+        for f in body
+    ]
+    out = heads
+    if lede:
+        out.append(Frame("lede", 1.5, LEDE_Y, 25, LEDE_H, LEDE_PT))
+    out.extend(body)
+    out.append(
+        Frame("takeaway", PANEL_X, top, PANEL_W, bottom - top, 20, bold=True)
+    )
+    return out
+
+
+def _panel_fits(slide) -> bool:
+    """A side panel takes a third of the width. Three cards or four metrics
+    in the other two-thirds set text 2–6 characters wide (「163 / .6 萬元」,
+    「SOP- / ER-017」), so those pages keep the bottom band instead."""
+    if slide.layout == "cards":
+        return len(slide.bullets) in (2, 4)
+    if slide.layout == "metrics":
+        return len(slide.metrics) <= 3
+    return True
+
+
+def slide_frames(slide, style: Style | None = None) -> list[Frame]:
+    """:func:`page_frames` for a slide, reading its lede/takeaway fields; the
+    deck's ``style`` decides whether a takeaway is a band or a side panel."""
+    frames = page_frames(
+        slide.layout,
+        lede=bool(slide.subtitle.strip()),
+        takeaway=bool(slide.takeaway.strip()),
+        panel=style is not None and style.takeaway == "panel" and _panel_fits(slide),
+    )
+    if slide.layout == "chart" and not slide.bullets:
+        # No insights to show: the bars take the whole measure instead of
+        # stopping at 55% beside an empty column.
+        insights = next((f for f in frames if f.role == "insights"), None)
+        if insights is not None:
+            frames = [
+                replace(f, w=insights.x + insights.w - f.x)
+                if f.role == "chart-area"
+                else f
+                for f in frames
+                if f.role != "insights"
+            ]
+    return frames
 
 
 _STANDARD = SCALES["standard"]
@@ -478,7 +698,7 @@ THEMES: dict[str, Theme] = {
         bg="#171826",
         surface="#252842",
         text="#E8EAF2",
-        muted="#9BA0C4",
+        muted="#B4B9D8",  # small detail text on the navy surface needs ~7:1
         accent="#3DD6E6",
         font_display="Noto Sans TC",
         font_body="Noto Sans TC",

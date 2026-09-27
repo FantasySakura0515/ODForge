@@ -66,7 +66,7 @@ git clone https://github.com/FantasySakura0515/ODForge.git
 cd ODForge/odforge
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e .
+pip install -e ".[cjk]"   # [cjk]:中文按詞斷行(選用)
 ```
 
 設定 LLM 後端(擇一):
@@ -82,8 +82,8 @@ $env:DEEPSEEK_API_KEY = "你的金鑰"
 生成文件:
 
 ```powershell
-# 簡報(三種主題:academic / minimal / dark)
-odforge new "介紹光合作用的教學簡報,12張" -o photo.odp --theme academic
+# 簡報(--theme 配色、--style 版式,省略時依場合自動挑選)
+odforge new "介紹光合作用的教學簡報,12張" -o photo.odp --theme academic --style passport
 
 # 文書(含目錄、標題階層、表格)
 odforge new "一份實驗報告模板:目的、方法、結果、討論" -o report.odt
@@ -154,12 +154,12 @@ odforge/src/odforge/
 cd odforge
 
 # Python
-.\.venv\Scripts\python.exe -m pytest -q --cov --cov-report=term   # 711 passed, 87% branch
-.\.venv\Scripts\ruff.exe check .                                  # All checks passed
+.\.venv\Scripts\python.exe -m pytest -q --cov --cov-report=term
+.\.venv\Scripts\ruff.exe check .
 
 # 前端
 npm.cmd --prefix web ci                    # 依 lockfile 安裝
-npm.cmd --prefix web test                  # 244 passed
+npm.cmd --prefix web test
 npm.cmd --prefix web run typecheck         # src
 npm.cmd --prefix web run typecheck:tests   # 含測試
 npm.cmd --prefix web run build

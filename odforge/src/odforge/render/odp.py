@@ -13,13 +13,18 @@ skipped; speaker notes are emitted only when non-empty.
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import itertools
 import math
+import os
+import re
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape as _xml_escape
 
+from odforge.fontembed import embed_fonts, font_face_decls
 from odforge.ir import (
     Branding,
     BulletItem,
@@ -46,23 +51,27 @@ from odforge.textmetrics import (
     PT_TO_CM,
     estimate_height_cm,
     fact_font_size_pt,
+    frame_content_height,
+    heading_pt,
     text_width_cm,
 )
 from odforge.themes import (
     COVER_FRAMES,
     LAYOUTS,
+    LEDE_PT,
     LIST_ROLES,
     PAGE_H,
     PAGE_W,
+    PANEL_X,
     PLAIN_LAYOUTS,
     SECTION_FRAMES,
-    THEMES,
     Frame,
     Style,
     Theme,
     get_style,
     resolve_design,
     resolve_style,
+    slide_frames,
 )
 
 # ---------------------------------------------------------------------------
@@ -80,6 +89,8 @@ _CONTENT_NS = {
     # Linked images (Task 13.4 title-page SVG) reference their package part via
     # xlink:href, so the prefix must be declared on office:document-content.
     "xlink": "http://www.w3.org/1999/xlink",
+    # Embedded-font weight/style attributes on svg:font-face-uri (fontembed).
+    "loext": "urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0",
 }
 
 _STYLES_NS = dict(_CONTENT_NS)
@@ -127,14 +138,14 @@ _SECTION_NUMBER_BOX = (18.5, 1.0, 8.0, 4.5)
 _QUOTE_MARK_GLYPH = "“"  # left double quotation mark
 _QUOTE_MARK_PT = 120
 _QUOTE_MARK_BLEND = 0.75  # _blend(accent, bg, this) → faint accent tint
-_QUOTE_MARK_BOX = (2.2, 2.8, 6.0, 6.0)  # (x, y, w, h) cm — behind the quote text
+_QUOTE_MARK_BOX = (1.8, 1.2, 6.0, 6.0)  # (x, y, w, h) cm — ends above the quote text
 
 # Master-page furniture geometry + style names.
-_FOOTER_LINE_Y = 14.9
+_FOOTER_LINE_Y = 14.72
 _FOOTER_LINE_X1 = 1.5
 _FOOTER_LINE_X2 = 26.5
 _FOOTER_LINE_WIDTH_PT = 0.75
-_FURNITURE_Y = 14.95
+_FURNITURE_Y = 14.76
 _FURNITURE_H = 0.7
 _PAGENUM_X = 24.0
 _PAGENUM_W = 2.5
@@ -163,7 +174,8 @@ _LAYER_SET_XML = (
 _LIST_STYLE_NAME = "L1"
 _BULLET_LINE_HEIGHT = "145%"
 _BULLET_MARGIN_BOTTOM = "0.35cm"
-_KICKER_LETTER_SPACING = "0.15cm"
+_KICKER_LETTER_SPACING = "0.08cm"
+_FOOTER_LETTER_SPACING = "0.03cm"
 # LIST_ROLES (frame roles whose left-aligned multi-item content renders as a
 # semantic bullet list) is imported from odforge.themes — the single source
 # shared with textmetrics. Centred frames stay bare centred paragraphs.
@@ -197,6 +209,10 @@ _DECO_OPACITY_SPAN = 0.30
 # from the text frame so the card reads as a container; emitted before the text
 # frame so document order puts the text on top (ODF z-order == document order).
 _CARD_ROLES = frozenset({"left", "right"})
+_COLUMN_MIN_H = 2.6
+# Text sits this far inside a visible column box — headings flush to the
+# frame's edge were the "unfinished" tell on comparison pages.
+_COLUMN_TEXT_INSET = 0.2
 _CARD_PAD = 0.3  # cm the card overhangs its text frame on every side
 
 # Interior metrics for the idea-card grid (cm). Kept as named constants because
@@ -204,14 +220,42 @@ _CARD_PAD = 0.3  # cm the card overhangs its text frame on every side
 # a literal in one place and not the other is how the box and its contents
 # drifted apart in the first place.
 _CARD_PAD_X = 0.45
-_CARD_PAD_TOP = 0.45
-_CARD_PAD_BOTTOM = 0.5
-_CARD_BADGE_H = 0.55
-_CARD_BADGE_GAP = 0.35  # badge baseline → title top
-_CARD_TITLE_GAP = 0.4  # title → children
+_CARD_PAD_TOP = 0.32
+_CARD_PAD_BOTTOM = 0.38
+_CARD_BADGE_H = 0.5
+_CARD_BADGE_GAP = 0.15  # badge baseline → title top
+_CARD_TITLE_GAP = 0.2  # title → children
 _CARD_TITLE_LINE_HEIGHT = 1.2  # matches the title's line-height="120%"
 _CARD_CHILD_LINE_HEIGHT = 1.35  # matches the children's line-height="135%"
 _CARD_MIN_H = 3.2  # below this a card stops reading as a container
+# Visual bodies start just under the heading/lede: the reference decks hang
+# their panels from the header rather than floating a short strip mid-page.
+# Cards stay sized to their content — an inflated box around one line reads
+# as empty, which is the other half of "sparse".
+_BODY_TOP_GAP = 0.25
+# Share of the leftover height that goes *above* a short body. Dead centre
+# floated the block between two bands; flush top left the lower half empty.
+# A third above / two thirds below is the optical centre print uses.
+_BODY_OPTICAL = 0.45
+
+
+_PANEL_CARDS = frozenset({"filled", "outlined", "framed"})
+_PANEL_FILL = 0.5  # share of the body height a row of visible panels spans
+# Two-column text boxes hold running bullets, not a badge/title/detail stack:
+# stretched as far, their lower half reads as unfinished.
+_COLUMN_FILL = 0.45
+
+
+# Set per page by _page_xml: when a takeaway band follows the body, the body
+# sits at the top of its area and the band closes up under it; centring it
+# too left a gap above the cards as well as the one the band just closed.
+_BODY_ANCHOR_TOP = False
+
+
+def _body_y(area: Frame, block_h: float) -> float:
+    if _BODY_ANCHOR_TOP:
+        return area.y + _BODY_TOP_GAP
+    return area.y + max(_BODY_TOP_GAP, (area.h - block_h) * _BODY_OPTICAL)
 _CARD_MAX_H = 6.8
 
 # Timeline event cards. The stem is the fixed distance from the axis to a card,
@@ -223,6 +267,7 @@ _TIMELINE_DETAIL_LINE_HEIGHT = 1.3  # matches the detail's line-height="130%"
 _TIMELINE_PAD_BOTTOM = 0.4
 _TIMELINE_MIN_H = 3.0
 _TIMELINE_MAX_H = 5.2
+_TIMELINE_SINGLE_ROW_BELOW = 11.0  # cm of area height (alternating rows starved details)
 
 # Process step cards, same badge → title → detail stack.
 _PROCESS_TITLE_TOP = 1.65
@@ -259,6 +304,9 @@ _CLOSING_MAX_ACTIONS = 5
 # small on purpose because _measured_text_h already carries the box's own
 # 0.15cm vertical inset (0.1 + 0.15 ≈ the 0.25cm the constants implied).
 _METRIC_VALUE_TOP = 0.75
+# The dashboard strip is 3.4cm: at 0.75 the label printed on its bottom edge.
+_METRIC_COMPACT_VALUE_TOP = 0.4
+_METRIC_VALUE_MIN_PT = 18
 _METRIC_VALUE_LINE_HEIGHT = 1.0  # pinned on the value style so measure == draw
 _METRIC_VALUE_GAP = 0.1
 _METRIC_LABEL_LINE_HEIGHT = 1.2  # matches the label's line-height="120%"
@@ -269,14 +317,20 @@ _METRIC_PAD_BOTTOM = 0.45
 # Font floors shared by every stacked-card layout (_fit_stacked_texts): below
 # 12pt a card title stops reading as a title, below 10pt a caption is squint
 # territory. Reaching both floors hands over to truncation.
-_TITLE_MIN_PT = 12
-_DETAIL_MIN_PT = 10
+_TITLE_MIN_PT = 14
+_DETAIL_MIN_PT = 12
 
 # Diagram edge labels. The chip is sized to its text; the clearance is the
 # run of connector that must stay visible either side of it, and decides
 # whether the chip can sit on the line at all.
 _EDGE_LABEL_PAD = 0.22
 _EDGE_LABEL_CLEARANCE = 0.35
+_EDGE_LABEL_SIDE_GAP = 0.12
+# A label buried under a node (「識蒸」 between two boxes) or across a line is
+# worse than none: past this much overlap it is left out and reported.
+_LABEL_MAX_OVERLAP = 0.05  # cm²
+_LABEL_DROP_MARK = "<!--odforge:label-dropped:{}-->"
+_HUB_MIN_EDGE = 0.9  # cm of connector between hub rows
 
 # LibreOffice insets a draw text-box by this much on each side unless the
 # graphic style says otherwise, and `gr1` does not. Measuring a wrap against
@@ -306,14 +360,312 @@ _TEXT_BOX_INSET_Y = 0.15
 _LINE_HEIGHT_DEFAULT = 1.45
 
 
+# ---------------------------------------------------------------------------
+# Line layout for shape-drawn text
+#
+# Card, step, metric, timeline and panel text used to be handed to LibreOffice
+# to wrap wherever a glyph ran out of room: "Top-1 ≥ | 90%", "1,200 / 元", a
+# lone 「站」 on the last line, and a height the renderer could only guess at.
+# The engine now decides the lines itself and writes explicit line breaks, so
+# the drawn lines are the measured lines. Each line is laid to a capacity a
+# little under the frame's measure, so LibreOffice never wraps one again.
+# ---------------------------------------------------------------------------
+
+_LINE_FILL = 0.94  # share of the measure a laid-out line may use
+_PARA_GAP = "0.12cm"
+_PARA_GAP_CM = 0.12
+_NO_LINE_START = set("，。、；：！？）」』】》〉,.;:!?)%％…·→⇒")
+_NO_LINE_END = set("（「『【《〈(｜・")
+_GLUE_NEXT = set("≥≤<>±~≈＋+−-$＄→⇒×÷–～")
+
+
+@functools.lru_cache(maxsize=1)
+def _segmenter():
+    """jieba's word segmenter when installed (``odforge[cjk]``), else None.
+
+    Without words, a CJK line can only break between any two characters —
+    「分/鐘」「知/道」 were the most common thing reviewers circled. With it,
+    breaks fall between words and a word only splits when it alone is wider
+    than the line."""
+    try:
+        import logging
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            import jieba
+        jieba.setLogLevel(logging.WARNING)
+        jieba.initialize()
+        return jieba
+    except Exception:  # optional dependency: fall back to per-character breaks
+        return None
+
+
+@functools.lru_cache(maxsize=1)
+def _to_simplified():
+    """zhconv's converter, when installed (``odforge[cjk]``)."""
+    try:
+        import zhconv
+
+        return functools.partial(zhconv.convert, locale="zh-cn")
+    except Exception:  # optional dependency
+        return None
+
+
+def _cjk_words(run: str) -> list[str]:
+    seg = _segmenter()
+    if seg is None:
+        return list(run)
+    # jieba's dictionary is simplified: 臺灣 came out as 「臺」「灣物種」 and
+    # 資料集全數 as 「集全」「數公開」 — the mid-word breaks reviewers circled.
+    # Segment a simplified copy and cut the original at the same offsets
+    # (only when the conversion is length-preserving, which it is for text).
+    convert = _to_simplified()
+    probe = convert(run) if convert is not None else run
+    if len(probe) != len(run):
+        probe = run
+    words, i = [], 0
+    # HMM on: it is what recognises words the dictionary lacks.
+    for word in seg.cut(probe, HMM=True):
+        words.append(run[i : i + len(word)])
+        i += len(word)
+    return _merge_singles(words)
+
+
+def _merge_singles(words: list[str]) -> list[str]:
+    """Join runs of one-character words into chunks of two or three.
+
+    Where the dictionary gives up it emits single characters (「送」「出」,
+    「派」「不」「上」), and a break between two of them is almost always
+    inside a word — 「同步送 / 出」. A lone single stays alone."""
+    out: list[str] = []
+    run: list[str] = []
+
+    def flush() -> None:
+        while len(run) > 3:
+            take = 2 if len(run) == 4 else 3
+            out.append("".join(run[:take]))
+            del run[:take]
+        if run:
+            out.append("".join(run))
+        run.clear()
+
+    for word in words:
+        if len(word) == 1:
+            run.append(word)
+        else:
+            flush()
+            out.append(word)
+    flush()
+    return out
+
+
+def _is_cjk_char(ch: str) -> bool:
+    # ○/〇 stand in for a name's hidden characters (「劉○○」); counted outside
+    # the run, a line could break between the two circles.
+    return "\u3400" <= ch <= "\u9fff" or "\uf900" <= ch <= "\ufaff" or ch in "○〇"
+
+
+_DATE_PART = re.compile(r"\d\s?[年月]\s?$")
+
+
+def _tokens(text: str) -> list[str]:
+    """Break opportunities: CJK words (see :func:`_segmenter`), each
+    Latin/number run (kept whole), spaces; closing punctuation rides on the
+    token before it, opening punctuation and operators on the token after."""
+    raw: list[str] = []
+    buf = ""
+    cjk = ""
+    for ch in text:
+        if _is_cjk_char(ch) and ch not in _NO_LINE_START and ch not in _NO_LINE_END:
+            if buf:
+                raw.append(buf)
+                buf = ""
+            cjk += ch
+            continue
+        if cjk:
+            raw.extend(_cjk_words(cjk))
+            cjk = ""
+        if ch.isascii() and not ch.isspace() and ch not in "()":
+            buf += ch
+            continue
+        if buf:
+            raw.append(buf)
+            buf = ""
+        raw.append(ch)
+    if cjk:
+        raw.extend(_cjk_words(cjk))
+    if buf:
+        raw.append(buf)
+    out: list[str] = []
+    for tok in raw:
+        if out and (tok in _NO_LINE_START or tok in ("\u00a0",)):
+            out[-1] += tok
+        elif out and tok.isspace() and out[-1][-1:].isdigit():
+            out[-1] += tok  # "1,200 元": a number keeps its unit
+        elif out and len(tok) == 1 and not tok.isascii() and out[-1][-1:].isdigit():
+            out[-1] += tok  # "41.8分": and so does an unspaced one
+        elif out and out[-1].rstrip().endswith("第") and (tok.isspace() or tok[:1].isdigit()):
+            out[-1] += tok  # 「第 2 名」: an ordinal keeps its number
+        elif out and _DATE_PART.search(out[-1]) and (tok.isspace() or tok[:1].isdigit()):
+            out[-1] += tok  # "115 年 3 月 18 日" reads as one date
+        elif out and (
+            out[-1][-1] in _NO_LINE_END
+            or out[-1].rstrip()[-1:] in _GLUE_NEXT
+            or out[-1].endswith("\u00a0")
+            or (out[-1][-1:].isspace() and out[-1].rstrip()[-1:].isdigit())
+        ):
+            out[-1] += tok
+        else:
+            out.append(tok)
+    return out
+
+
+_SOFT_BREAK_AFTER = set("，、；：。！？,;:")
+_SOFT_BREAK_LOOKBACK = 4  # tokens
+
+
+def _split_long_run(tok: str) -> list[str]:
+    """A Latin run wider than a line breaks at its hyphens / slashes first."""
+    parts, buf = [], ""
+    for ch in tok:
+        buf += ch
+        if ch in "-/_":
+            parts.append(buf)
+            buf = ""
+    if buf:
+        parts.append(buf)
+    return parts
+
+
+_PRETTY_LAST_LINE = 0.4  # a last line this full is left alone
+
+
+def _layout_lines(text: str, size_pt: int, wrap_w: float) -> list[str]:
+    """Lay ``text`` out in lines (see :func:`_greedy_lines`), CSS
+    ``text-wrap: pretty`` style.
+
+    Greedy fill uses the full measure but can leave a stub last line
+    (「用。」「與行動。」). Only then are the last two lines evened out;
+    balancing the whole paragraph instead halved every two-line text into a
+    six-character column and pulled a first line back to 「通用 App」."""
+    lines = _greedy_lines(text, size_pt, wrap_w)
+    if len(lines) < 2:
+        return lines
+    if text_width_cm(lines[-1], size_pt) >= _PRETTY_LAST_LINE * wrap_w * _LINE_FILL:
+        return lines
+    # Where the last two lines start in the original text (greedy drops the
+    # spaces it breaks at, so the lines cannot simply be re-joined).
+    pos = 0
+    for line in lines[:-2]:
+        pos = text.index(line, pos) + len(line)
+    tail = text[pos:].strip()
+    # Never narrower than the widest unbreakable run: below it greedy has to
+    # split the run, and the same line count then passed as "balanced" —
+    # 「核定 73, / 000 元」.
+    widest = max(
+        (text_width_cm(t, size_pt) for t in _tokens(tail) if not t.isspace()),
+        default=0.0,
+    )
+    lo, hi = max(wrap_w * 0.5, min(wrap_w, widest / _LINE_FILL)), wrap_w
+    best = lines[-2:]
+    for _ in range(8):
+        mid = (lo + hi) / 2
+        trial = _greedy_lines(tail, size_pt, mid)
+        if len(trial) <= 2:
+            best, hi = trial, mid
+        else:
+            lo = mid
+    return lines[:-2] + best
+
+
+def _greedy_lines(text: str, size_pt: int, wrap_w: float) -> list[str]:
+    """Greedy line fill over :func:`_tokens`, preferring to break just after
+    nearby punctuation rather than inside a word, then an orphan fix: a last
+    line of one or two characters pulls tokens down from the line above."""
+    if not text:
+        return [""]
+    cap = max(wrap_w * _LINE_FILL, size_pt * PT_TO_CM * 2)
+    lines: list[list[str]] = [[]]
+
+    def width(line: list[str]) -> float:
+        return text_width_cm("".join(line), size_pt)
+
+    def new_line() -> None:
+        cur = lines[-1]
+        # Back up to a soft break (after 「，」 or a space) a few tokens back,
+        # so the line ends on punctuation instead of mid-word.
+        for k in range(len(cur) - 1, max(0, len(cur) - 1 - _SOFT_BREAK_LOOKBACK), -1):
+            # A space is a soft break only between two Latin words: in CJK
+            # text the spaces are the auto-inserted ones around 「163.6 萬元」
+            # and 「App」, and backing up to them broke 「總成本為 / 163.6…」.
+            soft = cur[k - 1][-1] in _SOFT_BREAK_AFTER or (
+                cur[k - 1].isspace()
+                and k >= 2
+                and cur[k - 2][-1:].isascii()
+                and cur[k][:1].isascii()
+            )
+            # Only worth it if the line keeps most of its measure; backing up
+            # to the space after "Top-1" left a one-word line.
+            if soft and width(cur[:k]) >= 0.6 * cap:
+                carry = cur[k:]
+                del cur[k:]
+                break
+        else:
+            carry = []
+        while cur and cur[-1].isspace():
+            cur.pop()
+        lines.append([t for t in carry if not (t.isspace() and not lines[-1])])
+
+    queue = _tokens(text)
+    while queue:
+        tok = queue.pop(0)
+        if tok.isspace():
+            if lines[-1]:
+                lines[-1].append(tok)
+            continue
+        tw = text_width_cm(tok, size_pt)
+        if tw > cap:
+            parts = _split_long_run(tok) if tok.isascii() else [tok]
+            if len(parts) == 1:
+                parts = list(tok)  # last resort: by character
+            queue[:0] = parts
+            continue
+        if lines[-1] and width(lines[-1]) + tw > cap:
+            new_line()
+            if width(lines[-1]) + tw > cap:
+                lines.append([])
+        lines[-1].append(tok)
+    if len(lines) >= 2:
+        last, prev = lines[-1], lines[-2]
+        while (
+            len("".join(last).strip()) <= 2
+            and len(prev) > 2
+            and width([prev[-1], *last]) <= cap
+        ):
+            last.insert(0, prev.pop())
+            while prev and prev[-1].isspace():
+                prev.pop()
+    return ["".join(line).strip() for line in lines if "".join(line).strip()] or [""]
+
+
+def _line_count(text: str, size_pt: int, wrap_w: float) -> int:
+    return sum(len(_layout_lines(p, size_pt, wrap_w)) for p in text.split("\n"))
+
+
 def _measured_text_h(
     text: str, size_pt: int, wrap_w: float, line_height: float
 ) -> float:
-    """Height (cm) a box must have to actually contain ``text`` in LibreOffice."""
+    """Height (cm) a box must have to actually contain ``text`` in LibreOffice.
+
+    A line is never shorter than the font's own box (see :func:`_lo_line_height`,
+    which floors written spacing at 100%)."""
+    lines = _line_count(text, size_pt, wrap_w)
     return (
-        estimate_height_cm(text, size_pt, wrap_w, line_height)
+        lines * size_pt * PT_TO_CM * max(line_height, _CJK_LINE_BOX)
         * _LO_LINE_SPACING_SLACK
         + _TEXT_BOX_INSET_Y
+        + text.count("\n") * _PARA_GAP_CM
     )
 _CARD_CORNER = 0.3  # cm corner radius
 
@@ -346,13 +698,31 @@ _TIMELINE_NODE_SIZE = 0.58
 _METRIC_ACCENT_H = 0.14
 _DIAGRAM_NODE_H = 2.45
 _DIAGRAM_NODE_W = 5.2
+_DIAGRAM_MIN_NODE_H = 1.8
 _DIAGRAM_LINE_BLEND = 0.62
-_SOURCE_FRAME = Frame("sources", 1.5, 14.08, 21.8, 0.75, 9)
+_SOURCE_FRAME = Frame("sources", 1.5, 14.0, 21.8, 0.7, 9)
+
+
+_OPERATOR_SPACE = re.compile(r"([≥≤<>±~≈])[ ]")
+
+
+_FULLWIDTH_SPACE = re.compile(
+    r"\s+(?=[，。、；：！？）」』】])|(?<=[，。、；：！？（「『【）」』】])\s+"
+)
+
+
+def escape(text: str) -> str:
+    """XML-escape text content. The space after a comparison operator is made
+    non-breaking (「≥ | 90%」 split across lines reads as two statements), and
+    spaces around full-width punctuation are dropped — the glyph carries its
+    own spacing, so 「（p75） ，」 set a visible double gap."""
+    text = _FULLWIDTH_SPACE.sub("", text)
+    return _xml_escape(_OPERATOR_SPACE.sub("\\1\u00a0", text))
 
 
 def _attr(value: str) -> str:
     """Escape a string for safe use inside a double-quoted XML attribute."""
-    return escape(value, {'"': "&quot;"})
+    return _xml_escape(value, {'"': "&quot;"})
 
 
 def _cm(value: float) -> str:
@@ -427,10 +797,12 @@ def _section_fill(theme: Theme) -> str:
 def _uses_gradient_bg(theme: Theme) -> bool:
     """True when this theme paints pages with the background gradient.
 
-    Only the built-in dark preset qualifies; light presets and per-deck
-    ``DesignSpec`` themes keep a flat solid fill.
+    None does any more. The dark preset's ramp spanned ~20 levels of 8-bit
+    colour across the page, and every export drew it as visible vertical
+    stripes — reviewers called it the plainest sign of an unfinished deck.
+    The machinery stays for a future theme with a ramp wide enough to dither.
     """
-    return theme is THEMES["dark"]
+    return False
 
 
 def _page_fill_attrs(theme: Theme) -> str:
@@ -536,6 +908,23 @@ def _font_weight_attrs(bold: bool) -> str:
     )
 
 
+# Noto CJK's own line box (ascent + descent) is 1.448em, and LibreOffice's
+# proportional spacing multiplies *that*: "135%" set lines 1.96em apart, not
+# the 1.35em the value was chosen for. Invisible while the fonts were missing
+# (the fallback face had a ~1.2em box); once the deck carried Noto itself,
+# card text ran a line past its card and bullet lists spread out. Values are
+# written as intended-em ÷ box, never below 100% (below it LibreOffice clips
+# ascenders).
+_CJK_LINE_BOX = 1.448
+
+
+def _lo_line_height(value: str) -> str:
+    if not value.endswith("%"):
+        return value
+    pct = float(value[:-1])
+    return f"{max(100, round(pct / _CJK_LINE_BOX))}%"
+
+
 def _paragraph_style_xml(
     name: str,
     font: str,
@@ -559,7 +948,7 @@ def _paragraph_style_xml(
     )
     para_extra = ""
     if line_height is not None:
-        para_extra += f' fo:line-height="{_attr(line_height)}"'
+        para_extra += f' fo:line-height="{_attr(_lo_line_height(line_height))}"'
     if margin_bottom is not None:
         para_extra += f' fo:margin-bottom="{_attr(margin_bottom)}"'
     spacing = (
@@ -569,7 +958,11 @@ def _paragraph_style_xml(
     )
     return (
         f'<style:style style:name="{_attr(name)}" style:family="paragraph">'
-        f'<style:paragraph-properties fo:text-align="{align}"{para_extra}/>'
+        f'<style:paragraph-properties fo:text-align="{align}"{para_extra}'
+        # No automatic CJK/Latin gap: it put half-width spaces inside
+        # full-width brackets 「（ 1NF 至 3NF ）」 and before 「：」. Authors
+        # (and the model) already space mixed runs the Taiwanese way.
+        f' style:text-autospace="none"/>'
         f"<style:text-properties{size}{weight}"
         f' fo:color="{_attr(color)}"{spacing} style:font-name="{_attr(font)}"'
         f' style:font-name-asian="{_attr(font)}"/>'
@@ -605,6 +998,9 @@ class _GraphicStyles:
     def name_for_stroke(self, color: str, width_pt: float) -> str:
         return self._name(("stroke", color, width_pt))
 
+    def name_for_fill_stroke(self, fill: str, stroke: str, width_pt: float) -> str:
+        return self._name(("fillstroke", fill, stroke, width_pt))
+
     def _name(self, key: tuple) -> str:
         name = self._names.get(key)
         if name is None:
@@ -626,6 +1022,14 @@ def _graphic_style_xml(name: str, key: tuple) -> str:
         props = (
             f'draw:fill="solid" draw:fill-color="{_attr(fill)}"'
             f'{opacity_attr} draw:stroke="none"'
+        )
+    elif key[0] == "fillstroke":
+        _, fill, color, width_pt = key
+        props = (
+            f'draw:fill="solid" draw:fill-color="{_attr(fill)}"'
+            ' draw:stroke="solid"'
+            f' svg:stroke-color="{_attr(color)}"'
+            f' svg:stroke-width="{_pt(width_pt)}"'
         )
     else:  # "stroke"
         _, color, width_pt = key
@@ -847,6 +1251,73 @@ def cover_frames(style: Style) -> list[Frame]:
     return COVER_FRAMES.get(style.cover, COVER_FRAMES["centered"])
 
 
+# Where each cover composition pins its text block. "top" keeps the style's
+# title y; "centre" centres the measured block on the optical centre (the
+# report cover anchored its title at 8.6cm and left the top half empty);
+# "bottom" keeps the block's foot where the style put it (keynote's lower third).
+_COVER_ANCHOR = {"report": "centre", "academic": "centre", "keynote": "bottom"}
+_COVER_OPTICAL_Y = 7.1
+_COVER_TOP_MIN = 3.6
+_COVER_SUB_GAP = 0.45
+
+
+def _heading_h(text: str, size_pt: int, frame_w: float) -> float:
+    """Height of a natively wrapped heading. Headings are not engine-laid-out;
+    LibreOffice fills the full measure, which is what :func:`heading_pt` sizes
+    against — the card model's line fill would count a one-line title as two."""
+    if text_width_cm(text, size_pt) <= frame_w - 0.5:
+        lines = 1
+    else:
+        lines = _line_count(text, size_pt, _wrap_width(frame_w))
+    return (
+        lines * size_pt * PT_TO_CM * _CJK_LINE_BOX * _LO_LINE_SPACING_SLACK
+        + _TEXT_BOX_INSET_Y
+    )
+
+
+def _cover_layout(
+    slide: Slide, style: Style, theme: Theme, meta: bool
+) -> list[Frame]:
+    """The cover's frames sized to what they hold.
+
+    Fixed frames reserved room for a two-line title: a one-line title then left
+    a gap above a subtitle parked where line two would have ended, and the
+    whole block hung wherever the style had put it. Here the title (and its
+    kicker) is measured, the subtitle follows it, and the block is anchored
+    per :data:`_COVER_ANCHOR`.
+    """
+    frames = list(cover_frames(style))
+    if meta and not frames[0].center:
+        # The title block narrows to make room for the meta card on the right.
+        frames = [replace(f, w=min(f.w, _COVER_META_X - f.x - 0.8)) for f in frames]
+    title, rest = frames[0], frames[1:]
+    title_h = _heading_h(
+        slide.title, heading_pt(slide.title, title.w, title.size_pt), title.w
+    )
+    if slide.kicker:
+        title_h += _heading_h(slide.kicker, theme.caption_pt, title.w) - _TEXT_BOX_INSET_Y
+    subs = [f for f in rest if f.role == "subtitle"]
+    sub_h = (
+        _heading_h(slide.subtitle, subs[0].size_pt, subs[0].w)
+        if subs and slide.subtitle
+        else 0.0
+    )
+    block_h = title_h + (_COVER_SUB_GAP + sub_h if sub_h else 0.0)
+    anchor = _COVER_ANCHOR.get(style.cover, "top")
+    top = title.y
+    if anchor == "centre":
+        top = min(title.y, max(_COVER_TOP_MIN, _COVER_OPTICAL_Y - block_h / 2))
+    elif anchor == "bottom":
+        foot = max(f.y + f.h for f in frames)
+        top = min(title.y, foot - block_h)
+    out = [replace(title, y=top, h=max(title_h, 1.0))]
+    for f in rest:
+        if f.role == "subtitle":
+            f = replace(f, y=top + title_h + _COVER_SUB_GAP, h=max(sub_h, 0.9))
+        out.append(f)
+    return out
+
+
 def section_frames(style: Style) -> list[Frame]:
     """The divider page's frames for this style (numerals move the title)."""
     return SECTION_FRAMES.get(style.section, LAYOUTS["section"])
@@ -877,10 +1348,14 @@ def _fill(x, y, w, h, color, graphics, radius=0.0):
 
 
 def _cover_deco_xml(
-    style: Style, theme: Theme, graphics: _GraphicStyles
+    style: Style,
+    theme: Theme,
+    graphics: _GraphicStyles,
+    frames: list[Frame] | None = None,
 ) -> str:
     """The opening page's decoration, per ``Style.cover_deco``."""
-    title = cover_frames(style)[0]
+    frames = frames or cover_frames(style)
+    title = frames[0]
     if style.cover_deco == "bleed":
         # Bleed to every edge: the ground itself is the decoration.
         return _fill(0, 0, PAGE_W, PAGE_H, _section_fill(theme), graphics)
@@ -897,21 +1372,25 @@ def _cover_deco_xml(
         )
     if style.cover_deco == "rule-under":
         # metropolis draws its rule under the whole title block, full measure.
-        bottom = max(frame.y + frame.h for frame in cover_frames(style))
+        bottom = max(frame.y + frame.h for frame in frames)
+        # Beside a meta card the rule spans the (narrowed) title block only;
+        # full measure it ran straight under the card.
+        narrowed = title.w < cover_frames(style)[0].w
         return _fill(
             title.x, bottom + _COVER_UNDERRULE_GAP,
-            PAGE_W - 2 * title.x, _COVER_UNDERRULE_H, theme.accent, graphics,
+            title.w if narrowed else PAGE_W - 2 * title.x,
+            _COVER_UNDERRULE_H, theme.accent, graphics,
         )
     return ""
 
 
-def _cover_text_bottom(style: Style) -> float:
+def _cover_text_bottom(style: Style, frames: list[Frame] | None = None) -> float:
     """The lowest y any cover element occupies, decoration included.
 
     The byline is placed under this. Taking only the text frames into account
     printed metropolis' full-measure rule straight through the byline.
     """
-    bottom = max(frame.y + frame.h for frame in cover_frames(style))
+    bottom = max(frame.y + frame.h for frame in frames or cover_frames(style))
     if style.cover_deco == "rule-under":
         bottom += _COVER_UNDERRULE_GAP + _COVER_UNDERRULE_H
     return bottom
@@ -935,8 +1414,10 @@ def _title_mark_xml(
             _blend(theme.muted, theme.bg, 0.45), graphics,
         )
     if style.title_mark == "kicker-rule":
+        # 0.42cm above a 0.55cm frame put the rule 0.13cm from the page edge —
+        # read as a bar glued to the top, not a mark on the heading.
         return _fill(
-            frame.x, frame.y - 0.42, _KICKER_RULE_W, _KICKER_RULE_H,
+            frame.x, max(0.34, frame.y - 0.42), _KICKER_RULE_W, _KICKER_RULE_H,
             theme.accent, graphics,
         )
     if style.title_mark == "bar":
@@ -1045,7 +1526,7 @@ _LOGO_SECTION_Y = 14.35
 # (which starts at _PAGENUM_X = 24.0). Nothing else is drawn in that strip, so a
 # mark here can never collide with a content frame.
 _LOGO_FOOTER_RIGHT = 23.6
-_LOGO_FOOTER_Y = 14.98
+_LOGO_FOOTER_Y = 14.8
 _LOGO_FOOTER_MAX = (3.0, 0.6)
 # Padding around a logo sitting on its own plate (inverted pages only).
 _LOGO_PLATE_PAD = 0.16
@@ -1132,7 +1613,11 @@ def _page_shows_logo(layout: str, placement: str) -> bool:
 
 
 def _byline_xml(
-    byline: str, theme: Theme, styles: _ParagraphStyles, style: Style
+    byline: str,
+    theme: Theme,
+    styles: _ParagraphStyles,
+    style: Style,
+    frames: list[Frame] | None = None,
 ) -> str:
     """The cover's muted署名 line (單位／講者／日期), set under the cover text.
 
@@ -1141,8 +1626,8 @@ def _byline_xml(
     pushes its subtitle far enough down that a fixed line would have printed on
     top of it.
     """
-    title = cover_frames(style)[0]
-    y = _cover_text_bottom(style) + _BYLINE_GAP
+    title = (frames or cover_frames(style))[0]
+    y = _cover_text_bottom(style, frames) + _BYLINE_GAP
     centered = title.center
     x = title.x if not centered else _BYLINE_BOX[0]
     w = title.w if not centered else _BYLINE_BOX[2]
@@ -1158,6 +1643,86 @@ def _byline_xml(
     return _frame_box_xml(
         frame,
         f'<text:p text:style-name="{_attr(para_style)}">{escape(byline)}</text:p>',
+    )
+
+
+_COVER_META_X = 18.0
+_COVER_META_W = 8.2
+
+
+def _cover_meta(slide: Slide, branding: Branding | None) -> list[str]:
+    """What the cover's info card lists: the title slide's own bullets
+    (單位、講者、日期、期間). The app-owned byline stays verbatim on its own
+    line — it is the user's words, not material to re-layout."""
+    return [_line_text(b) for b in slide.bullets if _line_text(b).strip()][:5]
+
+
+def _cover_meta_xml(
+    rows: list[str],
+    style: Style,
+    theme: Theme,
+    graphics: _GraphicStyles,
+    styles: _ParagraphStyles,
+    frames: list[Frame] | None = None,
+) -> str:
+    """The reference cover's right-hand info card: a framed panel of the
+    deck's facts, so the opening page is not a title floating in a field."""
+    bleed = _cover_is_bleed(style)
+    size = min(theme.caption_pt + 1, 14)
+    wrap = _wrap_width(_COVER_META_W - 0.7)
+    heights = [_measured_text_h(r, size, wrap, 1.2) for r in rows]
+    h = 0.35 + sum(heights) + 0.18 * (len(rows) - 1) + 0.3
+    # Top-aligned with the cover's title block, so the card and the title
+    # read as one composition rather than two things on the page.
+    y = min((frames or cover_frames(style))[0].y - 0.3, PAGE_H - 1.6 - h)
+    fill = _blend(theme.bg, _section_fill(theme), 0.12) if bleed else _framed_fill(theme)
+    ink = theme.text
+    rule = _blend(theme.muted, fill, 0.55)
+    parts = [
+        _rect_xml(
+            _COVER_META_X, y, _COVER_META_W, h, fill=fill, corner_radius_cm=0.12,
+            style_name=graphics.name_for_fill_stroke(fill, rule, 0.5),
+        ),
+    ]
+    if not bleed:
+        # On a bleed ground the accent strip matched the page, not the card,
+        # and read as a stray line floating above it.
+        parts.append(_fill(_COVER_META_X, y, _COVER_META_W, 0.08, theme.accent, graphics))
+    ry = y + 0.35
+    for i, (row, row_h) in enumerate(zip(rows, heights, strict=True)):
+        if i:
+            ry += 0.18
+            parts.append(
+                _fill(
+                    _COVER_META_X + 0.4, ry - 0.08, _COVER_META_W - 0.8, 0.02,
+                    rule, graphics,
+                )
+            )
+        parts.append(
+            _visual_text_xml(
+                row, _COVER_META_X + 0.35, ry, _COVER_META_W - 0.7, row_h, styles,
+                size_pt=size, color=ink,
+            )
+        )
+        ry += row_h
+    return "".join(parts)
+
+
+def _cover_meta_line_xml(
+    rows: list[str],
+    style: Style,
+    theme: Theme,
+    styles: _ParagraphStyles,
+    frames: list[Frame] | None = None,
+) -> str:
+    """Centred covers carry the same facts as one muted line under the text."""
+    y = _cover_text_bottom(style, frames) + 1.3
+    frame = Frame("cover-meta", 2.0, y, 24.0, 0.9, theme.caption_pt, center=True)
+    ink = _blend(theme.bg, _section_fill(theme), 0.42) if _cover_is_bleed(style) else theme.muted
+    pstyle = styles.name_for(theme.caption_pt, False, True, ink)
+    return _frame_box_xml(
+        frame,
+        f'<text:p text:style-name="{_attr(pstyle)}">{escape("　·　".join(rows))}</text:p>',
     )
 
 
@@ -1233,6 +1798,67 @@ def _role_lines(slide: Slide, role: str) -> list:
     return []
 
 
+_COLUMN_MIN_PT = 14
+
+
+def _column_h(
+    lines: list, layout: str, theme: Theme, frame: Frame, size: int | None = None
+) -> float:
+    """Measured height of a two-col / comparison column as LibreOffice lays
+    it out: optional bold header line, then list items at the list's line
+    height and paragraph gap, wrapped at the indented measure."""
+    if not lines:
+        return 0.0
+    if size is None:
+        size = theme.body_pt if layout == "comparison" else frame.size_pt
+    h = 0.0
+    if layout == "comparison":
+        h += _measured_text_h(_line_text(lines[0]), size, _wrap_width(frame.w), 1.2)
+        lines = lines[1:]
+    item_w = _wrap_width(frame.w - _LIST_LEVELS[0][1] - _LIST_LEVELS[0][2])
+    for line in lines:
+        h += (
+            _measured_text_h(_line_text(line), size, item_w, _LINE_HEIGHT_DEFAULT)
+            + 0.35
+        )
+    return h
+
+
+def _col_layout(slide: Slide) -> str:
+    """A two-col page whose columns both open with a short label is drawn as a
+    comparison (label = column header). Models write 「翻修前／翻修後」 as the
+    first item of each side and expected a header; set as a bullet it read as
+    one more point."""
+    if slide.layout != "two-col":
+        return slide.layout
+    left, right = slide.left, slide.right
+    if (
+        len(left) >= 2 and len(right) >= 2
+        and len(left[0]) <= 8 and len(right[0]) <= 8
+        and not left[0].rstrip().endswith(("。", "，", ".", ","))
+        and not right[0].rstrip().endswith(("。", "，", ".", ","))
+    ):
+        return "comparison"
+    return slide.layout
+
+
+def _column_pt(slide: Slide, theme: Theme, frames: list[Frame]) -> int:
+    """One text size for both columns: the largest at which the taller column
+    still fits its frame (floor :data:`_COLUMN_MIN_PT`). A lede and a takeaway
+    band leave the columns ~7.6cm, where four two-line items at 18pt ran
+    straight into the band."""
+    cols = [f for f in frames if f.role in _CARD_ROLES]
+    col_layout = _col_layout(slide)
+    start = theme.body_pt if col_layout == "comparison" else cols[0].size_pt
+    size = start
+    while size > _COLUMN_MIN_PT and any(
+        _column_h(_role_lines(slide, f.role), col_layout, theme, f, size) > f.h
+        for f in cols
+    ):
+        size -= 1
+    return size
+
+
 def _frame_box_xml(frame: Frame, inner: str) -> str:
     """Wrap pre-built text-box ``inner`` XML in a positioned ``draw:frame``."""
     return (
@@ -1244,13 +1870,36 @@ def _frame_box_xml(frame: Frame, inner: str) -> str:
     )
 
 
+_HEADING_FILL = 0.97
+
+
+def _broken_xml(text: str, size_pt: int, frame_w: float) -> str:
+    """Escaped heading text, with the engine's own line breaks when it needs
+    more than one line. Left to LibreOffice a CJK heading breaks between any
+    two characters — 「…年度執 / 行報告」「李老 / 師」 — and leaves a lone
+    「秒」 on line two; laid out here it breaks between words, evenly."""
+    if text_width_cm(text, size_pt) <= frame_w - 0.5:
+        return escape(text)
+    # A heading owns the full measure (LibreOffice's 0.5cm inset aside), less
+    # a sliver for the width model's error — the card body's line fill would
+    # turn a two-line title into three.
+    lines = _layout_lines(text, size_pt, (frame_w - 0.5) * _HEADING_FILL / _LINE_FILL)
+    return "<text:line-break/>".join(escape(line) for line in lines)
+
+
 def _frame_xml(
-    frame: Frame, lines: list[str], style_name: str
+    frame: Frame, lines: list[str], style_name: str, size_pt: int | None = None
 ) -> str:
-    """Build a ``draw:frame`` of bare ``text:p`` paragraphs (non-list content)."""
+    """Build a ``draw:frame`` of bare ``text:p`` paragraphs (non-list content).
+    With ``size_pt`` each paragraph is laid out by :func:`_broken_xml`."""
     paragraphs = "".join(
         f'<text:p text:style-name="{_attr(style_name)}">'
-        f"{escape(_line_text(line))}</text:p>"
+        + (
+            _broken_xml(_line_text(line), size_pt, frame.w)
+            if size_pt is not None
+            else escape(_line_text(line))
+        )
+        + "</text:p>"
         for line in lines
     )
     return _frame_box_xml(frame, paragraphs)
@@ -1368,8 +2017,8 @@ def _fmt_number(value: float) -> str:
     """Format a chart value for display: whole numbers drop the ``.0``
     (42.0 -> "42"), fractions stay compact (3.5 -> "3.5")."""
     if value == int(value):
-        return str(int(value))
-    return f"{value:g}"
+        return f"{int(value):,}"
+    return f"{value:,g}"
 
 
 def _text_line_h_cm(size_pt: int) -> float:
@@ -1380,6 +2029,18 @@ def _text_line_h_cm(size_pt: int) -> float:
     (a pure function of the point size).
     """
     return size_pt / 72.0 * 2.54 * 1.2
+
+
+# LibreOffice's default text-box top padding plus Noto CJK's 1.45em line box:
+# centring on the 1.2-leading estimate above left chart labels and values
+# sitting visibly below their bars' centre line.
+_TEXT_BOX_PAD_TOP = 0.125
+
+
+def _centred_text_y(centre_y: float, size_pt: int) -> float:
+    """Frame y that puts one line of ``size_pt`` text's ink centre on
+    ``centre_y`` as LibreOffice actually lays it out."""
+    return centre_y - size_pt * PT_TO_CM * 1.45 / 2 - _TEXT_BOX_PAD_TOP
 
 
 def _chart_xml(
@@ -1412,8 +2073,43 @@ def _chart_xml(
     """
     n = len(chart.values)
     max_v = max(chart.values)
-    label_w = area_w * _CHART_LABEL_W_FRAC
-    value_w = area_w * _CHART_VALUE_W_FRAC
+    # The label gutter grows to the longest label (to 35% of the area): a
+    # fixed 22% held about four CJK characters and cut 「研究助理費」.
+    label_w = min(
+        area_w * 0.35,
+        max(
+            area_w * _CHART_LABEL_W_FRAC,
+            max(text_width_cm(lb, theme.body_pt) for lb in chart.labels)
+            + 2 * _FRAME_INSET_X + _CHART_GAP + theme.body_pt * PT_TO_CM,
+        ),
+    )
+    # One precision for the column ("1.0 秒" beside "1.1 秒", not "1秒"), and a
+    # space before a word unit the way the rest of the deck writes it.
+    decimals = max(
+        (len(f"{v:g}".split(".")[1]) if "." in f"{v:g}" else 0 for v in chart.values),
+        default=0,
+    )
+    if max((abs(v) for v in chart.values), default=0) >= 100:
+        decimals = 0  # "108 萬" beside "11.8 萬", not "108.0 萬"
+    unit = chart.unit
+    if unit and not unit.startswith((" ", "%", "％")):
+        unit = " " + unit
+    value_texts = [
+        (f"{v:,.{decimals}f}" if decimals else _fmt_number(v)) + unit
+        for v in chart.values
+    ]
+    # The value gutter grows to the widest "48000 元" it must hold (up to 30%
+    # of the area): a fixed 14% wrapped a five-digit value plus its unit.
+    value_w = min(
+        area_w * 0.3,
+        max(
+            area_w * _CHART_VALUE_W_FRAC,
+            max(text_width_cm(t, theme.body_pt) for t in value_texts)
+            + 2 * _FRAME_INSET_X
+            + _CHART_GAP
+            + theme.body_pt * PT_TO_CM,  # one em of slack: bold digits run wide
+        ),
+    )
     track_w = area_w - label_w - value_w
     row_h = area_h / n
     bar_x = area_x + label_w
@@ -1436,7 +2132,6 @@ def _chart_xml(
         ),
         default=theme.body_pt,
     )
-    value_texts = [f"{_fmt_number(v)}{chart.unit}" for v in chart.values]
     value_widths = [
         max(
             (area_x + area_w)
@@ -1490,7 +2185,7 @@ def _chart_xml(
                 Frame(
                     "chart-label",
                     area_x,
-                    bar_y + (bar_h - label_line_h) / 2.0,
+                    _centred_text_y(bar_y + bar_h / 2.0, label_pt),
                     label_w - _CHART_GAP,
                     label_line_h,
                     label_pt,
@@ -1516,7 +2211,7 @@ def _chart_xml(
                 Frame(
                     "chart-value",
                     value_x,
-                    bar_y + (bar_h - value_line_h) / 2.0,
+                    _centred_text_y(bar_y + bar_h / 2.0, value_pt),
                     value_frame_w,
                     value_line_h,
                     value_pt,
@@ -1532,6 +2227,37 @@ def _chart_xml(
 # ---------------------------------------------------------------------------
 # Shape-rendered process, timeline, metric and idea-card layouts
 # ---------------------------------------------------------------------------
+
+
+def _balanced_width(
+    text: str, size_pt: int, w: float, x: float, center: bool
+) -> tuple[float, float]:
+    """Narrow a wrapping text box so its lines come out even.
+
+    LibreOffice fills each line greedily, so a card title one character over
+    its measure left 「站」 or 「率」 alone on a second line — the defect
+    reviewers flagged most. Given the line count the text needs anyway, the
+    box is narrowed to that many even lines (plus a one-em allowance for
+    glyph-width error). The line count, and so every height measured
+    elsewhere, is unchanged; the text itself is untouched.
+    """
+    em_cm = size_pt * PT_TO_CM
+    wrap = _wrap_width(w)
+    run = text_width_cm(text, size_pt)
+    if run <= wrap or wrap <= 0:
+        return w, x
+    lines = math.ceil(run / wrap)
+    last = run - (lines - 1) * wrap
+    # Only an orphan-ish last line is worth fixing, and narrowing is where the
+    # estimate's error bites (a line the model thinks fits, LibreOffice may
+    # not): so act only on a clearly short tail, with a 1.5-em allowance.
+    if last > wrap * 0.3:
+        return w, x
+    even = run / lines + 1.5 * em_cm
+    if even >= wrap:
+        return w, x
+    new_w = even + (w - wrap)
+    return new_w, (x + (w - new_w) / 2 if center else x)
 
 
 def _visual_text_xml(
@@ -1558,10 +2284,24 @@ def _visual_text_xml(
         line_height=line_height,
         font=font,
     )
+    if "\n" in text:
+        # Separate statements get a little air, or two children read as one
+        # run-on paragraph.
+        style_name = styles.name_for(
+            size_pt, bold, center, color, line_height=line_height, font=font,
+            margin_bottom=_PARA_GAP,
+        )
     frame = Frame("visual-text", x, y, w, h, size_pt, bold=bold, center=center)
-    inner = (
+    # One paragraph per "\n" (each card child is its own statement), and
+    # inside it the engine's own line breaks (see _layout_lines).
+    wrap = _wrap_width(w)
+    inner = "".join(
         f'<text:p text:style-name="{_attr(style_name)}">'
-        f"{escape(text)}</text:p>"
+        + "<text:line-break/>".join(
+            escape(line) for line in _layout_lines(para, size_pt, wrap)
+        )
+        + "</text:p>"
+        for para in text.split("\n")
     )
     return _frame_box_xml(frame, inner)
 
@@ -1596,17 +2336,27 @@ def _edge_label_candidates(
     norm = span or 1.0
     # Perpendicular unit vector; the two signs are the two sides of the line.
     nx, ny = -dy / norm, dx / norm
-    base_push = w / 2 + _EDGE_LABEL_CLEARANCE
+    # Beside the line, the chip sits just clear of it — any further and a
+    # reader no longer pairs the label with its connector. The clearance is
+    # the chip's half-extent *along the normal*: half its height beside a
+    # horizontal line, half its width beside a vertical one. (Half the width
+    # in every direction lifted a label 1.35cm off a horizontal connector.)
+    base_push = abs(nx) * w / 2 + abs(ny) * h / 2 + _EDGE_LABEL_SIDE_GAP
 
     def at(t: float) -> tuple[float, float]:
         return x1 + dx * t, y1 + dy * t
+
+    # The chip's extent *along* the connector: its width on a horizontal
+    # line, its height on a vertical one. Charging the width everywhere
+    # refused every label on a hierarchy's short vertical edges.
+    along = abs(dx / norm) * w + abs(dy / norm) * h
 
     def fits_on_line(t: float) -> bool:
         """Does a chip centred at ``t`` still leave a readable run either side?"""
         centre = span * t
         return (
-            centre - w / 2 >= _EDGE_LABEL_CLEARANCE
-            and centre + w / 2 <= span - _EDGE_LABEL_CLEARANCE
+            centre - along / 2 >= _EDGE_LABEL_CLEARANCE
+            and centre + along / 2 <= span - _EDGE_LABEL_CLEARANCE
         )
 
     slots = (0.5, 0.32, 0.68)
@@ -1624,7 +2374,9 @@ def _edge_label_candidates(
         if fits_on_line(t):
             cx, cy = at(t)
             candidates.append((cx - w / 2, cy - h / 2, True))
-    for factor in (1.0, 1.7, 2.4):
+    # Past 1.7× the chip no longer reads as its line's label — reviewers
+    # called those 「floating」; dropping (and reporting) it is better.
+    for factor in (1.0, 1.7):
         for t in slots[1:] if factor == 1.0 else slots:
             cx, cy = at(t)
             for side in (1.0, -1.0):
@@ -1671,6 +2423,8 @@ def _place_edge_label(
         if best is None or overlap < best[0]:
             best = (overlap, x, y, on_line)
     assert best is not None  # candidates is never empty (see _diagram_xml)
+    if best[0] > _LABEL_MAX_OVERLAP:
+        return None
     return best[1], best[2], best[3]
 
 
@@ -1761,24 +2515,37 @@ def _truncate_to_h(
     run plus the ellipsis still fits that budget. Always keeps at least one
     line — a lone "…" tells the reader nothing.
     """
-    line_cm = size_pt * PT_TO_CM * line_height
+    # Same line box and the same line layout the drawing uses, so a cut text
+    # measures inside ``allow_h`` by construction.
+    line_cm = size_pt * PT_TO_CM * max(line_height, _CJK_LINE_BOX)
     max_lines = max(
         1,
         math.floor(
             (allow_h - _TEXT_BOX_INSET_Y) / (_LO_LINE_SPACING_SLACK * line_cm) + 1e-6
         ),
     )
-    if text_width_cm(text, size_pt) <= max_lines * wrap_w:
+    if _line_count(text, size_pt, wrap_w) <= max_lines:
         return text
-    budget = max_lines * wrap_w - text_width_cm("…", size_pt)
-    kept = 0
-    used = 0.0
-    for ch in text:
-        used += text_width_cm(ch, size_pt)
-        if used > budget:
-            break
-        kept += 1
-    return text[:kept].rstrip() + "…"
+    paras = text.split("\n")
+    while len(paras) > 1 and _line_count("\n".join(paras), size_pt, wrap_w) > max_lines:
+        # Separate statements (card children) go whole: 「…。…」 after a
+        # finished sentence read as a glitch. What was dropped is still
+        # reported — the fitted text no longer matches the source.
+        paras.pop()
+        if _line_count("\n".join(paras), size_pt, wrap_w) <= max_lines:
+            return "\n".join(paras)
+    kept = "\n".join(paras)
+    while kept and _line_count(kept + "…", size_pt, wrap_w) > max_lines:
+        kept = kept[:-1].rstrip()
+    return (kept or text[:1]) + "…"
+
+
+_GROW_STEPS = 4
+_GROW_TITLE_MAX = 24
+_GROW_DETAIL_MAX = 17
+_GROW_FILL = 0.72
+_SPILL_MARK = "<!--odforge:spill-->"
+_SPILL_TOLERANCE = 0.35  # cm
 
 
 @dataclass(frozen=True)
@@ -1794,6 +2561,7 @@ class _FittedStack:
     detail_h: float
     card_h: float
     detail_offset: float
+    spills: bool = False
 
 
 def _fit_stacked_texts(
@@ -1835,7 +2603,35 @@ def _fit_stacked_texts(
     Text that already fits comes back untouched at its starting sizes, so
     short content keeps today's exact geometry (compact closing cards, even
     card rows).
+
+    Short text in a roomy area goes the other way first: sizes step *up*
+    (to :data:`_GROW_TITLE_MAX` / :data:`_GROW_DETAIL_MAX`) while the stack
+    stays within :data:`_GROW_FILL` of the space — a few words at 18pt in a
+    10cm area was the "dead lower half" every reviewer marked down.
     """
+    for _ in range(_GROW_STEPS):
+        t_pt, d_pt = title_pt + 1, detail_pt + 1
+        if t_pt > _GROW_TITLE_MAX or d_pt > _GROW_DETAIL_MAX:
+            break
+        th = max(_measured_text_h(t, t_pt, wrap_w, title_line_height) for t in titles)
+        dh = max(
+            (_measured_text_h(d, d_pt, wrap_w, detail_line_height) for d in details if d),
+            default=0.0,
+        )
+        need = title_top + th + (detail_gap if dh else 0.0) + dh + pad_bottom
+        if need > available * _GROW_FILL:
+            break
+        # Growing is for filling height, never for adding lines: 「串聯 2 個
+        # 保育團體」 grown from one line into two read as a six-character measure.
+        texts = [(t, title_pt, t_pt) for t in titles] + [
+            (d, detail_pt, d_pt) for d in details if d
+        ]
+        if any(
+            _line_count(t, new, wrap_w) > _line_count(t, old, wrap_w)
+            for t, old, new in texts
+        ):
+            break
+        title_pt, detail_pt = t_pt, d_pt
     while True:
         title_h = max(
             _measured_text_h(t, title_pt, wrap_w, title_line_height) for t in titles
@@ -1922,7 +2718,23 @@ def _fit_stacked_texts(
         detail_h,
         card_h,
         detail_offset,
+        # Even one title line and one detail line did not fit the clamped
+        # card: the text will run past it. Said out loud (see _SPILL_MARK),
+        # because nothing was cut for the ellipsis check to find.
+        # The measure is deliberately generous (line-spacing slack + box
+        # inset on every text), so only a clear overrun counts — a 0.05cm
+        # tolerance flagged every dashboard strip that visibly fit.
+        spills=detail_offset + detail_h + pad_bottom > card_h + _SPILL_TOLERANCE,
     )
+
+
+_RULED_H = 0.09
+_RULE_INK_H = 0.035
+_OUTLINE_PT = 0.75
+
+
+def _framed_fill(theme: Theme) -> str:
+    return _lighten(theme.bg, 0.7) if _is_light(theme.bg) else theme.surface
 
 
 def _visual_card_xml(
@@ -1932,8 +2744,41 @@ def _visual_card_xml(
     h: float,
     theme: Theme,
     graphics: _GraphicStyles,
+    card: str = "filled",
 ) -> str:
-    """Render the shared rounded surface used by visual-layout cards."""
+    """Render the container behind one visual-layout item, per ``Style.card``.
+
+    ``filled`` is the rounded surface every style used to share; the others are
+    what make two styles two documents rather than two colourways: a consulting
+    deck marks items with a top accent rule, a Beamer deck frames them, a Swiss
+    deck uses an ink hairline, and a minimal deck draws no container at all.
+    """
+    if card == "ruled":
+        return _fill(x, y, w, _RULED_H, theme.accent, graphics)
+    if card == "rule-ink":
+        return _fill(x, y, w, _RULE_INK_H, theme.text, graphics)
+    if card == "outlined":
+        color = _blend(theme.muted, theme.bg, 0.35)
+        return _rect_xml(
+            x, y, w, h,
+            fill="none",
+            corner_radius_cm=0.12,
+            style_name=graphics.name_for_stroke(color, _OUTLINE_PT),
+        )
+    if card == "plain":
+        return ""
+    if card == "framed":
+        # White card, hairline frame: the reference deck's container. On a
+        # dark ground "white" is the surface tone.
+        fill = _framed_fill(theme)
+        return _rect_xml(
+            x, y, w, h,
+            fill=fill,
+            corner_radius_cm=0.1,
+            style_name=graphics.name_for_fill_stroke(
+                fill, _blend(theme.muted, theme.bg, 0.62), 0.5
+            ),
+        )
     style_name = graphics.name_for_fill(theme.surface)
     return _rect_xml(
         x,
@@ -1952,13 +2797,17 @@ def _process_xml(
     theme: Theme,
     graphics: _GraphicStyles,
     styles: _ParagraphStyles,
+    card: str = "filled",
 ) -> str:
     """Render 2–5 connected process cards with numbered accent badges."""
     n = len(steps)
     gap = _VISUAL_GAP
     card_w = (area.w - gap * (n - 1)) / n
 
-    text_w = card_w - 0.96
+    # Containers need their inset; a rule or bare column does not, and the
+    # 0.48cm each side it kept wrapped a step detail every ~9 characters.
+    inset = 0.48 if card in ("filled", "outlined") else 0.12
+    text_w = card_w - 2 * inset
     # Five 24-char CJK titles with 56-char details need ≈13cm of stack against
     # a 7cm card clamp — the shared fit loop shrinks, then truncates, so the
     # detail can no longer print past the page bottom.
@@ -1978,32 +2827,38 @@ def _process_xml(
         available=area.h - 0.8,
     )
     card_h, detail_offset = fitted.card_h, fitted.detail_offset
-    card_y = area.y + (area.h - card_h) / 2
+    if card in _PANEL_CARDS:
+        card_h = max(card_h, (area.h - 0.8) * _PANEL_FILL)
+        card_y = area.y + _BODY_TOP_GAP
+    else:
+        card_y = _body_y(area, card_h)
     badge_y = card_y + 0.55
     badge_center_y = badge_y + _PROCESS_BADGE_SIZE / 2
 
     parts: list[str] = []
     line_color = _blend(theme.accent, theme.bg, _VISUAL_LINE_BLEND)
     line_style = graphics.name_for_stroke(line_color, _VISUAL_LINE_WIDTH_PT)
-    first_center = area.x + 0.48 + _PROCESS_BADGE_SIZE / 2
-    last_card_x = area.x + (n - 1) * (card_w + gap)
-    last_center = last_card_x + 0.48 + _PROCESS_BADGE_SIZE / 2
-    parts.append(
-        _line_xml(
-            first_center,
-            badge_center_y,
-            last_center,
-            badge_center_y,
-            color=line_color,
-            width_pt=_VISUAL_LINE_WIDTH_PT,
-            style_name=line_style,
+    # The connector runs only across the gaps between cards. One line from
+    # the first badge to the last was hidden by filled cards but printed
+    # straight through outlined / framed / ruled ones and their borders.
+    for i in range(n - 1):
+        right = area.x + i * (card_w + gap) + card_w
+        parts.append(
+            _line_xml(
+                right,
+                badge_center_y,
+                right + gap,
+                badge_center_y,
+                color=line_color,
+                width_pt=_VISUAL_LINE_WIDTH_PT,
+                style_name=line_style,
+            )
         )
-    )
 
     badge_style = graphics.name_for_fill(theme.accent)
     for i, _step in enumerate(steps):
         card_x = area.x + i * (card_w + gap)
-        parts.append(_visual_card_xml(card_x, card_y, card_w, card_h, theme, graphics))
+        parts.append(_visual_card_xml(card_x, card_y, card_w, card_h, theme, graphics, card))
         parts.append(
             _ellipse_xml(
                 card_x + 0.48,
@@ -2018,7 +2873,7 @@ def _process_xml(
             _visual_text_xml(
                 str(i + 1),
                 card_x + 0.43,
-                badge_y + 0.08,
+                _centred_text_y(badge_y + _PROCESS_BADGE_SIZE / 2, theme.caption_pt),
                 _PROCESS_BADGE_SIZE + 0.1,
                 0.48,
                 styles,
@@ -2031,7 +2886,7 @@ def _process_xml(
         parts.append(
             _visual_text_xml(
                 fitted.titles[i],
-                card_x + 0.48,
+                card_x + inset,
                 card_y + _PROCESS_TITLE_TOP,
                 text_w,
                 fitted.title_h,
@@ -2047,7 +2902,7 @@ def _process_xml(
             parts.append(
                 _visual_text_xml(
                     fitted.details[i],
-                    card_x + 0.48,
+                    card_x + inset,
                     card_y + detail_offset,
                     text_w,
                     max(0.4, card_h - detail_offset - _PROCESS_PAD_BOTTOM),
@@ -2057,7 +2912,7 @@ def _process_xml(
                     line_height="135%",
                 )
             )
-    return "".join(parts)
+    return (_SPILL_MARK if fitted.spills else "") + "".join(parts)
 
 
 def _timeline_xml(
@@ -2066,10 +2921,16 @@ def _timeline_xml(
     theme: Theme,
     graphics: _GraphicStyles,
     styles: _ParagraphStyles,
+    card: str = "filled",
 ) -> str:
     """Render a horizontal timeline with alternating event cards."""
     n = len(events)
-    line_y = area.y + area.h / 2
+    # Alternating cards need two rows of room around the axis. Once a lede and
+    # a takeaway band have taken their share of the page, each row got < 3cm and
+    # the fit loop was cutting every detail to an ellipsis — so a short area
+    # hangs every card below an axis drawn near its top instead.
+    single_row = area.h < _TIMELINE_SINGLE_ROW_BELOW
+    line_y = area.y + 0.45 if single_row else area.y + area.h / 2
     slot_w = area.w / n
     card_w = min(slot_w - 0.35, 5.4)
 
@@ -2077,10 +2938,8 @@ def _timeline_xml(
     # fixed stem: cards above it grow *upward* so a taller row can never reach
     # down and collide with the line it is supposed to hang from.
     text_w = card_w - 0.7
-    room = min(
-        line_y - _TIMELINE_STEM - area.y,
-        area.y + area.h - (line_y + _TIMELINE_STEM),
-    ) - 0.1
+    below = area.y + area.h - (line_y + _TIMELINE_STEM)
+    room = (below if single_row else min(line_y - _TIMELINE_STEM - area.y, below)) - 0.1
     # The row's `room` clamp used to cap the card while detail_offset kept the
     # unclamped title height — a top-row detail then landed exactly on the
     # bottom-row cards and was painted over by them. The shared fit loop keeps
@@ -2101,6 +2960,8 @@ def _timeline_xml(
         available=max(_TIMELINE_MIN_H, room),
     )
     card_h, detail_offset = fitted.card_h, fitted.detail_offset
+    if single_row and card in _PANEL_CARDS:
+        card_h = max(card_h, (area.y + area.h - (line_y + _TIMELINE_STEM)) * _PANEL_FILL)
     top_y = max(area.y + 0.1, line_y - _TIMELINE_STEM - card_h)
     bottom_y = line_y + _TIMELINE_STEM
     line_color = _blend(theme.accent, theme.bg, _VISUAL_LINE_BLEND)
@@ -2123,8 +2984,9 @@ def _timeline_xml(
     for i, event in enumerate(events):
         center_x = area.x + slot_w * (i + 0.5)
         card_x = center_x - card_w / 2
-        card_y = top_y if i % 2 == 0 else bottom_y
-        stem_y = card_y + card_h if i % 2 == 0 else card_y
+        above = i % 2 == 0 and not single_row
+        card_y = top_y if above else bottom_y
+        stem_y = card_y + card_h if above else card_y
         parts.append(
             _line_xml(
                 center_x,
@@ -2136,7 +2998,7 @@ def _timeline_xml(
                 style_name=line_style,
             )
         )
-        parts.append(_visual_card_xml(card_x, card_y, card_w, card_h, theme, graphics))
+        parts.append(_visual_card_xml(card_x, card_y, card_w, card_h, theme, graphics, card))
         parts.append(
             _ellipse_xml(
                 center_x - _TIMELINE_NODE_SIZE / 2,
@@ -2194,7 +3056,7 @@ def _timeline_xml(
                     line_height="130%",
                 )
             )
-    return "".join(parts)
+    return (_SPILL_MARK if fitted.spills else "") + "".join(parts)
 
 
 def _metrics_xml(
@@ -2203,6 +3065,10 @@ def _metrics_xml(
     theme: Theme,
     graphics: _GraphicStyles,
     styles: _ParagraphStyles,
+    card: str = "filled",
+    compact: bool = False,
+    *,
+    flush: float | None = None,
 ) -> str:
     """Render 2–4 metrics as a balanced one- or two-row card grid.
 
@@ -2212,70 +3078,96 @@ def _metrics_xml(
     measurements the boxes are drawn at now, and the label/detail pair fits
     through the shared loop inside the fixed card the grid assigns.
     """
+    # One row, always. A 2×2 grid stacked two rows of big numbers into the
+    # dashboard's 3.6cm strip — they printed over each other — and on the
+    # metrics page it split four peers into a hierarchy they do not have.
     n = len(metrics)
-    cols = 2 if n == 4 else n
-    rows = 2 if n == 4 else 1
+    cols = n
     gap = _VISUAL_GAP
     card_w = (area.w - gap * (cols - 1)) / cols
-    raw_h = (area.h - gap * (rows - 1)) / rows
-    card_h = min(raw_h, 7.2 if rows == 1 else raw_h)
-    grid_h = card_h * rows + gap * (rows - 1)
-    start_y = area.y + (area.h - grid_h) / 2
     accent_style = graphics.name_for_fill(theme.accent)
 
     text_w = card_w - 0.9
     # Fit the value against the *inset* width — fed the raw frame width, an
     # 18-char value kept a size at which LibreOffice actually wrapped it.
     wrap_w = _wrap_width(text_w)
-    value_sizes = [
-        fact_font_size_pt(m.value, wrap_w, min(theme.display_pt, 44), theme.h1_pt)
+    value_cap = min(theme.display_pt, 28 if compact else 44 if n <= 3 else 36)
+    # Floor below h1: "12,000 張" in a quarter-width card wraps at 28pt, and a
+    # two-line number reads as two numbers. One size for the row, so the
+    # values read as peers rather than as a big one and a small one.
+    row_pt = min(
+        # Sized to the share of the measure a laid-out line may use, or the
+        # line layout breaks the "one-line" value it was just sized for.
+        fact_font_size_pt(m.value, wrap_w * _LINE_FILL, value_cap, _METRIC_VALUE_MIN_PT)
         for m in metrics
-    ]
+    )
+    # A value never wraps: "<300ms" with its "s" on the label line read as a
+    # broken number. Below the floor the row keeps shrinking, to 12pt.
+    while row_pt > 12 and any(_line_count(m.value, row_pt, wrap_w) > 1 for m in metrics):
+        row_pt -= 1
+    value_sizes = [row_pt for _ in metrics]
     # Row-shared offsets from the tallest value, so labels align across cards.
     value_h = max(
         _measured_text_h(m.value, size, wrap_w, _METRIC_VALUE_LINE_HEIGHT)
         for m, size in zip(metrics, value_sizes, strict=True)
     )
-    label_top = _METRIC_VALUE_TOP + value_h + _METRIC_VALUE_GAP
-    # min == max == available pins _stacked_card_h to the grid's card height:
-    # the fit loop concedes fonts (then text), never the card.
+    value_top = _METRIC_COMPACT_VALUE_TOP if compact else _METRIC_VALUE_TOP
+    label_top = value_top + value_h + _METRIC_VALUE_GAP
+    # Cards are sized to what they hold (value + label + detail), not stretched
+    # to the area: a 7cm box around one number and a label was most of what
+    # read as "empty". The fit loop concedes fonts, then text, never the page.
+    # The dashboard's stat strip is a row of headline numbers over a card
+    # grid: a detail line there had 0.3cm to live in and printed onto the
+    # cards below, so the strip draws value + label only.
     fitted = _fit_stacked_texts(
         [m.label for m in metrics],
-        [m.detail for m in metrics],
+        ["" if compact else m.detail for m in metrics],
         title_pt=min(theme.body_pt, 17),
-        detail_pt=min(theme.caption_pt, 12),
+        detail_pt=min(theme.caption_pt, 13),
         wrap_w=wrap_w,
         title_line_height=_METRIC_LABEL_LINE_HEIGHT,
         detail_line_height=_METRIC_DETAIL_LINE_HEIGHT,
         title_top=label_top,
-        detail_gap=_METRIC_LABEL_GAP,
+        detail_gap=_METRIC_LABEL_GAP + 0.1,
         pad_bottom=_METRIC_PAD_BOTTOM,
-        min_h=card_h,
-        max_h=card_h,
-        available=card_h,
+        min_h=min(area.h, 3.4),
+        # The ceiling is the area, not a design cap: an IR-max value wraps to
+        # three lines in a quarter-width card, and a lower cap pushed the label
+        # below the card it belongs to.
+        max_h=area.h,
+        available=area.h,
     )
+    card_h = fitted.card_h
+    if flush is not None:
+        card_h = max(card_h, min(area.h, flush))  # level with the panel beside it
+        start_y = area.y
+    elif card in _PANEL_CARDS and not compact:
+        card_h = max(card_h, (area.h - _BODY_TOP_GAP) * 0.5)
+        start_y = area.y + _BODY_TOP_GAP
+    else:
+        start_y = area.y if compact else _body_y(area, card_h)
 
     parts: list[str] = []
     for i, metric in enumerate(metrics):
-        row, col = divmod(i, cols)
-        card_x = area.x + col * (card_w + gap)
-        card_y = start_y + row * (card_h + gap)
-        parts.append(_visual_card_xml(card_x, card_y, card_w, card_h, theme, graphics))
-        parts.append(
-            _rect_xml(
-                card_x,
-                card_y,
-                card_w,
-                _METRIC_ACCENT_H,
-                fill=theme.accent,
-                style_name=accent_style,
+        card_x = area.x + i * (card_w + gap)
+        card_y = start_y
+        parts.append(_visual_card_xml(card_x, card_y, card_w, card_h, theme, graphics, card))
+        if card == "filled":
+            parts.append(
+                _rect_xml(
+                    card_x,
+                    card_y,
+                    card_w,
+                    _METRIC_ACCENT_H,
+                    fill=theme.accent,
+                    style_name=accent_style,
+                )
             )
-        )
         parts.append(
             _visual_text_xml(
                 metric.value,
                 card_x + 0.45,
-                card_y + _METRIC_VALUE_TOP,
+                card_y + value_top,
                 text_w,
                 value_h,
                 styles,
@@ -2314,6 +3206,346 @@ def _metrics_xml(
                     line_height="130%",
                 )
             )
+    return (_SPILL_MARK if fitted.spills and not compact else "") + "".join(parts)
+
+
+_TABLE_PAD_Y = 0.12
+_TABLE_PAD_X = 0.3
+_TABLE_LINE_HEIGHT = 1.3
+_TABLE_HAIRLINE = 0.02
+
+
+def _table_geometry(table: TableSpec, area: Frame, theme: Theme):
+    """Column widths, the settled body size, and every row's height.
+
+    Widths follow each column's longest text (floored so a one-word column
+    never collapses); the body steps down 1pt at a time until the whole table
+    fits the area. Shared by the renderer and the budget warning so both
+    reason about one fit.
+    """
+    cols = len(table.columns)
+    probe_pt = 14
+    weights = [
+        max(
+            3.0,
+            max(
+                text_width_cm(t, probe_pt)
+                for t in [table.columns[c], *(row[c] for row in table.rows)]
+            ),
+        )
+        for c in range(cols)
+    ]
+    # Cap any single column at half the table so a long cell wraps instead of
+    # starving its neighbours.
+    weights = [min(w, sum(weights) * 0.5) for w in weights]
+    total = sum(weights)
+    widths = [area.w * w / total for w in weights]
+    header_pt = min(theme.caption_pt, 13)
+    # Every column is at least wide enough for its header on one line: a
+    # proportional split gave a short first column "評估軌道" in three lines.
+    pad = 2 * (_TABLE_PAD_X + _FRAME_INSET_X) + 0.15
+    floors = [text_width_cm(label, header_pt) + pad for label in table.columns]
+    # Better still, every cell on one line (CSS auto table layout's
+    # min-content): 「溫控＋品項紀錄」 wrapped mid-phrase in a proportional
+    # column while its neighbour had centimetres to spare. Body text is bold
+    # in a highlighted row, so the floor charges a bold margin.
+    body_probe = min(theme.body_pt, 17)
+    cell_floors = [
+        max(
+            floors[c],
+            max(
+                (text_width_cm(row[c], body_probe) * 1.04 + pad for row in table.rows),
+                default=0.0,
+            ),
+        )
+        for c in range(cols)
+    ]
+    if sum(cell_floors) <= area.w:
+        floors = cell_floors
+    if sum(floors) <= area.w:
+        for _ in range(cols):
+            short = [i for i in range(cols) if widths[i] < floors[i] - 1e-6]
+            if not short:
+                break
+            need = sum(floors[i] - widths[i] for i in short)
+            spare = [i for i in range(cols) if i not in short]
+            spare_w = sum(widths[i] - floors[i] for i in spare)
+            if spare_w <= 0:
+                break
+            for i in short:
+                widths[i] = floors[i]
+            for i in spare:
+                widths[i] -= need * (widths[i] - floors[i]) / spare_w
+    body_pt = min(theme.body_pt, 17)
+
+    def heights(pt: int) -> tuple[float, list[float]]:
+        head = max(
+            _measured_text_h(h, header_pt, _wrap_width(w - 2 * _TABLE_PAD_X), 1.2)
+            for h, w in zip(table.columns, widths, strict=True)
+        ) + 2 * _TABLE_PAD_Y
+        rows = [
+            max(
+                _measured_text_h(
+                    cell, pt, _wrap_width(w - 2 * _TABLE_PAD_X), _TABLE_LINE_HEIGHT
+                )
+                for cell, w in zip(row, widths, strict=True)
+            )
+            + 2 * _TABLE_PAD_Y
+            for row in table.rows
+        ]
+        return head, rows
+
+    head_h, row_hs = heights(body_pt)
+    while head_h + sum(row_hs) > area.h and body_pt > _DETAIL_MIN_PT:
+        body_pt -= 1
+        head_h, row_hs = heights(body_pt)
+    return widths, header_pt, body_pt, head_h, row_hs
+
+
+def _table_xml(
+    table: TableSpec,
+    area: Frame,
+    theme: Theme,
+    graphics: _GraphicStyles,
+    styles: _ParagraphStyles,
+    card: str = "filled",
+) -> str:
+    """Render a compact comparison table: header row, hairline-separated rows,
+    and an optional highlighted row (e.g. one's own plan in a matrix).
+
+    Editable text in positioned frames rather than a ``table:table`` — Impress
+    tables ignore most of the styling ODF lets us put on them, and the rest of
+    the page is built the same way.
+    """
+    widths, header_pt, body_pt, head_h, row_hs = _table_geometry(table, area, theme)
+    # A short table breathes to about three quarters of its area (up to 0.5cm
+    # more per row) rather than stopping a third of the way down the page.
+    short = area.h * 0.75 - (head_h + sum(row_hs))
+    if short > 0:
+        extra = min(0.85, short / len(row_hs))
+        row_hs = [h + extra for h in row_hs]
+    total_h = head_h + sum(row_hs)
+    y = area.y if _BODY_ANCHOR_TOP else area.y + max(0.0, (area.h - total_h) / 2 * 0.5)
+    rule_color = theme.text if card == "rule-ink" else theme.accent
+    hair_color = _blend(theme.muted, theme.bg, 0.72)
+    parts: list[str] = []
+
+    # Header row.
+    if card == "filled":
+        parts.append(_fill(area.x, y, area.w, head_h, theme.surface, graphics, 0.12))
+    x = area.x
+    for label, w in zip(table.columns, widths, strict=True):
+        parts.append(
+            _visual_text_xml(
+                label, x + _TABLE_PAD_X, y + _TABLE_PAD_Y, w - 2 * _TABLE_PAD_X,
+                head_h - 2 * _TABLE_PAD_Y, styles,
+                size_pt=header_pt, color=theme.accent if card != "filled" else theme.muted,
+                bold=True, line_height="120%",
+            )
+        )
+        x += w
+    y += head_h
+    parts.append(_fill(area.x, y - 0.03, area.w, 0.05, rule_color, graphics))
+
+    for r, (row, row_h) in enumerate(zip(table.rows, row_hs, strict=True)):
+        highlighted = table.highlight == r
+        if highlighted:
+            parts.append(
+                _fill(area.x, y, area.w, row_h, _blend(theme.accent, theme.bg, 0.86), graphics)
+            )
+            parts.append(_fill(area.x, y, 0.12, row_h, theme.accent, graphics))
+        x = area.x
+        for c, (cell, w) in enumerate(zip(row, widths, strict=True)):
+            # Each cell is centred in its row: top-aligned cells next to a
+            # three-line neighbour read as a ragged row. One font for every
+            # column — the display face on column one sat on its own baseline.
+            cell_h = _measured_text_h(
+                cell, body_pt, _wrap_width(w - 2 * _TABLE_PAD_X), _TABLE_LINE_HEIGHT
+            )
+            parts.append(
+                _visual_text_xml(
+                    cell, x + _TABLE_PAD_X, y + (row_h - cell_h) / 2,
+                    w - 2 * _TABLE_PAD_X, cell_h, styles,
+                    size_pt=body_pt, color=theme.text,
+                    bold=highlighted or c == 0,
+                    line_height="130%",
+                )
+            )
+            x += w
+        y += row_h
+        if r < len(table.rows) - 1:
+            parts.append(
+                _fill(
+                    area.x, y - _TABLE_HAIRLINE / 2, area.w, _TABLE_HAIRLINE,
+                    hair_color, graphics,
+                )
+            )
+    return "".join(parts)
+
+
+_TAKEAWAY_PAD_X = 0.35
+
+
+_PANEL_PAD = 0.55
+
+
+def _takeaway_panel_xml(
+    text: str,
+    frame: Frame,
+    theme: Theme,
+    graphics: _GraphicStyles,
+    styles: _ParagraphStyles,
+) -> str:
+    """The conclusion as a dark panel down the right third: a small accent
+    label, a short rule, and the sentence set large. Dark ink on a light deck,
+    the accent-deepened fill on a dark one — always the page's heaviest block,
+    which is the point: it is what the page concludes."""
+    fill = theme.text if _is_light(theme.bg) else _section_fill(theme)
+    ink = theme.bg if _is_light(theme.bg) else theme.text
+    # A deep accent (forest, navy) on the near-black panel was unreadable;
+    # lifted toward the page colour it still reads as the accent.
+    label_color = _blend(theme.accent, theme.bg, 0.45) if _is_light(theme.bg) else theme.bg
+    parts = [_fill(frame.x, frame.y, frame.w, frame.h, fill, graphics, 0.1)]
+    inner_x = frame.x + _PANEL_PAD
+    inner_w = frame.w - 2 * _PANEL_PAD
+    label_y = frame.y + _PANEL_PAD
+    parts.append(_fill(inner_x, label_y, 1.2, 0.08, theme.accent, graphics))
+    parts.append(
+        _visual_text_xml(
+            "重點" if _is_cjk_text(text) else "KEY POINT",
+            inner_x, label_y + 0.2, inner_w, 0.7, styles,
+            size_pt=min(theme.caption_pt, 12), color=label_color, bold=True,
+        )
+    )
+    body_top = label_y + 1.1
+    room = frame.y + frame.h - _PANEL_PAD - body_top
+    wrap = _wrap_width(inner_w)
+    size = frame.size_pt
+    while size > 13 and _measured_text_h(text, size, wrap, 1.35) > room:
+        size -= 1
+    text_h = min(room, _measured_text_h(text, size, wrap, 1.35))
+    parts.append(
+        _visual_text_xml(
+            text, inner_x, body_top, inner_w, text_h, styles,
+            size_pt=size, color=ink, bold=True, font=theme.font_display,
+            line_height="135%",
+        )
+    )
+    return "".join(parts)
+
+
+def _is_cjk_text(text: str) -> bool:
+    return any("\u3000" <= ch <= "\u9fff" for ch in text)
+
+
+_TAKEAWAY_FOLLOW_GAP = 0.55
+# Body roles whose drawn height is their content's: the takeaway follows them.
+_SIZED_BODY_ROLES = frozenset(
+    {"process-area", "timeline-area", "metrics-area", "cards-area", "table-area"}
+)
+_XML_BOTTOM = re.compile(r'svg:y="(-?[\d.]+)cm"[^>]*?svg:height="([\d.]+)cm"')
+
+
+_BLOCK_OPTICAL = 0.4
+_XML_Y = re.compile(r'(svg:y[12]?=")(-?[\d.]+)cm"')
+
+
+def _shift_y(xml: str, dy: float) -> str:
+    """Move every positioned shape in ``xml`` down by ``dy`` cm."""
+    return _XML_Y.sub(lambda m: f'{m.group(1)}{float(m.group(2)) + dy:.4f}cm"', xml)
+
+
+def _xml_top(xml: str) -> float | None:
+    """Highest edge of any positioned shape in ``xml``."""
+    ys = [float(y) for y, _h in _XML_BOTTOM.findall(xml)]
+    return min(ys) if ys else None
+
+
+def _xml_bottom(xml: str) -> float | None:
+    """Lowest edge of any positioned shape in ``xml``."""
+    ends = [float(y) + float(h) for y, h in _XML_BOTTOM.findall(xml)]
+    return max(ends) if ends else None
+
+
+def _panel_need_h(text: str, frame: Frame, theme: Theme) -> float:
+    """Height the takeaway panel needs for its label and sentence."""
+    wrap = _wrap_width(frame.w - 2 * _PANEL_PAD)
+    return (
+        2 * _PANEL_PAD + 1.1 + _measured_text_h(text, frame.size_pt, wrap, 1.35)
+    )
+
+
+def _takeaway_xml(
+    text: str,
+    frame: Frame,
+    theme: Theme,
+    graphics: _GraphicStyles,
+    styles: _ParagraphStyles,
+    treatment: str,
+) -> str:
+    """The page's "so what", drawn at the foot per ``Style.takeaway``.
+
+    One sentence, visually distinct from the evidence above it — the element
+    every hand-built deck ends a page with and no generated page had.
+    """
+    if treatment == "panel" and frame.h > 3:
+        return _takeaway_panel_xml(text, frame, theme, graphics, styles)
+    if treatment == "panel":
+        treatment = "bar"
+    size = frame.size_pt
+    text_w = frame.w - 2 * _TAKEAWAY_PAD_X
+    wrap_w = _wrap_width(text_w)
+    while (
+        size > _TITLE_MIN_PT
+        and _measured_text_h(text, size, wrap_w, 1.25) > frame.h - 0.05
+    ):
+        size -= 1
+    text_h = _measured_text_h(text, size, wrap_w, 1.25)
+    # LibreOffice sets the first line's ascent below the box top (inset plus
+    # the CJK line-height lead); centring the measured box alone left the text
+    # visibly low in the band.
+    ty = frame.y + (frame.h - text_h) / 2 - 0.05
+    parts: list[str] = []
+    color = theme.text
+    font = theme.font_display
+    center = False
+    tx = frame.x + _TAKEAWAY_PAD_X
+    if treatment == "band":
+        parts.append(_fill(frame.x, frame.y, frame.w, frame.h, theme.accent, graphics, 0.2))
+        color = theme.bg
+    elif treatment == "bleed":
+        parts.append(_fill(0, frame.y, PAGE_W, frame.h, theme.accent, graphics))
+        color = theme.bg
+    elif treatment == "bar":
+        parts.append(_fill(frame.x, frame.y, frame.w, frame.h, theme.surface, graphics))
+        parts.append(_fill(frame.x, frame.y, 0.2, frame.h, theme.accent, graphics))
+    elif treatment == "box":
+        parts.append(
+            _rect_xml(
+                frame.x, frame.y, frame.w, frame.h,
+                fill="none", corner_radius_cm=0.12,
+                style_name=graphics.name_for_stroke(theme.accent, 1.0),
+            )
+        )
+        parts.append(_fill(frame.x, frame.y, 0.2, frame.h, theme.accent, graphics))
+    elif treatment == "rule":
+        parts.append(
+            _fill(frame.x, frame.y, _KICKER_RULE_W, _KICKER_RULE_H, theme.accent, graphics)
+        )
+        tx = frame.x
+        text_w = frame.w
+        ty = frame.y + 0.35
+    else:  # quiet
+        center = True
+        tx = frame.x
+        text_w = frame.w
+    parts.append(
+        _visual_text_xml(
+            text, tx, ty, text_w, text_h + 0.1, styles,
+            size_pt=size, color=color, bold=True, center=center,
+            font=font, line_height="125%",
+        )
+    )
     return "".join(parts)
 
 
@@ -2328,12 +3560,18 @@ def _fit_cards(items: list, area: Frame, theme: Theme):
     cols = 2 if n in (2, 4) else 3
     rows = 2 if n == 4 else 1
     gap = _VISUAL_GAP
+    if rows == 2 and (area.h - gap) / 2 < _CARD_MIN_H:
+        # Under a dashboard strip with a lede and a takeaway the area is ~3cm:
+        # two rows of minimum-height cards ran past the band and the footer.
+        cols, rows = 4, 1
     card_w = (area.w - gap * (cols - 1)) / cols
     raw_h = (area.h - gap * (rows - 1)) / rows
 
     text_w = card_w - 2 * _CARD_PAD_X
-    title_pt = min(theme.body_pt, 18)
-    child_pt = min(theme.caption_pt, 12)
+    # A card beside a side panel is ~5cm wide: at 20pt its title broke every
+    # four characters. Narrow cards start a size smaller.
+    title_pt = min(theme.body_pt + 2, 20) if card_w >= 7 else min(theme.body_pt, 17)
+    child_pt = min(theme.caption_pt + 1, 14)
     title_top = _CARD_PAD_TOP + _CARD_BADGE_H + _CARD_BADGE_GAP
 
     normalised = [
@@ -2347,7 +3585,7 @@ def _fit_cards(items: list, area: Frame, theme: Theme):
     fitted = _fit_stacked_texts(
         [text for text, _ in normalised],
         [
-            " · ".join(str(child) for child in children)
+            "\n".join(str(child) for child in children)
             for _, children in normalised
         ],
         title_pt=title_pt,
@@ -2359,13 +3597,16 @@ def _fit_cards(items: list, area: Frame, theme: Theme):
         detail_gap=_CARD_TITLE_GAP,
         pad_bottom=_CARD_PAD_BOTTOM,
         min_h=_CARD_MIN_H,
-        max_h=_CARD_MAX_H,
+        # The ceiling is the space, not a design cap: once the measure counted
+        # Noto's real line box, a 6.8cm cap made three-line card titles give
+        # up their size before the page ran out of room.
+        max_h=raw_h,
         available=raw_h,
     )
     return cols, rows, gap, card_w, text_w, title_top, normalised, fitted
 
 
-def cards_budget_warnings(slide, theme: Theme) -> list[str]:
+def cards_budget_warnings(slide, theme: Theme, style: Style | None = None) -> list[str]:
     """Budget check for the cards layout — closes its ``check_budget`` blind spot.
 
     ``cards-area`` is shape-rendered, so textmetrics charges it nothing — yet
@@ -2379,15 +3620,20 @@ def cards_budget_warnings(slide, theme: Theme) -> list[str]:
     """
     if slide.layout != "cards" or not slide.bullets:
         return []
-    area = next(f for f in LAYOUTS["cards"] if f.role == "cards-area")
+    area = next(f for f in slide_frames(slide, style) if f.role == "cards-area")
     items = _coerce_bullet_items(slide.bullets)
     _cols, _rows, _gap, _cw, _tw, _tt, normalised, fitted = _fit_cards(
         items, area, theme
     )
     label = slide.title or "(未命名投影片)"
     warnings = []
+    if fitted.spills:
+        warnings.append(
+            f"投影片「{label}」的卡片空間不足,文字會超出卡片 — "
+            "請縮短文字、減少卡片,或拿掉這頁的 takeaway。"
+        )
     for i, (text, children) in enumerate(normalised):
-        detail = " · ".join(str(child) for child in children)
+        detail = "\n".join(str(child) for child in children)
         truncated = fitted.titles[i] != text or (
             bool(detail) and fitted.details[i] != detail
         )
@@ -2399,12 +3645,111 @@ def cards_budget_warnings(slide, theme: Theme) -> list[str]:
     return warnings
 
 
+def truncation_warnings(
+    slide: Slide, theme: Theme, style: Style | None = None
+) -> list[str]:
+    """Report every text the shape layouts had to cut to an ellipsis.
+
+    The fit loops shrink fonts and then truncate rather than print past a card
+    — the right call at render time, but until now only the cards layout told
+    anyone. An agent filled a timeline with 40-char details, got a clean "ok",
+    and shipped a page of "…". Dry-running the page is the one check that can
+    never drift from what the renderer actually draws.
+    """
+    import xml.etree.ElementTree as ET
+
+    probe = Presentation(title="probe", slides=[slide])
+    probe_xml = build_content_xml(probe, theme, style=style)
+    root = ET.fromstring(probe_xml.encode("utf-8"))
+    frame_tag = f"{{{_CONTENT_NS['draw']}}}frame"
+    source = {
+        v for v in _string_values(slide.model_dump(mode="json")) if v.endswith("…")
+    }
+    label = slide.title or "(未命名投影片)"
+    warnings = []
+    for dropped in re.findall(r"<!--odforge:label-dropped:(.*?)-->", probe_xml):
+        warnings.append(
+            f"投影片「{label}」的連線標籤「{dropped}」找不到不壓到節點的位置,已省略"
+            " — 請縮短標籤或減少節點。"
+        )
+    drawn_all = "".join("".join(f.itertext()) for f in root.iter(frame_tag))
+    # Compared without whitespace: a line laid out at a space drops that space.
+    drawn_all = "".join(drawn_all.split())
+    for item in slide.bullets:
+        for child in getattr(item, "children", []) or []:
+            if child.strip() and "".join(child.split()) not in drawn_all:
+                warnings.append(
+                    f"投影片「{label}」的說明「{child[:16]}」放不下,沒有畫出"
+                    " — 請縮短文字或減少子項。"
+                )
+    if _SPILL_MARK in probe_xml:
+        warnings.append(
+            f"投影片「{label}」的卡片空間不足,文字會超出卡片 — "
+            "請縮短文字、減少項目,或拿掉這頁的 takeaway。"
+        )
+    if slide.layout == "diagram" and slide.diagram is not None:
+        def bare(s: str) -> str:
+            return re.sub(r"\s", "", s).rstrip("…")
+
+        drawn = {bare("".join(f.itertext())) for f in root.iter(frame_tag)}
+        for node in slide.diagram.nodes:
+            if node.detail and not any(
+                t and bare(node.detail).startswith(t) for t in drawn
+            ):
+                warnings.append(
+                    f"投影片「{label}」的節點「{node.title}」放不下說明文字,"
+                    "說明沒有畫出 — 請縮短節點標題或說明。"
+                )
+    for frame in root.iter(frame_tag):
+        text = "".join(frame.itertext()).strip()
+        if text.endswith("…") and text not in source:
+            warnings.append(
+                f"投影片「{label}」有文字放不下被截斷:「{text[:24]}」"
+                "— 請縮短這段文字或減少項目。"
+            )
+    return warnings
+
+
+def table_budget_warnings(
+    slide: Slide, theme: Theme, style: Style | None = None
+) -> list[str]:
+    """A table taller than its area — even at the smallest body size — runs
+    into the takeaway band or off the page; nothing truncates it, so the
+    ellipsis check cannot see it."""
+    if slide.layout != "table" or slide.table is None:
+        return []
+    area = next(f for f in slide_frames(slide, style) if f.role == "table-area")
+    _w, _hp, _bp, head_h, row_hs = _table_geometry(slide.table, area, theme)
+    need = head_h + sum(row_hs)
+    # The row measure is generous (slack + inset per cell); only a clear
+    # overrun is reported — 7.6cm in a 7.2cm area rendered clean every time.
+    if need <= area.h + 0.15:
+        return []
+    return [
+        f"投影片「{slide.title or '(未命名投影片)'}」的表格需要約 {need:.1f}cm,"
+        f"可用 {area.h:.1f}cm — 請減少列數、縮短儲存格文字,或拿掉這頁的 takeaway。"
+    ]
+
+
+def _string_values(data) -> list[str]:
+    if isinstance(data, str):
+        return [data]
+    if isinstance(data, dict):
+        return [s for v in data.values() for s in _string_values(v)]
+    if isinstance(data, list):
+        return [s for v in data for s in _string_values(v)]
+    return []
+
+
 def _cards_xml(
     items: list,
     area: Frame,
     theme: Theme,
     graphics: _GraphicStyles,
     styles: _ParagraphStyles,
+    card: str = "filled",
+    *,
+    flush: float | None = None,
 ) -> str:
     """Render 2–4 parallel ideas as editorial cards rather than a bullet list.
 
@@ -2420,8 +3765,24 @@ def _cards_xml(
         items, area, theme
     )
     card_h = fitted.card_h
+    if card in _PANEL_CARDS:
+        # Visible containers reach down the page like the reference deck's
+        # panels (content stays at the top of each card); a short strip of
+        # boxes floating over an empty lower half read as unfinished.
+        card_h = max(card_h, ((area.h - gap * (rows - 1)) / rows) * _PANEL_FILL)
+    if flush is not None:
+        # Beside a takeaway panel the grid starts at the panel's top and is at
+        # least as tall as the panel's own text; the panel then takes the
+        # grid's height (see _page_xml), so the two read as one block.
+        card_h = max(card_h, (min(area.h, flush) - gap * (rows - 1)) / rows)
     grid_h = rows * card_h + gap * (rows - 1)
-    start_y = area.y + (area.h - grid_h) / 2
+    start_y = (
+        area.y
+        if flush is not None
+        else area.y + _BODY_TOP_GAP
+        if card in _PANEL_CARDS
+        else _body_y(area, grid_h)
+    )
     child_y_offset = fitted.detail_offset
 
     parts: list[str] = []
@@ -2429,7 +3790,7 @@ def _cards_xml(
         row, col = divmod(i, cols)
         card_x = area.x + col * (card_w + gap)
         card_y = start_y + row * (card_h + gap)
-        parts.append(_visual_card_xml(card_x, card_y, card_w, card_h, theme, graphics))
+        parts.append(_visual_card_xml(card_x, card_y, card_w, card_h, theme, graphics, card))
         parts.append(
             _visual_text_xml(
                 f"{i + 1:02d}",
@@ -2472,7 +3833,7 @@ def _cards_xml(
                     line_height="135%",
                 )
             )
-    return "".join(parts)
+    return (_SPILL_MARK if fitted.spills else "") + "".join(parts)
 
 
 def _closing_actions_xml(
@@ -2481,6 +3842,7 @@ def _closing_actions_xml(
     theme: Theme,
     graphics: _GraphicStyles,
     styles: _ParagraphStyles,
+    card: str = "filled",
 ) -> str:
     """Render concrete closing actions as cards sized to their own text.
 
@@ -2515,7 +3877,7 @@ def _closing_actions_xml(
     fitted = _fit_stacked_texts(
         [text for text, _children in entries],
         [
-            " · ".join(str(child) for child in children)
+            "\n".join(str(child) for child in children)
             for _text, children in entries
         ],
         title_pt=min(theme.body_pt, 17),
@@ -2538,7 +3900,7 @@ def _closing_actions_xml(
     for index in range(count):
         card_x = start_x + index * (card_w + gap)
         parts.append(
-            _visual_card_xml(card_x, start_y, card_w, card_h, theme, graphics)
+            _visual_card_xml(card_x, start_y, card_w, card_h, theme, graphics, card)
         )
         parts.append(
             _visual_text_xml(
@@ -2582,7 +3944,7 @@ def _closing_actions_xml(
                     line_height="125%",
                 )
             )
-    return "".join(parts)
+    return (_SPILL_MARK if fitted.spills else "") + "".join(parts)
 
 
 def _diagram_positions(
@@ -2593,27 +3955,53 @@ def _diagram_positions(
     if diagram.kind == "hub":
         center_x = area.x + area.w / 2
         center_y = area.y + area.h / 2
+        # Three node rows (top / centre / bottom) must leave a connector long
+        # enough to carry its label. At the full 2.45cm node height a lede and
+        # a takeaway band left ~0.1cm between the centre and the top node, so
+        # every vertical edge label was pushed off to float beside the nodes.
+        node_h = max(
+            _DIAGRAM_MIN_NODE_H + 0.4,
+            min(_DIAGRAM_NODE_H, (area.h - 2 * _HUB_MIN_EDGE) / 3),
+        )
         positions = {
             diagram.nodes[0].id: (
                 center_x - _DIAGRAM_NODE_W / 2,
-                center_y - _DIAGRAM_NODE_H / 2,
+                center_y - node_h / 2,
                 _DIAGRAM_NODE_W,
-                _DIAGRAM_NODE_H,
+                node_h,
             )
         }
         outer = diagram.nodes[1:]
         count = len(outer)
         radius_x = min(8.2, (area.w - _DIAGRAM_NODE_W) / 2)
-        radius_y = min(3.45, (area.h - _DIAGRAM_NODE_H) / 2)
+        radius_y = min(3.45, (area.h - node_h) / 2)
+
+        def clearance(offset: float) -> float:
+            # Worst gap between any satellite and the hub, along whichever
+            # axis separates them. Straight up/down in a short area left the
+            # top and bottom nodes touching the hub with no connector at all.
+            worst = math.inf
+            for i in range(count):
+                a = offset + 2 * math.pi * i / count
+                dx = abs(radius_x * math.cos(a))
+                dy = abs(radius_y * math.sin(a))
+                worst = min(worst, max(dx - _DIAGRAM_NODE_W, dy - node_h))
+            return worst
+
+        start = max(
+            (-math.pi / 2, -math.pi / 2 + math.pi / count,
+             -math.pi / 2 + math.pi / (2 * count)),
+            key=lambda o: (round(clearance(o), 2) >= _HUB_MIN_EDGE, clearance(o)),
+        )
         for i, node in enumerate(outer):
-            angle = -math.pi / 2 + 2 * math.pi * i / count
+            angle = start + 2 * math.pi * i / count
             node_x = center_x + radius_x * math.cos(angle)
             node_y = center_y + radius_y * math.sin(angle)
             positions[node.id] = (
                 node_x - _DIAGRAM_NODE_W / 2,
-                node_y - _DIAGRAM_NODE_H / 2,
+                node_y - node_h / 2,
                 _DIAGRAM_NODE_W,
-                _DIAGRAM_NODE_H,
+                node_h,
             )
         return positions
 
@@ -2649,11 +4037,46 @@ def _diagram_positions(
         groups.setdefault(levels[node_id], []).append(node_id)
 
     level_count = max_level + 1
-    vertical_gap = 0.45
+    # A labelled edge needs a connector long enough to carry its chip.
+    vertical_gap = 0.9 if any(edge.label for edge in diagram.edges) else 0.45
     node_h = min(
         _DIAGRAM_NODE_H,
         (area.h - vertical_gap * (level_count - 1)) / level_count,
     )
+    widest = max(len(row) for row in groups.values())
+    # A chain (one node per level) drawn as a column filled a fifth of the
+    # page width; it reads left → right like the process it is.
+    if (node_h < _DIAGRAM_MIN_NODE_H and level_count > widest) or (
+        widest == 1 and level_count >= 3
+    ):
+        # A deep, narrow hierarchy (a pipeline drawn as a chain) squeezed into
+        # a short area gave each level ~1.2cm and cut every node's text. Flow
+        # the levels left → right instead: the page is wider than it is tall.
+        gap = 0.9
+        col_w = min(
+            _DIAGRAM_NODE_W, (area.w - gap * (level_count - 1)) / level_count
+        )
+        grid_w = col_w * level_count + gap * (level_count - 1)
+        start_x = area.x + (area.w - grid_w) / 2
+        positions = {}
+        for level in range(level_count):
+            col = groups.get(level, [])
+            if not col:
+                continue
+            h = min(
+                _DIAGRAM_NODE_H,
+                (area.h - vertical_gap * (len(col) - 1)) / len(col),
+            )
+            col_h = h * len(col) + vertical_gap * (len(col) - 1)
+            top = area.y + (area.h - col_h) / 2
+            for i, node_id in enumerate(col):
+                positions[node_id] = (
+                    start_x + level * (col_w + gap),
+                    top + i * (h + vertical_gap),
+                    col_w,
+                    h,
+                )
+        return positions
     grid_h = node_h * level_count + vertical_gap * (level_count - 1)
     start_y = area.y + (area.h - grid_h) / 2
     positions: dict[str, tuple[float, float, float, float]] = {}
@@ -2723,9 +4146,11 @@ def _diagram_xml(
                 + 2 * _EDGE_LABEL_PAD
             )
             candidates = _edge_label_candidates(x1, y1, x2, y2, label_w, label_h)
-            label_x, label_y, on_line = _place_edge_label(
-                candidates, label_w, label_h, taken, area
-            )
+            placed = _place_edge_label(candidates, label_w, label_h, taken, area)
+            if placed is None:
+                parts.append(_LABEL_DROP_MARK.format(escape(edge.label)))
+                continue
+            label_x, label_y, on_line = placed
             taken.append((label_x, label_y, label_w, label_h))
             if on_line:
                 label_bg = graphics.name_for_fill(theme.bg)
@@ -2786,7 +4211,7 @@ def _diagram_xml(
         # LibreOffice wrap one line more than modelled, and a 24-char title's
         # fourth line printed straight through the detail below.
         node_wrap_w = _wrap_width(max(w - 0.7, 0.5))
-        title_cap = max(h - 0.75, 0.62)
+        title_cap = max(h - 0.95, 0.62)
         title_text = node.title
         title_h = _measured_text_h(title_text, title_size, node_wrap_w, 1.15)
         if title_h > title_cap:
@@ -2798,7 +4223,9 @@ def _diagram_xml(
             )
             title_h = _measured_text_h(title_text, title_size, node_wrap_w, 1.15)
         title_h = min(max(title_h, 0.62), title_cap)
-        title_y = y + 0.28
+        # Tight insets: measured with Noto's real line box, the old 0.28 / 0.12 /
+        # 0.22cm margins left a 2cm node no room for its detail at all.
+        title_y = y + 0.18
         parts.append(
             _visual_text_xml(
                 title_text,
@@ -2814,8 +4241,8 @@ def _diagram_xml(
                 font=theme.font_display,
             )
         )
-        detail_y = title_y + title_h + 0.12
-        detail_h = y + h - 0.22 - detail_y
+        detail_y = title_y + title_h + 0.04
+        detail_h = y + h - 0.12 - detail_y
         if node.detail and detail_h >= 0.45:
             detail_pt = min(theme.caption_pt, 11)
             parts.append(
@@ -2922,6 +4349,23 @@ def _list_style_xml(name: str, theme: Theme) -> str:
     return f'<text:list-style style:name="{_attr(name)}">{levels}</text:list-style>'
 
 
+_LIST_GROW_MAX = 4  # pt a short bullet page may step up
+_LIST_GROW_FILL = 0.62  # ...while the list stays within this share of its frame
+
+
+def _grown_list_pt(slide: Slide, theme: Theme, frame: Frame, layout: str) -> int:
+    """A short bullet list set larger, so three lines at body size do not sit
+    in the top third of an empty page. Measured by the budget gate's own
+    model, so what grows here can never trip it."""
+    size = frame.size_pt
+    for step in range(1, _LIST_GROW_MAX + 1):
+        h = frame_content_height(slide, theme, replace(frame, size_pt=size + 1), layout)
+        if h is None or h > frame.h * _LIST_GROW_FILL:
+            break
+        size = frame.size_pt + step
+    return size
+
+
 def _list_xml(
     items,
     styles: _ParagraphStyles,
@@ -2929,6 +4373,8 @@ def _list_xml(
     size_pt: int,
     color: str,
     style_name: str | None = None,
+    frame_w: float | None = None,
+    level: int = 1,
 ) -> str:
     """Build a ``<text:list>`` for ``items`` (see :data:`ListItem`).
 
@@ -2953,9 +4399,19 @@ def _list_xml(
             line_height=_BULLET_LINE_HEIGHT,
             margin_bottom=_BULLET_MARGIN_BOTTOM,
         )
-        para = f'<text:p text:style-name="{_attr(pstyle)}">{escape(text)}</text:p>'
+        # With the frame width known, the item is laid out by the engine at
+        # the width left after its level's indent (space-before + label).
+        body = (
+            _broken_xml(text, size_pt, frame_w - _list_indent(level))
+            if frame_w is not None
+            else escape(text)
+        )
+        para = f'<text:p text:style-name="{_attr(pstyle)}">{body}</text:p>'
         nested = (
-            _list_xml(children, styles, size_pt=size_pt, color=color)
+            _list_xml(
+                children, styles, size_pt=size_pt, color=color,
+                frame_w=frame_w, level=level + 1,
+            )
             if children
             else ""
         )
@@ -2964,11 +4420,21 @@ def _list_xml(
     return f"<text:list{style_attr}>{''.join(li_parts)}</text:list>"
 
 
+def _list_indent(level: int) -> float:
+    """Where a bullet's text starts (cm), per :data:`_LIST_LEVELS`."""
+    for lvl, space_before, min_label in _LIST_LEVELS:
+        if lvl == level:
+            return space_before + min_label
+    return _LIST_LEVELS[-1][1] + _LIST_LEVELS[-1][2]
+
+
 def _kicker_paragraph_xml(
     text: str,
     styles: _ParagraphStyles,
     theme: Theme,
     color: str | None = None,
+    *,
+    center: bool = False,
 ) -> str:
     """Build a wide-tracked "kicker" ``<text:p>`` (caption-size, accent, spaced).
 
@@ -2980,7 +4446,7 @@ def _kicker_paragraph_xml(
     style_name = styles.name_for(
         theme.caption_pt,
         True,
-        False,
+        center,
         color or theme.accent,
         letter_spacing=_KICKER_LETTER_SPACING,
     )
@@ -3043,6 +4509,44 @@ def _quote_mark_xml(theme: Theme, styles: _ParagraphStyles) -> str:
     return _frame_box_xml(frame, para)
 
 
+_LEADING_NUMBER = re.compile(r"^\s*(\d{1,2})(?!\d)")
+_OWN_NUMBERING = re.compile(
+    r"^\s*(?:\d{1,2}|[一二三四五六七八九十]{1,3})\s*[、.．)）:：]\s*|^\s*\d{1,2}\s+(?=\S)"
+)
+
+
+def _leading_number(text: str) -> int | None:
+    match = _LEADING_NUMBER.match(text or "")
+    return int(match.group(1)) if match else None
+
+
+_AGENDA_FILL = 0.7
+_AGENDA_GROW = 8
+
+
+def _agenda_scale(labels: list[str], frame: Frame, body_pt: int) -> tuple[int, float]:
+    """Size and row gap for the agenda: six items at body size filled the top
+    third of the page. Grow while every item stays on one line and the list
+    stays within :data:`_AGENDA_FILL` of the frame, then spread the rows."""
+    n = max(1, len(labels))
+    room = frame.h * _AGENDA_FILL
+
+    def row_h(size: int) -> float:
+        return size * PT_TO_CM * _CJK_LINE_BOX * _LO_LINE_SPACING_SLACK
+
+    base_gap = float(_BULLET_MARGIN_BOTTOM.removesuffix("cm"))
+    size = body_pt
+    for candidate in range(body_pt + 1, body_pt + _AGENDA_GROW + 1):
+        fits_line = all(
+            text_width_cm("00  " + label, candidate) <= frame.w - 0.8 for label in labels
+        )
+        if not fits_line or n * (row_h(candidate) + base_gap) > room:
+            break
+        size = candidate
+    gap = min(1.0, max(base_gap, (room - n * row_h(size)) / n))
+    return size, gap
+
+
 def _numbered_items_xml(
     items: list,
     frame: Frame,
@@ -3058,22 +4562,31 @@ def _numbered_items_xml(
     ("01") is why this is drawn by hand — ``style:num-format`` cannot pad. Loose
     bullet typography (line-height + bottom margin) spaces the rows.
     """
-    num_style = span_styles.name_for(theme.body_pt, True, theme.accent)
+    labels = [
+        # The page numbers its own items; an author's "01 " / "一、" would
+        # print twice.
+        _OWN_NUMBERING.sub("", _line_text(item), count=1) or _line_text(item)
+        for item in items
+    ]
+    size, gap = _agenda_scale(labels, frame, theme.body_pt)
+    num_style = span_styles.name_for(size, True, theme.accent)
     text_style = para_styles.name_for(
-        theme.body_pt,
+        size,
         False,
         False,
         theme.text_color,
         line_height=_BULLET_LINE_HEIGHT,
-        margin_bottom=_BULLET_MARGIN_BOTTOM,
+        margin_bottom=f"{gap:.2f}cm",
     )
     paras = []
-    for i, item in enumerate(items, start=1):
+    for i, label in enumerate(labels, start=1):
+        # ``text:s`` because ODF collapses literal runs of spaces — "01" then
+        # ran straight into an item that began with a digit.
         paras.append(
             f'<text:p text:style-name="{_attr(text_style)}">'
             f'<text:span text:style-name="{_attr(num_style)}">'
             f"{escape(f'{i:02d}')}</text:span>"
-            f"{escape('  ' + _line_text(item))}</text:p>"
+            f'<text:s text:c="2"/>{escape(label)}</text:p>'
         )
     return _frame_box_xml(frame, "".join(paras))
 
@@ -3105,15 +4618,40 @@ def _page_xml(
     inverted = inverted_layouts(style)
     layout = slide.layout
     parts: list[str] = []
+    meta = _cover_meta(slide, branding) if layout == "title" else []
+    cover = (
+        _cover_layout(slide, style, theme, bool(meta)) if layout == "title" else None
+    )
     # Pre-content decorations, emitted first so they sit behind the text.
     if layout == "title":
-        parts.append(_cover_deco_xml(style, theme, graphics))
+        parts.append(_cover_deco_xml(style, theme, graphics, cover))
         if style.cover_deco == "dots":
             parts.append(_deco_frame_xml())
     if layout == "section":
         parts.append(
             _section_mark_xml(style, section_ordinal, theme, styles, graphics)
         )
+        if slide.subtitle:
+            # The divider's subtitle (what the chapter is about) was accepted
+            # and never drawn.
+            head = section_frames(style)[0]
+            # Under metropolis' lower rule, not through it.
+            below = 0.95 if style.section == "centered-rules" else 0.15
+            sub = Frame(
+                "section-subtitle", head.x, head.y + head.h + below, head.w, 1.1,
+                LEDE_PT, center=head.center,
+            )
+            ink = (
+                _blend(theme.bg, _section_fill(theme), 0.25)
+                if layout in inverted
+                else theme.muted
+            )
+            parts.append(
+                _frame_xml(
+                    sub, [slide.subtitle],
+                    styles.name_for(LEDE_PT, False, head.center, ink),
+                )
+            )
     if layout == "quote":
         parts.append(_quote_mark_xml(theme, styles))
 
@@ -3122,7 +4660,24 @@ def _page_xml(
     # byline with no logo, or the reverse.
     if branding is not None:
         if layout == "title" and branding.byline:
-            parts.append(_byline_xml(branding.byline, theme, styles, style))
+            parts.append(_byline_xml(branding.byline, theme, styles, style, cover))
+        if (
+            layout == "closing"
+            and branding.byline
+            and branding.placement in ("cover-closing", "all")
+        ):
+            # The closing page carries the byline too when the placement says
+            # so — the reference deck signs off with who and where.
+            ink = theme.bg if layout in inverted else theme.muted
+            frame = Frame("byline", 2.0, 14.2, 24.0, 0.9, theme.caption_pt, center=True)
+            bstyle = styles.name_for(theme.caption_pt, False, True, ink)
+            parts.append(
+                _frame_box_xml(
+                    frame,
+                    f'<text:p text:style-name="{_attr(bstyle)}">'
+                    f"{escape(branding.byline)}</text:p>",
+                )
+            )
         if logo is not None and _page_shows_logo(layout, branding.placement):
             parts.append(_logo_xml(logo, layout, theme, graphics))
 
@@ -3132,27 +4687,74 @@ def _page_xml(
     # height so the two boxes can never intersect. Both quantities come from the
     # shared textmetrics model so the size drawn == the size the budget gate
     # charges. Computed once here; consumed in the fact / caption branches below.
-    bigfact_fact_pt: int | None = None
-    bigfact_caption_y: float | None = None
-    if layout == "big-fact" and slide.fact:
-        fact_frame, caption_frame = LAYOUTS["big-fact"]  # (fact, bullets)
-        bigfact_fact_pt = fact_font_size_pt(
-            slide.fact, fact_frame.w, theme.display_pt, theme.h1_pt
-        )
-        fact_h = estimate_height_cm(slide.fact, bigfact_fact_pt, fact_frame.w)
-        gap = caption_frame.y - (fact_frame.y + fact_frame.h)
-        bigfact_caption_y = fact_frame.y + max(fact_frame.h, fact_h) + gap
-
     # The cover is the one layout whose geometry the style moves; every other
-    # layout keeps the shared frames the layout budget is computed against.
+    # layout takes the shared frames the layout budget is computed against,
+    # re-flowed around an optional lede / takeaway (themes.page_frames).
     if layout == "title":
-        frames = cover_frames(style)
+        frames = cover
+        if meta and not frames[0].center:
+            parts.append(_cover_meta_xml(meta, style, theme, graphics, styles, frames))
+        elif meta:
+            parts.append(_cover_meta_line_xml(meta, style, theme, styles, frames))
     elif layout == "section":
         frames = section_frames(style)
     else:
-        frames = LAYOUTS[layout]
+        frames = slide_frames(slide, style)
+
+    bigfact_fact_pt: int | None = None
+    bigfact_caption_y: float | None = None
+    if layout == "big-fact" and slide.fact:
+        by_role = {f.role: f for f in frames}
+        fact_frame, caption_frame = by_role["fact"], by_role["bullets"]
+        # The box's own 0.5cm inset (and a sliver for the width model) is not
+        # the fact's to use: sized to the full frame, 「58 萬戶」 wrapped and
+        # its 「戶」 printed over the caption placed for one line.
+        fact_w = (fact_frame.w - 0.5) * 0.97
+        bigfact_fact_pt = fact_font_size_pt(
+            slide.fact, fact_w, _bigfact_max_pt(theme), theme.h1_pt
+        )
+        fact_h = estimate_height_cm(slide.fact, bigfact_fact_pt, fact_w)
+        gap = caption_frame.y - (fact_frame.y + fact_frame.h)
+        bigfact_caption_y = fact_frame.y + max(fact_frame.h, fact_h) + gap
+
+    # Closing cards on an inverted (accent) ground keep their filled surface —
+    # a rule or outline would vanish into it.
+    card = "filled" if layout in inverted else style.card
+    col_pt = (
+        _column_pt(slide, theme, frames)
+        if layout in {"comparison", "two-col"}
+        else None
+    )
+    # A takeaway set as the right-hand panel (not the foot band): the body
+    # blocks beside it align to its top and bottom.
+    panel = next(
+        (f for f in frames if f.role == "takeaway" and f.x >= PANEL_X - 0.01), None
+    )
+    panel_need = (
+        _panel_need_h(slide.takeaway, panel, theme) if panel is not None else None
+    )
+    body_bottom: float | None = None
+    pending: int | None = None
+    body_start: int | None = None
+    area_bottom = 0.0
+    global _BODY_ANCHOR_TOP
+    # Reset at the end of this function (and at the start of every page).
+    _BODY_ANCHOR_TOP = panel is None and any(f.role == "takeaway" for f in frames)
     for frame in frames:
         role = frame.role
+        # Where the drawn body actually ends (measured off the shapes the
+        # previous frame emitted): the takeaway follows it rather than sitting
+        # at a fixed y under a dead band.
+        if pending is not None:
+            bottom = _xml_bottom("".join(parts[pending:]))
+            if bottom is not None:
+                body_bottom = max(body_bottom or 0.0, bottom)
+            pending = None
+        if role in _SIZED_BODY_ROLES:
+            pending = len(parts)
+            area_bottom = max(area_bottom, frame.y + frame.h)
+            if body_start is None:
+                body_start = pending
 
         # chart-area draws a ChartSpec (shapes + labels), not text lines.
         if role == "chart-area":
@@ -3165,13 +4767,19 @@ def _page_xml(
                 )
             continue
         if role == "process-area":
-            parts.append(_process_xml(slide.steps, frame, theme, graphics, styles))
+            parts.append(_process_xml(slide.steps, frame, theme, graphics, styles, card))
             continue
         if role == "timeline-area":
-            parts.append(_timeline_xml(slide.events, frame, theme, graphics, styles))
+            parts.append(_timeline_xml(slide.events, frame, theme, graphics, styles, card))
             continue
         if role == "metrics-area":
-            parts.append(_metrics_xml(slide.metrics, frame, theme, graphics, styles))
+            parts.append(
+                _metrics_xml(
+                    slide.metrics, frame, theme, graphics, styles, card,
+                    compact=layout == "dashboard",
+                    flush=panel_need if layout != "dashboard" else None,
+                )
+            )
             continue
         if role == "cards-area":
             parts.append(
@@ -3181,6 +4789,8 @@ def _page_xml(
                     theme,
                     graphics,
                     styles,
+                    card,
+                    flush=panel_need,
                 )
             )
             continue
@@ -3192,6 +4802,45 @@ def _page_xml(
                     theme,
                     graphics,
                     styles,
+                    card,
+                )
+            )
+            continue
+        if role == "table-area":
+            if slide.table is not None:
+                parts.append(
+                    _table_xml(slide.table, frame, theme, graphics, styles, card)
+                )
+            continue
+        if role == "lede":
+            lede_pt = heading_pt(slide.subtitle, frame.w, frame.size_pt)
+            lede_style = styles.name_for(
+                lede_pt, False, False, theme.muted, font=theme.font_body,
+            )
+            parts.append(_frame_xml(frame, [slide.subtitle], lede_style, lede_pt))
+            continue
+        if role == "takeaway":
+            if body_bottom is not None and panel is not None:
+                frame = replace(
+                    frame, h=max(min(frame.h, panel_need), body_bottom - frame.y)
+                )
+            elif body_bottom is not None and body_start is not None:
+                # Body and band travel as one block: closed up (no dead band
+                # between them) and set a little above centre in the space
+                # they share, so the leftover air is split rather than all
+                # pooled at the foot of the page.
+                block_bottom = body_bottom + _TAKEAWAY_FOLLOW_GAP + frame.h
+                slack = frame.y + frame.h - block_bottom
+                dy = max(0.0, slack * _BLOCK_OPTICAL)
+                if dy > 0.05:
+                    parts[body_start:] = [_shift_y(x, dy) for x in parts[body_start:]]
+                frame = replace(
+                    frame,
+                    y=min(frame.y, body_bottom + dy + _TAKEAWAY_FOLLOW_GAP),
+                )
+            parts.append(
+                _takeaway_xml(
+                    slide.takeaway, frame, theme, graphics, styles, style.takeaway
                 )
             )
             continue
@@ -3217,18 +4866,52 @@ def _page_xml(
         # card behind them — emitted before the text frame so document order
         # keeps the text on top.
         if role in _CARD_ROLES:
-            card_style = graphics.name_for_fill(theme.surface)
-            parts.append(
-                _rect_xml(
-                    frame.x - _CARD_PAD,
-                    frame.y - _CARD_PAD,
-                    frame.w + 2 * _CARD_PAD,
-                    frame.h + 2 * _CARD_PAD,
-                    fill=theme.surface,
-                    corner_radius_cm=_CARD_CORNER,
-                    style_name=card_style,
-                )
+            # Both columns share one height — the taller column's content,
+            # floored — instead of the full frame: two bullets in an 11cm box
+            # was the half-empty page.
+            col_h = max(
+                _column_h(_role_lines(slide, f.role), _col_layout(slide), theme, f, col_pt)
+                for f in frames
+                if f.role in _CARD_ROLES
             )
+            # Narrow columns (a side panel takes a third of the page) are where
+            # the width estimate errs; leave a line's slack inside the box.
+            box_h = min(frame.h, max(_COLUMN_MIN_H, col_h + 0.45 + _COLUMN_TEXT_INSET))
+            if card in _PANEL_CARDS:
+                box_h = max(box_h, frame.h * _COLUMN_FILL)
+            if any(f.role == "takeaway" and f.h > 3 for f in frames):
+                # Beside a side panel the columns run its full height, so the
+                # white cards and the dark panel share a top and a bottom.
+                box_h = frame.h - _CARD_PAD
+            if card == "filled":
+                # Inside the margins like every other container (the text is
+                # inset instead): overhanging the frame broke the page grid.
+                parts.append(
+                    _rect_xml(
+                        frame.x,
+                        frame.y - _CARD_PAD,
+                        frame.w,
+                        box_h + 2 * _CARD_PAD,
+                        fill=theme.surface,
+                        corner_radius_cm=_CARD_CORNER,
+                        style_name=graphics.name_for_fill(theme.surface),
+                    )
+                )
+            else:
+                # A rule or outline marks the column's own measure; the pad a
+                # filled card overhangs by would push it past the page margin.
+                top = frame.y - (_CARD_PAD if card in ("outlined", "framed") else 0.05)
+                parts.append(
+                    _visual_card_xml(
+                        frame.x,
+                        top,
+                        frame.w,
+                        box_h + (frame.y - top) + _CARD_PAD,
+                        theme,
+                        graphics,
+                        card,
+                    )
+                )
 
         # closing message (title + optional subtitle). Inverted styles paint it
         # in the page colour on the accent ground; light ones keep title ink —
@@ -3243,10 +4926,34 @@ def _page_xml(
                 frame.center,
                 message_color,
                 font=theme.font_display,
+                # The subtitle sat flush under the message with no air.
+                margin_bottom="0.25cm" if slide.subtitle else None,
             )
-            inner = (
+            inner = ""
+            if slide.kicker:
+                # Grown upward by the eyebrow's own height, so the message and
+                # the action row below keep the geometry the budget charged.
+                k = (
+                    _measured_text_h(
+                        slide.kicker, theme.caption_pt, _wrap_width(frame.w), 1.0
+                    )
+                    - _TEXT_BOX_INSET_Y
+                )
+                frame = replace(frame, y=frame.y - k, h=frame.h + k)
+                # The closing page is a chapter of its own (「結語」「請求事項」);
+                # its eyebrow was accepted and silently dropped.
+                inner += _kicker_paragraph_xml(
+                    slide.kicker,
+                    styles,
+                    theme,
+                    _blend(theme.bg, theme.accent, 0.22)
+                    if layout in inverted
+                    else None,
+                    center=frame.center,
+                )
+            inner += (
                 f'<text:p text:style-name="{_attr(msg_style)}">'
-                f"{escape(slide.title)}</text:p>"
+                f"{_broken_xml(slide.title, theme.h1_pt, frame.w)}</text:p>"
             )
             if slide.subtitle:
                 sub_style = styles.name_for(
@@ -3254,7 +4961,7 @@ def _page_xml(
                 )
                 inner += (
                     f'<text:p text:style-name="{_attr(sub_style)}">'
-                    f"{escape(slide.subtitle)}</text:p>"
+                    f"{_broken_xml(slide.subtitle, theme.body_pt, frame.w)}</text:p>"
                 )
             parts.append(_frame_box_xml(frame, inner))
             continue
@@ -3272,14 +4979,33 @@ def _page_xml(
                 size_pt=theme.caption_pt,
                 color=theme.text_color,
                 style_name=_LIST_STYLE_NAME,
+                frame_w=frame.w,
             )
+            # Beside the chart, centred on it: pinned to the top, two notes
+            # floated in the corner over an empty quadrant.
+            notes_h = sum(
+                _measured_text_h(_line_text(x), theme.caption_pt,
+                                 _wrap_width(frame.w - _list_indent(1)), 1.45)
+                + 0.3
+                for x in lines
+            )
+            if notes_h < frame.h:
+                frame = replace(frame, y=frame.y + (frame.h - notes_h) * 0.45,
+                                h=notes_h + 0.2)
             parts.append(_frame_box_xml(frame, inner))
             continue
 
         # comparison columns: first item is a bold accent column header, the rest
         # are normal bullets (contract decided by the controller).
-        if layout == "comparison" and role in ("left", "right"):
-            header_style = styles.name_for(theme.body_pt, True, False, theme.accent)
+        if role in _CARD_ROLES and card in _PANEL_CARDS:
+            frame = replace(
+                frame,
+                x=frame.x + _COLUMN_TEXT_INSET,
+                y=frame.y + _COLUMN_TEXT_INSET,
+                w=frame.w - 2 * _COLUMN_TEXT_INSET,
+            )
+        if _col_layout(slide) == "comparison" and role in ("left", "right"):
+            header_style = styles.name_for(col_pt, True, False, theme.accent)
             inner = (
                 f'<text:p text:style-name="{_attr(header_style)}">'
                 f"{escape(_line_text(lines[0]))}</text:p>"
@@ -3289,9 +5015,10 @@ def _page_xml(
                 inner += _list_xml(
                     rest,
                     styles,
-                    size_pt=theme.body_pt,
+                    size_pt=col_pt,
                     color=theme.text_color,
                     style_name=_LIST_STYLE_NAME,
+                    frame_w=frame.w,
                 )
             parts.append(_frame_box_xml(frame, inner))
             continue
@@ -3310,24 +5037,26 @@ def _page_xml(
             if layout == "title" and _cover_is_bleed(style):
                 on_accent = True
             color = theme.bg if on_accent else theme.title_color
+            title_pt = heading_pt(_line_text(lines[0]), frame.w, frame.size_pt)
             title_style = styles.name_for(
-                frame.size_pt,
+                title_pt,
                 frame.bold,
                 frame.center,
                 color,
                 font=theme.font_display,
             )
             inner = ""
-            if slide.kicker and layout not in PLAIN_LAYOUTS:
+            if slide.kicker and (layout not in PLAIN_LAYOUTS or layout == "title"):
                 inner += _kicker_paragraph_xml(
                     slide.kicker,
                     styles,
                     theme,
                     _blend(theme.bg, theme.accent, 0.22) if on_accent else None,
+                    center=frame.center,
                 )
             inner += "".join(
                 f'<text:p text:style-name="{_attr(title_style)}">'
-                f"{escape(_line_text(line))}</text:p>"
+                f"{_broken_xml(_line_text(line), title_pt, frame.w)}</text:p>"
                 for line in lines
             )
             parts.append(_frame_box_xml(frame, inner))
@@ -3335,12 +5064,16 @@ def _page_xml(
 
         # Standard semantic list (title-content bullets, two-col columns).
         if role in LIST_ROLES and not frame.center:
+            list_pt = col_pt if col_pt is not None else frame.size_pt
+            if layout == "title-content" and col_pt is None:
+                list_pt = _grown_list_pt(slide, theme, frame, layout)
             inner = _list_xml(
                 lines,
                 styles,
-                size_pt=frame.size_pt,
+                size_pt=list_pt,
                 color=theme.text_color,
                 style_name=_LIST_STYLE_NAME,
+                frame_w=frame.w,
             )
             parts.append(_frame_box_xml(frame, inner))
             continue
@@ -3383,7 +5116,12 @@ def _page_xml(
             color,
             font=display_font,
         )
-        parts.append(_frame_xml(frame, lines, style_name))
+        # The fact is sized to one line and measured as the renderer's own
+        # wrap; forcing breaks into it split 「62,48 / 0人次」 and the caption,
+        # placed for one line, printed through the second.
+        parts.append(
+            _frame_xml(frame, lines, style_name, None if role == "fact" else size_pt)
+        )
 
     if slide.sources:
         parts.append(_sources_xml(slide.sources, theme, styles, spans))
@@ -3392,6 +5130,22 @@ def _page_xml(
         notes_style = styles.name_for(_NOTES_SIZE_PT, False, False, theme.text_color)
         parts.append(_notes_xml(slide.notes, notes_style))
 
+    _BODY_ANCHOR_TOP = False
+    # No takeaway to close up under: the body block alone is set a little
+    # above centre in its area, instead of hanging from the top of it.
+    if body_start is not None and not slide.takeaway:
+        if pending is not None:
+            bottom = _xml_bottom("".join(parts[pending:]))
+            if bottom is not None:
+                body_bottom = max(body_bottom or 0.0, bottom)
+        top = _xml_top("".join(parts[body_start:]))
+        if body_bottom is not None and top is not None:
+            slack = area_bottom - body_bottom
+            area_top = min(top, next(f.y for f in frames if f.role in _SIZED_BODY_ROLES))
+            want = area_top + (slack + (top - area_top)) * _BLOCK_OPTICAL
+            dy = want - top
+            if dy > 0.05 and body_bottom + dy <= area_bottom:
+                parts[body_start:] = [_shift_y(x, dy) for x in parts[body_start:]]
     master = _PLAIN_MASTER_NAME if layout in PLAIN_LAYOUTS else _MASTER_PAGE_NAME
     dp_style = (
         _SECTION_DRAWING_PAGE_STYLE
@@ -3426,6 +5180,94 @@ def _drawing_page_style_xml(
     )
 
 
+_KICKER_CHAPTER = re.compile(r"^\s*(\d{1,2})\s+(.+?)\s*$")
+
+
+_CJK_THEN_LATIN = re.compile(r"([\u3400-\u9fff])([A-Za-z0-9])")
+_LATIN_THEN_CJK = re.compile(r"([A-Za-z0-9%])([\u3400-\u9fff])")
+
+
+def _space_text(text: str) -> str:
+    return _LATIN_THEN_CJK.sub(r"\1 \2", _CJK_THEN_LATIN.sub(r"\1 \2", text))
+
+
+def _space_mixed_runs(p: Presentation) -> Presentation:
+    """A space between CJK and Latin/digits (「雲端 GPU」, 「平板 6 台」).
+
+    LibreOffice's automatic CJK/Latin gap is off (it also padded full-width
+    brackets); the Taiwanese convention is a real space, so the text gets one
+    before anything is measured or drawn."""
+    def walk(value):
+        if isinstance(value, str):
+            return _space_text(value)
+        if isinstance(value, list):
+            return [walk(v) for v in value]
+        if isinstance(value, dict):
+            return {
+                k: (v if k in _NO_SPACE_FIELDS else walk(v)) for k, v in value.items()
+            }
+        return value
+
+    data = p.model_dump(mode="json")
+    data["slides"] = [walk(slide) for slide in data["slides"]]
+    return Presentation.model_validate(data)
+
+
+# Identifiers and machine fields keep their exact spelling.
+_NO_SPACE_FIELDS = frozenset(
+    {"layout", "id", "source", "target", "src", "url", "kind", "fit", "mode"}
+)
+
+
+def _chapter_key(name: str) -> str:
+    """「研究方法 · 資料」 and 「研究方法 · 模型」 are one chapter."""
+    return re.split(r"\s*[·・|｜/／—–]\s*", name, maxsplit=1)[0]
+
+
+def _renumber_chapters(p: Presentation) -> Presentation:
+    """Chapter numbers follow the order chapters first appear.
+
+    Kickers are written page by page and drifted — 01, 02, 03, 01, 04 — so
+    the running header contradicted the agenda. Numbers are reassigned by the
+    order each chapter *name* first appears; decks that do not use the
+    "NN 章節名" pattern are returned untouched."""
+    order: dict[str, int] = {}
+    written: dict[str, set[int]] = {}
+    sequence: list[int] = []
+    kickers = []
+    for slide in p.slides:
+        m = _KICKER_CHAPTER.match(slide.kicker or "")
+        kickers.append(m)
+        if m:
+            key = _chapter_key(m.group(2))
+            written.setdefault(key, set()).add(int(m.group(1)))
+            sequence.append(int(m.group(1)))
+            if key not in order:
+                order[key] = len(order) + 1
+    if not order:
+        return p
+    consistent = all(len(nums) == 1 for nums in written.values()) and all(
+        a <= b for a, b in itertools.pairwise(sequence)
+    )
+    if consistent:
+        # The author's own numbering holds together (00 開場 included): keep it.
+        return p
+    slides = []
+    for slide, m in zip(p.slides, kickers, strict=True):
+        if m:
+            width = len(m.group(1))
+            number = f"{order[_chapter_key(m.group(2))]:0{max(width, 2)}d}"
+            slide = slide.model_copy(update={"kicker": f"{number} {m.group(2)}"})
+        slides.append(slide)
+    return p.model_copy(update={"slides": slides})
+
+
+def _bigfact_max_pt(theme: Theme) -> int:
+    """The hero number is the page: half again the display size (to 96pt),
+    which fills the band a 54pt figure left 40% empty below."""
+    return min(96, round(theme.display_pt * 1.5))
+
+
 def build_content_xml(
     p: Presentation,
     theme: Theme,
@@ -3455,8 +5297,15 @@ def build_content_xml(
     section_ordinal: dict[int, int] = {}
     for i, slide in enumerate(p.slides):
         if slide.layout == "section":
-            section_ordinal[i] = len(section_ordinal) + 1
+            # The chapter number the author wrote wins — on the divider's own
+            # kicker, else on the first page of its chapter. Counting dividers
+            # printed "01" over a chapter every kicker called "02".
+            nxt = p.slides[i + 1].kicker if i + 1 < len(p.slides) else ""
+            written = _leading_number(slide.kicker) or _leading_number(nxt)
+            section_ordinal[i] = written or len(section_ordinal) + 1
 
+    p = _renumber_chapters(p)
+    p = _space_mixed_runs(p)
     # Build pages first so every referenced paragraph/graphic/span style is
     # registered.
     pages = "".join(
@@ -3531,7 +5380,8 @@ def _furniture_para_xml(
     )
     return (
         f'<style:style style:name="{_attr(name)}" style:family="paragraph">'
-        f'<style:paragraph-properties fo:text-align="{align}"/>'
+        f'<style:paragraph-properties fo:text-align="{align}"'
+        ' style:text-autospace="none"/>'
         f"<style:text-properties{_font_size_attrs(size_pt)}"
         f' fo:color="{_attr(color)}"{spacing}'
         f' style:font-name="{_attr(font)}" style:font-name-asian="{_attr(font)}"/>'
@@ -3574,7 +5424,9 @@ def _furniture_styles_xml(theme: Theme, style: Style) -> str:
         theme.caption_pt,
         theme.muted,
         align="start",
-        letter_spacing=_KICKER_LETTER_SPACING,
+        # The footer carries the deck title, which may be Latin: the kicker's
+        # 0.15cm tracking spread "NeighFridge" into "N e i g h F r i d g e".
+        letter_spacing=_FOOTER_LETTER_SPACING,
     )
     if style.footer == "none":
         return frame
@@ -3800,4 +5652,36 @@ def render_odp(
         slide.layout in _DECO_LAYOUTS for slide in p.slides
     ):
         parts[_DECO_HREF] = _svg_decoration(theme)
+    _embed_deck_fonts(p, theme, parts)
     return write_odf_package(Path(out_path), ODP_MIMETYPE, parts)
+
+
+def _embed_deck_fonts(p: Presentation, theme: Theme, parts: dict) -> None:
+    """Carry the deck's CJK faces inside the package (see :mod:`fontembed`).
+
+    Rewrites the font-face declarations in both XML parts to point at the
+    embedded, subset font files. A no-op when embedding is switched off
+    (``ODFORGE_EMBED_FONTS=0``), fontTools is missing, or the source fonts are
+    not on this machine — the deck then renders exactly as before.
+    """
+    if os.environ.get("ODFORGE_EMBED_FONTS", "1") == "0":
+        return
+    families = list(dict.fromkeys([theme.font_body, theme.font_display]))
+    text = p.title + "".join(_string_values(p.model_dump(mode="json")))
+    embedded = embed_fonts(set(families), text)
+    if not embedded:
+        return
+    decls = (
+        "<office:font-face-decls>"
+        + font_face_decls(families, embedded, _attr)
+        + "</office:font-face-decls>"
+    )
+    styles = parts["styles.xml"]
+    start = styles.index("<office:font-face-decls>")
+    end = styles.index("</office:font-face-decls>") + len("</office:font-face-decls>")
+    parts["styles.xml"] = styles[:start] + decls + styles[end:]
+    content = parts["content.xml"]
+    root_end = content.index(">", content.index("<office:document-content")) + 1
+    parts["content.xml"] = content[:root_end] + decls + content[root_end:]
+    for font in embedded:
+        parts[font.part] = font.data

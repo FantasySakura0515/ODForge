@@ -17,6 +17,8 @@ from odforge.media import AssetBlob
 from odforge.package import ODP_MIMETYPE
 from odforge.render import render
 from odforge.render.odp import (
+    _CJK_LINE_BOX,
+    _bigfact_max_pt,
     _GraphicStyles,
     _line_xml,
     _LogoAsset,
@@ -45,7 +47,7 @@ def test_all_layouts_exist():
         "title", "title-content", "two-col", "section", "big-fact",
         "quote", "agenda", "comparison", "chart", "closing",
         "process", "timeline", "metrics", "cards", "diagram",
-        "image-focus", "image-split",
+        "image-focus", "image-split", "dashboard", "table",
     }
 
 
@@ -84,7 +86,7 @@ def test_frames_are_frozen():
 
 def test_layout_roles_match_expectation():
     assert [f.role for f in LAYOUTS["two-col"]] == ["title", "left", "right"]
-    assert [f.role for f in LAYOUTS["big-fact"]] == ["fact", "bullets"]
+    assert [f.role for f in LAYOUTS["big-fact"]] == ["title", "fact", "bullets"]
 
 
 # ---------------------------------------------------------------------------
@@ -410,18 +412,18 @@ def test_line_xml_emits_draw_line_and_stroke_style():
     assert props.get(_q("draw", "fill")) == "none"  # a pure stroke has no fill
 
 
-def test_dark_theme_styles_use_gradient_background():
-    root = etree.fromstring(build_styles_xml(THEMES["dark"]).encode("utf-8"))
-    grads = root.findall(".//draw:gradient", NS)
-    assert grads, "dark preset must define a <draw:gradient>"
-    grad_name = grads[0].get("{%s}name" % NS["draw"])
-    assert grad_name
-    dpp = root.findall(".//style:drawing-page-properties", NS)
-    assert dpp
-    assert all(p.get("{%s}fill" % NS["draw"]) == "gradient" for p in dpp)
-    assert all(
-        p.get("{%s}fill-gradient-name" % NS["draw"]) == grad_name for p in dpp
-    )
+def test_dark_theme_paints_a_flat_background():
+    # The dark ramp exported as visible vertical stripes (8-bit banding), so
+    # the dark preset is flat like every other; no <draw:gradient> is emitted.
+    theme = THEMES["dark"]
+    sroot = etree.fromstring(build_styles_xml(theme).encode("utf-8"))
+    assert not sroot.findall(".//draw:gradient", NS)
+    p = Presentation(title="t", theme="dark", slides=[Slide(layout="title", title="T")])
+    croot = etree.fromstring(build_content_xml(p, theme).encode("utf-8"))
+    for root in (sroot, croot):
+        dpp = root.findall(".//style:drawing-page-properties", NS)
+        assert dpp
+        assert all(pr.get(_q("draw", "fill")) == "solid" for pr in dpp)
 
 
 def test_light_themes_keep_solid_background():
@@ -434,32 +436,6 @@ def test_light_themes_keep_solid_background():
         assert all(
             p.get("{%s}fill-color" % NS["draw"]) == THEMES[preset].bg for p in dpp
         )
-
-
-def test_dark_theme_content_page_style_uses_gradient():
-    """The per-page drawing-page style in content.xml overrides the master's, so
-    the dark gradient must be wired there too or it never paints a slide."""
-    p = Presentation(title="t", theme="dark",
-                     slides=[Slide(layout="title", title="T")])
-    croot = etree.fromstring(build_content_xml(p, THEMES["dark"]).encode("utf-8"))
-    # the gradient content.xml references must be the one styles.xml defines
-    sroot = etree.fromstring(build_styles_xml(THEMES["dark"]).encode("utf-8"))
-    grad_name = sroot.findall(".//draw:gradient", NS)[0].get(_q("draw", "name"))
-    dpp = croot.findall(".//style:drawing-page-properties", NS)
-    assert dpp
-    assert all(pr.get(_q("draw", "fill")) == "gradient" for pr in dpp)
-    assert all(
-        pr.get(_q("draw", "fill-gradient-name")) == grad_name for pr in dpp
-    )
-    # and every page references that (sole) drawing-page automatic style
-    dp_styles = [
-        s for s in croot.findall(".//style:style", NS)
-        if s.get(_q("style", "family")) == "drawing-page"
-    ]
-    assert len(dp_styles) == 1
-    dp_name = dp_styles[0].get(_q("style", "name"))
-    for page in croot.findall(".//draw:page", NS):
-        assert page.get(_q("draw", "style-name")) == dp_name
 
 
 def test_light_theme_content_page_style_stays_solid():
@@ -578,7 +554,9 @@ def test_bullet_paragraph_has_line_height_and_margin_bottom():
     li_p = croot.find(".//text:list/text:list-item/text:p", NS)
     style = _style_by_name(croot, li_p.get(_q("text", "style-name")))
     pp = style.find("style:paragraph-properties", NS)
-    assert pp.get(_q("fo", "line-height")) == "145%"
+    # 1.45em of line pitch, written against Noto CJK's own 1.448em line box
+    # (LibreOffice multiplies the font box, so "145%" would set 2.1em).
+    assert pp.get(_q("fo", "line-height")) == "100%"
     assert pp.get(_q("fo", "margin-bottom")) == "0.35cm"
 
 
@@ -614,7 +592,7 @@ def test_kicker_paragraph_helper_references_letter_spacing_style():
     assert kp.text == "重點摘要"
     tp = _style_by_name(root, kp.get(_q("text", "style-name"))).find(
         "style:text-properties", NS)
-    assert tp.get(_q("fo", "letter-spacing")) == "0.15cm"
+    assert tp.get(_q("fo", "letter-spacing")) == "0.08cm"
 
 
 # de-dup key gains the new typography dimensions
@@ -637,9 +615,11 @@ def test_bullet_style_keeps_cjk_three_track_font_size():
     li_p = croot.find(".//text:list/text:list-item/text:p", NS)
     tp = _style_by_name(croot, li_p.get(_q("text", "style-name"))).find(
         "style:text-properties", NS)
-    assert tp.get(_q("fo", "font-size")) == "18pt"
-    assert tp.get(_q("style", "font-size-asian")) == "18pt"
-    assert tp.get(_q("style", "font-size-complex")) == "18pt"
+    # A short list may be grown to fill its page; the three tracks still agree.
+    size = tp.get(_q("fo", "font-size"))
+    assert int(size.removesuffix("pt")) >= 18
+    assert tp.get(_q("style", "font-size-asian")) == size
+    assert tp.get(_q("style", "font-size-complex")) == size
 
 
 # two-column content also becomes a semantic list (consistent with bullets)
@@ -851,7 +831,8 @@ def test_big_fact_fact_style_uses_display_pt_and_accent():
     fact_p = _text_p_with(page, "99%")
     ftp = _style_by_name(croot, fact_p.get(_q("text", "style-name"))).find(
         "style:text-properties", NS)
-    assert ftp.get(_q("fo", "font-size")) == f"{theme.display_pt}pt"
+    # The hero figure is set half again the display size (see _bigfact_max_pt).
+    assert ftp.get(_q("fo", "font-size")) == f"{_bigfact_max_pt(theme)}pt"
     assert ftp.get(_q("fo", "color")) == theme.accent
     supp_p = _text_p_with(page, "涵蓋率支撐說明")
     stp = _style_by_name(croot, supp_p.get(_q("text", "style-name"))).find(
@@ -1022,7 +1003,7 @@ def test_chart_renders_labels_and_values():
     root, _ = _render_chart(chart)
     text = "".join(root.itertext())
     assert "營收" in text and "成本" in text
-    assert "80萬" in text and "20萬" in text
+    assert "80 萬" in text and "20 萬" in text
 
 
 # zero-value edge: no ZeroDivisionError; N bars still render, all zero width.
@@ -1089,9 +1070,10 @@ def test_agenda_numbers_are_accent_colored():
     stp = _style_by_name(croot, span.get(_q("text", "style-name"))).find(
         "style:text-properties", NS)
     assert stp.get(_q("fo", "color")) == theme.accent
-    # numbers keep CJK three-track sizing at body_pt.
-    assert stp.get(_q("fo", "font-size")) == f"{theme.body_pt}pt"
-    assert stp.get(_q("style", "font-size-asian")) == f"{theme.body_pt}pt"
+    # numbers keep CJK three-track sizing, at body_pt or grown to fill the page.
+    size = stp.get(_q("fo", "font-size"))
+    assert int(size.removesuffix("pt")) >= theme.body_pt
+    assert stp.get(_q("style", "font-size-asian")) == size
 
 
 # --- comparison ------------------------------------------------------------
@@ -1130,7 +1112,7 @@ def test_chart_layout_renders_bars_and_insights():
     croot = _content_root(p, theme)
     page = croot.find(".//draw:page", NS)
     text = "".join(page.itertext())
-    assert "Q1" in text and "40萬" in text
+    assert "Q1" in text and "40 萬" in text
     assert "洞見一" in text and "洞見二" in text
     # three data bars (bar rects have the chart corner radius 0.08cm).
     bars = [r for r in page.findall(".//draw:rect", NS)
@@ -1241,7 +1223,7 @@ def test_kicker_renders_above_title_with_letter_spacing():
     kp = _text_p_with(page, "第一部分")
     ktp = _style_by_name(croot, kp.get(_q("text", "style-name"))).find(
         "style:text-properties", NS)
-    assert ktp.get(_q("fo", "letter-spacing")) == "0.15cm"
+    assert ktp.get(_q("fo", "letter-spacing")) == "0.08cm"
     assert ktp.get(_q("fo", "color")) == theme.accent
     # kicker paragraph precedes the title paragraph inside the same frame.
     title_frame = next(
@@ -1323,7 +1305,7 @@ def test_big_fact_short_fact_keeps_display_pt():
     p = Presentation(title="t", slides=[
         Slide(layout="big-fact", fact="99%", bullets=["涵蓋率"])])
     croot = _content_root(p, theme)
-    assert _fact_size_pt(croot, "99%") == theme.display_pt
+    assert _fact_size_pt(croot, "99%") == _bigfact_max_pt(theme)
 
 
 # ② a long mixed CJK/ASCII fact is shrunk below display_pt but not past h1_pt.
@@ -1333,8 +1315,11 @@ def test_big_fact_long_fact_shrinks_between_h1_and_display():
     p = Presentation(title="t", slides=[
         Slide(layout="big-fact", fact=long_fact, bullets=["說明"])])
     croot = _content_root(p, theme)
-    size = _fact_size_pt(croot, long_fact)
-    assert theme.h1_pt <= size < theme.display_pt, size
+    from odforge.render.odp import _space_text
+
+    # The renderer spaces mixed CJK/Latin runs (「約 3 倍」) before drawing.
+    size = _fact_size_pt(croot, _space_text(long_fact))
+    assert theme.h1_pt <= size < _bigfact_max_pt(theme), size
 
 
 # ③ an extreme fact still wraps at the h1_pt floor → caption drops below the
@@ -1391,7 +1376,8 @@ def test_process_layout_renders_connected_numbered_cards():
     assert all(word in text for word in ("盤點", "設計", "驗收", "1", "3"))
     assert len(_visual_cards(page)) == 3
     assert len(page.findall(".//draw:ellipse", NS)) == 3
-    assert len(page.findall(".//draw:line", NS)) == 1
+    # One connector per gap, so no line crosses a card or its border.
+    assert len(page.findall(".//draw:line", NS)) == 2
 
 
 def test_timeline_layout_renders_nodes_stems_and_event_cards():
@@ -1485,39 +1471,49 @@ def _cards_page(bullets, theme=None):
 # A one-line card used to be drawn at a flat 6.8cm — twice the height of its
 # content — leaving the bottom 60% of the box empty. Cards are sized to what
 # they actually hold, and stay uniform across the row.
-def test_short_cards_are_sized_to_their_content_not_the_full_area():
+def _fitted_card_h(bullets, theme=None):
+    """The content-driven card height (before panels are stretched to fill)."""
+    from odforge.render.odp import _coerce_bullet_items, _fit_cards
+
+    area = next(f for f in LAYOUTS["cards"] if f.role == "cards-area")
+    items = _coerce_bullet_items(bullets)
+    return _fit_cards(items, area, theme or THEMES["academic"])[-1].card_h
+
+
+def test_visible_card_panels_reach_down_the_page():
+    # Filled panels span most of the body (the reference deck's panels run to
+    # a common baseline); a short strip of boxes over an empty lower half read
+    # as unfinished. Content-driven sizing still decides when content is taller.
     page = _cards_page(["跨平台相容", "長期可讀", "零授權成本"])
     heights = _card_heights(page)
+    area = next(f for f in LAYOUTS["cards"] if f.role == "cards-area")
     assert len(heights) == 3
     assert len(set(heights)) == 1, "cards in a row must stay equal height"
-    assert heights[0] < 4.5, f"one-line card should not sprawl: {heights[0]}cm"
-    assert heights[0] >= 3.0, f"card must still read as a container: {heights[0]}cm"
+    # A floor of about half the body: short cards do not float as a strip,
+    # but they are no longer stretched into half-empty panels either.
+    assert heights[0] >= area.h * 0.45
 
 
 def test_wrapping_card_titles_grow_the_card():
-    short = _card_heights(_cards_page(["策略", "流程", "資料"]))[0]
-    longer = _card_heights(
-        _cards_page(
-            [
-                "策略清楚並且能夠讓每一個部門都對齊同一份年度目標與衡量指標",
-                "流程",
-                "資料",
-            ]
-        )
-    )[0]
+    short = _fitted_card_h(["策略", "流程", "資料"])
+    longer = _fitted_card_h(
+        [
+            "策略清楚並且能夠讓每一個部門都對齊同一份年度目標與衡量指標",
+            "流程",
+            "資料",
+        ]
+    )
     assert longer > short, "a title that wraps must not be clipped by a fixed box"
 
 
 def test_cards_with_children_get_room_for_them():
-    plain = _card_heights(_cards_page(["策略清楚", "流程順暢"]))[0]
-    nested = _card_heights(
-        _cards_page(
-            [
-                BulletItem(text="策略清楚", children=["季度校準", "指標公開"]),
-                BulletItem(text="流程順暢", children=["自動化"]),
-            ]
-        )
-    )[0]
+    plain = _fitted_card_h(["策略清楚", "流程順暢"])
+    nested = _fitted_card_h(
+        [
+            BulletItem(text="策略清楚", children=["季度校準", "指標公開"]),
+            BulletItem(text="流程順暢", children=["自動化"]),
+        ]
+    )
     assert nested > plain
 
 
@@ -1773,7 +1769,7 @@ def _overflowing_text(root, page, tol: float = 0.05):
         para_props = _style_by_name(
             root, paragraph.get(_q("text", "style-name"))
         ).find("style:paragraph-properties", NS)
-        line_height = 1.35
+        line_height = 1.0  # no fo:line-height = LibreOffice's 100% (the font box)
         if para_props is not None and para_props.get(_q("fo", "line-height")):
             line_height = (
                 float(para_props.get(_q("fo", "line-height")).removesuffix("%")) / 100
@@ -1785,11 +1781,20 @@ def _overflowing_text(root, page, tol: float = 0.05):
             float(frame.get(_q("svg", "width")).removesuffix("cm"))
         )
         height = float(frame.get(_q("svg", "height")).removesuffix("cm"))
-        needed = estimate_height_cm(text, size_pt, width, line_height)
+        # The renderer lays shape text out itself (explicit line breaks); a
+        # written proportional spacing multiplies Noto CJK's 1.448em line box.
+        pitch = size_pt * PT_TO_CM * _CJK_LINE_BOX * max(line_height, 1.0)
+        breaks = paragraph.findall("text:line-break", NS)
+        if breaks:
+            needed = (len(breaks) + 1) * pitch
+        else:
+            needed = estimate_height_cm(text, size_pt, width, 1.0) / 1.0 * (
+                pitch / (size_pt * PT_TO_CM)
+            )
         # Only wrapping causes the damage. A one-line label in a deliberately
         # tight box (a badge digit) centres harmlessly; a title that needs a
         # second line is the one that prints into whatever sits below it.
-        one_line = size_pt * PT_TO_CM * line_height
+        one_line = pitch
         if needed > one_line * 1.5 and needed > height + tol:
             spills.append((text[:16], round(needed, 2), round(height, 2)))
     return spills
@@ -1926,11 +1931,10 @@ def test_timeline_cards_stay_equal_height():
     assert len(heights) == 1, f"a timeline row must read even: {heights}"
 
 
-def test_process_cards_are_sized_to_their_content():
+def test_process_cards_share_one_height():
     _, page = _process_root()
     heights = _card_heights(page)
     assert len(set(heights)) == 1, "process cards must stay equal height"
-    assert heights[0] < 6.5, f"a two-line step should not sprawl: {heights[0]}cm"
 
 
 # ===========================================================================
@@ -2419,8 +2423,11 @@ def test_byline_is_drawn_on_the_cover_verbatim():
     root = _content_root(deck, THEMES["academic"])
     pages = root.findall(".//draw:page", NS)
     assert _text_p_with(pages[0], "XX大學資訊工程學系 · 王小明 · 2026/08") is not None
-    # Only the cover carries it — a署名 repeated on every page is a watermark.
-    for page in pages[1:]:
+    # The cover (and, under the default cover-closing placement, the closing
+    # page) carry it — a署名 repeated on content pages is a watermark.
+    for slide, page in zip(deck.slides[1:], pages[1:], strict=True):
+        if slide.layout == "closing":
+            continue
         assert not [x for x in page.findall(".//text:p", NS) if x.text and "王小明" in x.text]
 
 
@@ -2882,8 +2889,10 @@ def test_edge_label_candidates_start_with_todays_placement():
     assert y == pytest.approx(5.0 - 0.3)
     # 其後是同一點的左右兩側,仍然貼著自己的線。
     assert [c[2] for c in candidates[1:3]] == [False, False]
+    # Beside a horizontal line the chip clears it by half its *height* plus a
+    # small gap — not half its width, which floated it 1.35cm away.
     sides = sorted(c[1] for c in candidates[1:3])
-    assert sides == pytest.approx([5.0 - 0.3 - 1.35, 5.0 - 0.3 + 1.35])
+    assert sides == pytest.approx([5.0 - 0.3 - 0.42, 5.0 - 0.3 + 0.42])
 
 
 def test_edge_label_candidates_offer_no_on_line_slot_on_a_short_connector():
@@ -2895,13 +2904,12 @@ def test_edge_label_candidates_offer_no_on_line_slot_on_a_short_connector():
     assert candidates, "短線也必須給得出候選位置"
 
 
-def test_place_edge_label_takes_the_least_bad_spot_rather_than_dropping_it():
-    """全部候選都撞得到時,寧可放一個被擠到的標籤,也不要靜靜地不畫。"""
+def test_place_edge_label_gives_up_when_every_spot_is_covered():
+    """全部候選都壓在節點上時,不畫(並由 truncation_warnings 回報),
+    勝過一個被節點蓋掉只剩「識蒸」兩個字的標籤。"""
     from odforge.render.odp import Frame, _place_edge_label
 
     area = Frame(role="diagram-area", x=0.0, y=0.0, w=20.0, h=10.0, size_pt=12)
     candidates = [(1.0, 1.0, True), (5.0, 1.0, False)]
     taken = [(0.0, 0.0, 20.0, 10.0)]  # 整個區域都被佔住
-    x, y, on_line = _place_edge_label(candidates, 2.0, 0.6, taken, area)
-
-    assert (x, y, on_line) == (1.0, 1.0, True)
+    assert _place_edge_label(candidates, 2.0, 0.6, taken, area) is None

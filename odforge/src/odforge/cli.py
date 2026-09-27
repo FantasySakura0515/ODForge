@@ -32,9 +32,9 @@ from odforge.llm import (
 )
 from odforge.media import AssetBlob, AssetInput, MediaError, load_local_image
 from odforge.render import render
-from odforge.textmetrics import check_budget
+from odforge.textmetrics import check_budget, deck_warnings
 from odforge.textutil import concise
-from odforge.themes import resolve_design
+from odforge.themes import resolve_design, resolve_style
 from odforge.validate import find_soffice, validate_odf
 
 # Output extension -> IR doc_type. Also the source of the "supported types"
@@ -537,9 +537,12 @@ def new(
     # only surface the estimate so a human can see it before opening the file.
     if doc_type == "presentation":
         resolved = resolve_design(ir)
+        resolved_style = resolve_style(ir)
         for slide in ir.slides:
-            for warning in check_budget(slide, resolved):
+            for warning in check_budget(slide, resolved, resolved_style):
                 _err.print(f"[yellow]WARN[/yellow] {escape(warning)}")
+        for warning in deck_warnings(ir.slides):
+            _err.print(f"[yellow]WARN[/yellow] {escape(warning)}")
 
     out_path = out.resolve()
     try:
