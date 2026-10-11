@@ -1,188 +1,277 @@
 # ODForge（文鍛）
 
-> **把一句話,鍛造成一份正式文件。**
->
-> 自然語言 → 原生 ODF(`.odt` / `.odp` / `.ods`)文件生成引擎
+用一句話產生原生 ODF 文件：簡報 `.odp`、文書 `.odt`、試算表 `.ods`。
 
 [English](README.en.md) | 繁體中文
 
-![tests](https://img.shields.io/badge/tests-711%20python%20%2B%20244%20web-brightgreen) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![format](https://img.shields.io/badge/output-native%20ODF-orange)
+![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![format](https://img.shields.io/badge/output-native%20ODF-orange)
 
-```powershell
-odforge new "幫我做一份資料結構第三章:樹與二元樹的教學簡報" -o tree.odp
+```bash
+odforge new "資料結構第三章：樹與二元樹的教學簡報" -o tree.odp
 ```
 
 ![ODForge 生成的簡報](odforge/demo/tree.png)
 
-*↑ 這張投影片(以及本專案的使用手冊、測試報表)都是 ODForge 自己生成的。*
+LLM 只負責寫內容，產出一份經過 schema 驗證的結構化 JSON（Document IR）；
+XML 由渲染引擎寫，寫完再過驗證閘。模型從頭到尾不碰檔案格式，所以檔案結構
+不會因為模型出錯而壞掉，投影片上的文字也都能直接編輯，不會是一張圖。
 
----
+## 功能
 
-## 為什麼需要 ODForge?
+- **三種文件**：簡報（19 種頁面版型，含圖表、流程、時間軸、指標、關係圖、表格、圖文）、
+  文書（標題階層、目錄、表格、引言）、試算表（多工作表、原生公式）。
+- **兩段式簡報**：先產大綱（美術方向與每頁骨架），確認後再逐頁填內容；可以在中間停下來改。
+- **設計系統**：13 組配色主題、多種版式；中文字級與斷詞都有處理，簡報會把中文字型嵌進檔案，
+  換一台沒裝字型的電腦開也不會走樣。
+- **吃現有範本**：給一份 `.otp`／`.odp`／`.ott`／`.odt`，抽出配色與字型，新簡報沿用它的樣子。
+- **素材**：插入自己的圖片、封面校徽；可接外部生圖服務。
+- **四道品質閘**：zip 結構、XML、LibreOffice 實際轉檔、視覺模型逐頁審稿並自動修補。
+- **三種用法**：CLI、Web 控制台、MCP server（讓 Claude 等 AI 助理直接產檔，不需 API 金鑰）。
 
-AI 時代的文件工具幾乎全部輸出 PPTX / DOCX——主流開源 AI 簡報工具連 ODP 匯出都沒有。ODF(OpenDocument Format)是 ISO/IEC 26300 國際標準、我國國家標準 CNS15251、政府公文標準格式,卻在這波 AI 浪潮中缺席。
+## 安裝
 
-現有的 LibreOffice AI 擴充(localwriter、LibreThinker 等)都停留在「選取文字改寫」的層級,沒有任何工具能**從一句自然語言生成一份完整、結構化的原生 ODF 文件**。ODForge 補上這塊空缺。
+需要 Python 3.11 以上。建議裝 [LibreOffice](https://www.libreoffice.org/)：第三道閘、
+預覽圖和視覺審稿都靠它，沒裝時其餘功能照常運作。
 
-## 核心理念:內容由 AI 生成,格式正確性由引擎保證
-
-直接叫 AI 吐檔案,是每次擲一次骰子;ODForge 把骰子換成了機器。
-
-```
-使用者一句話
-     │
-┌────▼─────────┐   LLM 只產出「Document IR」——
-│  LLM 層       │   以 pydantic 嚴格驗證的結構化 JSON。
-│ (可插拔後端)  │   LLM 從頭到尾不碰 XML。
-└────┬─────────┘   (內建 json-repair:模型吐出壞 JSON 也能修復或擋下)
-     │ Document IR
-┌────▼─────────┐   確定性渲染引擎親手寫出符合
-│  渲染引擎     │   OpenDocument 規範的 XML:
-│              │   .odt / .ods → odfdo;.odp → 手寫 XML
-└────┬─────────┘   (主題系統、五種版面、講者備忘稿、完整 CJK 支援)
-     │ 原生 ODF 檔案
-┌────▼─────────┐   1. zip 結構(mimetype 為首且未壓縮、manifest 齊全)  ← 阻斷
-│  四道品質閘   │   2. XML 正確性(每個部件 well-formed)              ← 阻斷
-│              │   3. LibreOffice 實際轉檔(headless 轉 PDF 成功)     ← 觀察
-└────┬─────────┘   4. 設計品質(視覺模型逐頁審閱 + 重生)              ← 觀察
-     ▼
-  交付檔案(CLI)或回報結果(MCP)
-```
-
-前兩道是**阻斷閘**:沒過就不交付。後兩道是**觀察訊號**:結果一律如實回報
-(`pass` / `fail` / `未啟用` / `無法判定`),既不會被略過,也不會在沒跑的情況下
-蓋一個綠勾——**無法檢查不等於通過**。完整定義見 [`odforge/docs/gates.md`](odforge/docs/gates.md)。
-
-> **範圍聲明:** 這四道閘保證的是「格式正確、打得開、版面看過」。
-> **它們不驗證內容的真偽**——數字、日期、引言與來源連結都可能是模型生成的,
-> 請自行查證。詳見 gates.md 第四節。
-
-## 快速開始
-
-需求:Python 3.11+、[LibreOffice](https://www.libreoffice.org/)(第三道驗證閘使用;未安裝時其餘功能仍可運作)。
-
-```powershell
+```bash
 git clone https://github.com/FantasySakura0515/ODForge.git
 cd ODForge/odforge
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e ".[cjk]"   # [cjk]:中文按詞斷行(選用)
+python3 -m venv .venv
+source .venv/bin/activate          # Windows：.venv\Scripts\Activate.ps1
+pip install -e ".[cjk,web]"
 ```
 
-設定 LLM 後端(擇一):
+選用的 extras：
 
-```powershell
-# 方案一:DeepSeek(雲端)
-$env:DEEPSEEK_API_KEY = "你的金鑰"
+| extra | 用途 |
+| --- | --- |
+| `cjk` | 中文按詞斷行（jieba）。不裝也能跑，但會在任兩字之間斷行 |
+| `web` | `odforge serve` 的 Web 控制台 |
+| `vision` | 用 Claude 當視覺審稿後端 |
 
-# 方案二:Ollama(本機、完全離線、資料不出門)—— 不需任何金鑰
-# 安裝並啟動 https://ollama.com/ 後加 --backend ollama 即可
+## 設定 LLM 後端
+
+用 `--backend` 指定，或設環境變數 `ODFORGE_BACKEND`（預設 `deepseek`）。
+
+| 後端 | 需要的設定 | 說明 |
+| --- | --- | --- |
+| `codex` | 本機裝好 [Codex CLI](https://github.com/openai/codex)（0.147.0 以上）並 `codex login` | 走自己的 ChatGPT 登入，不用 API 金鑰；只限本機使用。模型用 `ODFORGE_CODEX_MODEL` 指定 |
+| `deepseek` | `DEEPSEEK_API_KEY` | 雲端 |
+| `ollama` | 本機跑 [Ollama](https://ollama.com/)，預設模型 `qwen2.5` | 完全離線 |
+| `custom` | `ODFORGE_CUSTOM_BASE_URL`、`ODFORGE_CUSTOM_MODEL`（`ODFORGE_CUSTOM_API_KEY` 選填） | 任何 OpenAI 相容端點 |
+
+每個後端都能對大綱、逐頁內容分別指定模型。完整變數清單（含生圖、視覺審稿、
+遠端圖片白名單）見 [`odforge/.env.example`](odforge/.env.example)。
+
+## 用法
+
+### 產生文件
+
+副檔名決定文件類型。
+
+```bash
+# 簡報
+odforge new "介紹光合作用的教學簡報，12 頁" -o photo.odp
+
+# 文書
+odforge new "實驗報告模板：目的、方法、結果、討論" -o report.odt
+
+# 試算表（公式在 LibreOffice 開啟時計算）
+odforge new "全班成績表，學期成績 = 期中 30% + 期末 40% + 平時 30%" -o grades.ods
 ```
 
-生成文件:
+簡報常用選項：
 
-```powershell
-# 簡報(--theme 配色、--style 版式,省略時依場合自動挑選)
-odforge new "介紹光合作用的教學簡報,12張" -o photo.odp --theme academic --style passport
+| 選項 | 說明 |
+| --- | --- |
+| `--theme` | 配色：`academic` `minimal` `dark` `teal` `forest` `navy` `violet` `crimson` `slate` `gold` `sky` `plum` `clay`；省略時由模型挑 |
+| `--style` | 版式，見下表；省略時用主題配對的預設版式 |
+| `--mode` | `presenter`（講者型，字少）或 `detailed`（自讀型，字多） |
+| `--language` | `zh-TW`（預設）、`en`、`bilingual` |
+| `--interactive` | 大綱產完先印出來，確認後才繼續 |
+| `--from-template FILE` | 沿用現有 ODF 範本的配色與字型 |
+| `--image FILE` | 提供圖片素材，可重複指定 |
+| `--byline`、`--logo FILE` | 封面署名、校徽；`--logo-placement` 決定校徽出現在哪幾頁 |
+| `--qa` | 算圖後跑視覺審稿迴圈，需要 LibreOffice 和視覺後端 |
+| `--one-shot` | 改用單次呼叫產生整份簡報，給較弱的本機模型用 |
 
-# 文書(含目錄、標題階層、表格)
-odforge new "一份實驗報告模板:目的、方法、結果、討論" -o report.odt
+版式決定構圖，配色只決定顏色和字體：
 
-# 試算表(含公式,LibreOffice 開啟即自動計算)
-odforge new "全班成績表,學期成績=期中30%+期末40%+平時30%" -o grades.ods
+| 版式 | 依據 | 長相 |
+| --- | --- | --- |
+| `classic` | ODForge 原本的版面 | 置中封面、標題左側色條、滿版分節頁 |
+| `report` | 顧問公司簡報結構 | 左上結論式標題、細線、頁尾出處與頁碼 |
+| `academic` | Beamer metropolis 主題 | 標題下分隔線、底部進度條 |
+| `keynote` | 舞台簡報 | 滿版強調色封面、內頁只有大字 |
+| `editorial` | Swiss 平面風格 | 頂部通欄細線、超大淡色編號分節頁 |
+| `zen` | 極簡版面 | 沒有線也沒有頁尾 |
+
+例如沿用學校的公版、加上校徽，並在產完後讓視覺模型審一輪：
+
+```bash
+export ODFORGE_VISION_BACKEND=claude ANTHROPIC_API_KEY=...
+odforge new "期末專題進度報告" -o progress.odp \
+  --from-template 校方公版.otp --logo logo.png --byline "資工三 王小明" --qa
 ```
 
-檢測既有檔案:
+視覺後端可選 `claude`、`ollama`、`codex`、`custom`，用 `ODFORGE_VISION_BACKEND` 設定。
 
-```powershell
-odforge check some.odt              # 三道驗證閘 + 樣式引用完整性,輸出 Markdown 報告
-odforge check some.docx -o diff.md  # docx → odt 轉檔前後結構比對(跑版偵測)
+### 檢查既有檔案
+
+```bash
+odforge check some.odp               # 跑驗證閘並檢查樣式引用，輸出 Markdown 報告
+odforge check some.docx -o diff.md   # 把 .docx 轉成 .odt，比對前後結構是否跑版
 ```
 
-## MCP:讓任何 AI 助理直接產出 ODF
+### 比較模型
 
-ODForge 同時是一個 **MCP server**,把確定性渲染引擎開放給 AI 助理(Claude Desktop、任何支援 MCP 的客戶端)。這個模式下助理自己撰寫 Document IR,ODForge 純粹負責渲染與驗證——**不需要任何 API 金鑰**。
+```bash
+odforge benchmark "高中化學：酸鹼中和" --backend codex --backend ollama --pages 10
+```
+
+同一題交給多個後端，保留每個候選的大綱、IR、成品和預覽圖，並輸出結構品質比較報告。
+
+## Web 控制台
+
+第一次使用前先建置前端（在 `odforge/` 目錄下；之後 `odforge serve` 會一併提供頁面）：
+
+```bash
+npm --prefix web ci
+npm --prefix web run build
+odforge serve        # http://127.0.0.1:8000
+```
+
+流程：
+
+1. **輸入需求**，可附參考文件（PDF 會抽文字給模型讀；PNG/JPEG 當成可放進簡報的圖片）。
+   頁數、場合、聽眾、語氣、語言、主題等欄位都能留白交給模型。
+2. **需求訪談**：模型依需求的缺口追問，通常 3–5 題，整理成可編輯的需求摘要，確認後才開始。
+3. **確認大綱**：可以直接改每一頁的骨架。
+4. **逐頁生成**：畫面上看得到每一頁產出、預覽圖和四道閘的結果；不滿意的頁面可單頁重產。
+5. **下載**。
+
+範本庫可以自訂「版式 × 配色」（對比不足會當場擋下），也可以直接匯入學校或公司的
+公版。工作紀錄與範本存在本機（預設在使用者的 application-data 目錄，可用
+`ODFORGE_SESSIONS_DIR` 改位置），換瀏覽器或重新整理都還在。
+
+服務沒有身分驗證，預設只綁 `127.0.0.1`；要對外綁定得加 `--allow-remote`，
+而且 `codex` 後端在對外綁定時會拒絕執行。`serve` 會自動讀取 `odforge/.env`。
+
+## MCP server
+
+ODForge 也是一個 MCP server。這個模式下由 AI 助理自己寫 Document IR，
+ODForge 只負責渲染與驗證，所以不需要任何 API 金鑰。
 
 ```json
 {
   "mcpServers": {
     "odforge": {
-      "command": "<path-to-repo>/odforge/.venv/Scripts/python.exe",
-      "args": ["-m", "odforge.mcp_server"]
+      "command": "/path/to/ODForge/odforge/.venv/bin/odforge-mcp"
     }
   }
 }
 ```
 
-掛上之後,對助理說「幫我做一份簡報存到桌面」,桌面就會出現一份通過驗證的 `.odp`。
+提供五個工具：
 
-> **信任模型**:server 會把檔案寫到 MCP 客戶端要求的任意路徑,請只搭配你信任的助理使用(本機 stdio 工具)。
+| 工具 | 用途 |
+| --- | --- |
+| `forge_presentation` | IR → `.odp` |
+| `forge_text_document` | IR → `.odt` |
+| `forge_spreadsheet` | IR → `.ods` |
+| `inspect_odf` | 驗證既有的 ODF 檔 |
+| `preview_odf` | 每頁轉成 PNG，讓助理看圖自查 |
 
-## 開發過程中實測發現的 ODF 生態問題
+文字放不下時，`forge_*` 照樣產出檔案，但回傳字串會附 `warning:`，逐頁指出哪個框超出多少，
+讓助理縮短文字後重產。
 
-這些是開發 ODForge 時親手踩到、可供社群參考的一手觀察:
+[`odforge/skills/odforge-design`](odforge/skills/odforge-design/SKILL.md) 是給 Claude Code
+等 agent 用的 skill，教它怎麼寫出好的簡報 IR、怎麼用 `preview_odf` 自查。
 
-| 發現 | 說明 |
-|------|------|
-| 中文字級陷阱 | ODF 的 CJK 文字要另外設定 `style:font-size-asian` / `style:font-weight-asian`,只設 `fo:font-size` 中文會掉回預設字級——多數工具沒處理 |
-| odfpy 停更 | Python 生態最知名的 ODF 庫自 2020 年起無新版本,僅支援 ODF 1.2 |
-| odfdo 簡報弱項 | 活躍維護,但 `.odp` 的 master page / 版面支援陽春(官方自認),因此本專案的簡報渲染器全部手寫 XML |
-| AI 工具無 ODP 匯出 | 主流開源 text-to-slides 工具(如 Presenton)僅出 PPTX/PDF,ODF feature request 懸置中 |
-| LLM 結構化輸出不可信 | DeepSeek 的 function calling 會輸出未加引號的字串值(CJK 括號開頭誘發),必須有修復層與 schema 驗證兜底 |
+server 會把檔案寫到客戶端指定的任何路徑，請只搭配你信任的助理使用。
+
+## 運作方式
+
+```text
+一句話
+  │
+  ▼
+LLM ──► Document IR（pydantic 驗證的 JSON；壞掉的 JSON 先修復，修不好就擋下）
+  │
+  ▼
+渲染引擎 ──► .odt / .ods 用 odfdo，.odp 手寫 XML
+  │
+  ▼
+驗證閘 ──► 通過才交付
+```
+
+| 閘 | 檢查內容 | 沒過時 |
+| --- | --- | --- |
+| 1. 結構 | zip 結構、`mimetype` 位置、manifest | 不交付 |
+| 2. XML | 每個部件 well-formed | 不交付 |
+| 3. 轉檔 | LibreOffice headless 轉 PDF 成功；試算表逐張檢查公式錯誤 | 回報，照常交付 |
+| 4. 設計 | 視覺模型逐頁看圖、找問題、修補後重算 | 回報，照常交付 |
+
+第 3、4 道閘的結果一律照實回報為 `pass`、`fail`、未啟用或無法判定。沒跑的檢查
+不會顯示成通過。完整定義見 [`odforge/docs/gates.md`](odforge/docs/gates.md)。
+
+驗證閘只保證格式正確、打得開、版面有人（模型）看過，**不驗證內容真偽**。
+數字、日期、引言與來源都可能是模型編的，請自行查證。
 
 ## 專案結構
 
-```
-odforge/src/odforge/
-├── ir.py           # Document IR:pydantic 模型(全系統的契約)
-├── llm.py          # 可插拔 LLM 後端(DeepSeek / Ollama / 任何 OpenAI 相容端點)
-├── render/
-│   ├── odt.py      # 文書渲染(odfdo)
-│   ├── odp.py      # 簡報渲染(手寫 XML,資料驅動版面)
-│   └── ods.py      # 試算表渲染(數值儲存格 + 原生公式)
-├── themes.py       # 主題與版面幾何(純資料)
-├── package.py      # ODF zip 打包(mimetype 規則 + manifest)
-├── validate.py     # 三道驗證閘
-├── check.py        # 檢測報告 + docx↔odt 結構比對
-├── cli.py          # odforge new / check / serve
-└── mcp_server.py   # MCP 工具(收 IR、不收 prompt、不需金鑰)
+```text
+odforge/
+├── src/odforge/
+│   ├── ir.py            # Document IR，全系統的契約
+│   ├── llm.py           # LLM 後端與兩段式生成
+│   ├── render/          # odt.py / odp.py / ods.py
+│   ├── themes.py        # 配色主題與版式
+│   ├── textmetrics.py   # 文字量測與中文斷行
+│   ├── fontembed.py     # 字型嵌入
+│   ├── extract.py       # 從現有範本抽設計
+│   ├── media.py         # 圖片素材與生圖介面
+│   ├── package.py       # ODF zip 打包
+│   ├── validate.py      # 驗證閘 1–3
+│   ├── critic.py        # 驗證閘 4：視覺審稿迴圈
+│   ├── preview.py       # 頁面轉 PNG
+│   ├── check.py         # odforge check
+│   ├── benchmark.py     # odforge benchmark
+│   ├── webapi.py        # Web 控制台後端（FastAPI + SSE）
+│   ├── mcp_server.py    # MCP 工具
+│   └── cli.py
+├── web/                 # Web 控制台前端（React + Vite）
+├── skills/              # 給 agent 用的 skill
+├── docs/                # gates、webapi、benchmark 說明
+└── tests/
 ```
 
 ## 開發
 
-```powershell
+```bash
 cd odforge
+pip install -e ".[dev]"
 
-# Python
-.\.venv\Scripts\python.exe -m pytest -q --cov --cov-report=term
-.\.venv\Scripts\ruff.exe check .
+pytest -q
+ruff check .
 
-# 前端
-npm.cmd --prefix web ci                    # 依 lockfile 安裝
-npm.cmd --prefix web test
-npm.cmd --prefix web run typecheck         # src
-npm.cmd --prefix web run typecheck:tests   # 含測試
-npm.cmd --prefix web run build
+npm --prefix web ci
+npm --prefix web test
+npm --prefix web run typecheck
+npm --prefix web run dev     # 前端開發伺服器，/api 轉給 odforge serve（:8000）
+npm --prefix web run build
 ```
 
-相依版本會漂移,而開發機的舊版本會把問題蓋住(mcp 2.0 移除了我們 import 的模組、
-PyMuPDF 1.28.2 開始往 stdout 印字,兩者都只在乾淨環境才會炸)。CI 因此跑兩條線:
-不釘版本的一條當作上游變動的早期警報,`constraints.txt` 釘死的一條保證可重現。
+CI 跑兩條線：一條不釘版本（Ubuntu 與 Windows），提早發現上游套件變動；
+一條用 `constraints.txt` 釘死版本，保證可重現。
 
-全程 TDD:每個模組先寫失敗測試再實作;渲染器測試直接用 zipfile + lxml 驗證 XML,與實作庫解耦。
+## 已知限制
 
-## 已知事項
-
-- `.odt` 內的目錄(TOC)剛產生時顯示空白,在 LibreOffice 中右鍵 →「更新索引/目錄」即會填入。
-- `.ods` 圖表、即時協作編輯不在目前範圍(見 Roadmap)。
-
-## Roadmap
-
-- [ ] `.ods` 原生圖表(ODF chart 子文件)
-- [ ] 更多簡報主題與版面
-- [ ] `--outline-only` 大綱確認模式(人在迴圈)
-- [ ] 圖片插入
+- `.odt` 的目錄剛產生時是空的，在 LibreOffice 裡右鍵「更新索引」就會填入。
+- `.ods` 還沒有原生圖表。
+- 圖片目前只能放進簡報。
+- `--from-template` 只抽配色和字型，不沿用範本的母片版面。
 
 ## 授權
 
-MIT,詳見 [odforge/LICENSE](odforge/LICENSE)。
+MIT，見 [odforge/LICENSE](odforge/LICENSE)。
