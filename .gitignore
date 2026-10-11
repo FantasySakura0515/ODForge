@@ -17,7 +17,6 @@ build/
 .superpowers/
 報名文件/
 佐證資料/
-競賽研究/
 odforge/.venv/
 odforge/**/__pycache__/
 odforge/*.egg-info/

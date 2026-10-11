@@ -235,7 +235,7 @@ STYLES: dict[str, Style] = {
         card="rule-ink",
         takeaway="rule",
     ),
-    # The reference deck's own composition (ODForge 決賽簡報 "PASSPORT"): white
+    # The "PASSPORT" reference deck's composition: white
     # framed cards on a soft ground, a mono-tracked kicker under a short accent
     # rule, and the page's conclusion as a dark panel down the right third —
     # the asymmetric 2/3 + 1/3 split symmetric column layouts never produce.

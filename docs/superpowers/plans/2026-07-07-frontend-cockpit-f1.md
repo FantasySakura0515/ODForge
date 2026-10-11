@@ -1329,7 +1329,7 @@ export default function App() {
 
 Run:`npm test`
 Expected: 全部 PASS。
-Run:`npm run dev`,開 `http://localhost:5173/?mock=1`,人工確認:輸入主題 → 逐格點亮 → 三道格式閘打勾 → 第 3 頁被標記→重生 → 完成可下載;`☀/☾` 切換淺色(學術淨白)/深色(控制室)兩種外觀皆正確、對比清楚。截圖存 `odforge/docs/screenshots/web/`(決賽佐證素材)。
+Run:`npm run dev`,開 `http://localhost:5173/?mock=1`,人工確認:輸入主題 → 逐格點亮 → 三道格式閘打勾 → 第 3 頁被標記→重生 → 完成可下載;`☀/☾` 切換淺色(學術淨白)/深色(控制室)兩種外觀皆正確、對比清楚。截圖存 `odforge/docs/screenshots/web/`。
 
 - [ ] **Step 6: Commit**
 
@@ -1342,7 +1342,7 @@ git commit -m "feat(web): assemble cockpit app with mock-driven end-to-end flow"
 
 ## F1 完成後(交接說明)
 
-- **獨立可展示:** `npm run dev` → `/?mock=1` 就能演完整「一句話 → 逐格點亮 → 四道閘 → 下載」,不需後端。決賽若後端 Phase 18 未就緒,此模式即可 demo。
+- **獨立可展示:** `npm run dev` → `/?mock=1` 就能演完整「一句話 → 逐格點亮 → 四道閘 → 下載」,不需後端。後端 Phase 18 未就緒時,此模式即可 demo。
 - **接真後端:** 後端 Phase 18 上線後,拿掉 `?mock=1` 即走 `postGenerate + subscribeJob`;需後端落實 spec §10 的 `unit_done` / `/units/{n}/regenerate` 詞彙。
 - **`odforge serve` 掛載:** 待後端 `webapi.py` 存在時,加一步 `npm run build` 並讓 FastAPI 掛 `web/dist` 為靜態根(F1 之外、與後端協調)。
 - **下一份計畫:** F2(大綱確認站 + 單元重生)——依賴 Phase 18 的 `/outline`、`/units/{n}/regenerate`。

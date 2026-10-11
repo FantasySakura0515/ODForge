@@ -120,7 +120,7 @@ Evidence: 146 Vitest tests, 375 Python tests collected, production Vite build, s
 
 ## Patterns and Systemic Issues
 
-- Compact controls were designed for a desktop competition-demo viewport; the 44 px target is missed across multiple component families rather than in one isolated control.
+- Compact controls were designed for a desktop demo viewport; the 44 px target is missed across multiple component families rather than in one isolated control.
 - Mobile adaptation currently changes the outer grid but not the internal information architecture of the top prompt area.
 - Accessibility tests cover many names and focus paths, but automated assertions do not yet cover live-region churn, target sizing, or phone reflow.
 

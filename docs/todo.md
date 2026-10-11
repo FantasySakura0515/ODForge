@@ -125,26 +125,14 @@
 | ------ | ------ | ------ |
 | Playwright 端到端瀏覽器測試 | **不做（本輪）** | 需下載瀏覽器二進位並維護一套獨立 runner。目前以 `styles/layout.test.ts`（斷言產生行為的 CSS 規則）＋`test_integration_pipeline.py`（真渲染／真 LibreOffice／真下載）覆蓋同一批風險。**未覆蓋的是「504×692 實際捲動位置」這類需要真實佈局引擎的斷言** —— 這一項仍是人工驗收 |
 | 參考文件改 multipart upload | **不做** | 加上整批 16 MiB 上限與讀取中禁止送出之後，原本的記憶體與競態風險已解除。改協定要動 API 契約、前端與測試，收益不成比例 |
-| P3-04 拆分 `render/odp.py`（3.2k 行）、`webapi.py`（2k 行）、`llm.py`（1.2k 行）、`app.css`（3.2k 行） | **延後** | 純結構重構，不修任何缺陷。在 649＋225 測試綠燈、決賽在即的時點動這種改動半徑，風險遠大於收益。**前置條件已備妥**：行為測試與 ODF fixture 齊全，隨時可安全進行 |
+| P3-04 拆分 `render/odp.py`（3.2k 行）、`webapi.py`（2k 行）、`llm.py`（1.2k 行）、`app.css`（3.2k 行） | **延後** | 純結構重構，不修任何缺陷。在 649＋225 測試綠燈的時點動這種改動半徑，風險遠大於收益。**前置條件已備妥**：行為測試與 ODF fixture 齊全，隨時可安全進行 |
 | Web 支援 ODT/ODS | **永久不做** | 見 `gates.md` §5 |
 | 內容真偽查證（citation verification） | **不在範圍** | 需要 evidence provenance 流程。目前的處置是**誠實標示**：介面、README 與 `.odp` 來源列都寫明未查證 |
 | ODF RELAX NG schema 驗證 | **不做** | 第二道閘只保證 well-formed，`gates.md` 已明說不保證 ODF 語意 |
 
 ---
 
-## 三、Phase 19：決賽交付（人工，非程式）
-
-- [ ] 19.0 補齊 v2 人工關卡截圖佐證：`odforge/docs/screenshots/v2/`（三 preset 對照、兩段式＋確認站、`--qa` QAReport 實錄、公版樣式抽取實測）
-- [ ] 19.1 Dogfooding v2：用 v2 重生成使用手冊 `.odt`、**決賽簡報 `.odp`（7 分鐘，用 ODForge 自己生）**、測試報表 `.ods`
-- [ ] 19.2 Before/After 對照組：v1 demo vs v2 同 prompt 並排截圖
-- [ ] 19.3 錄影：CLI 兩段式（大綱確認站）→ `--qa` 迴圈 → LibreOffice 開檔 → 前端 demo → MCP + skill
-- [ ] 19.4 README 更新：v2 架構圖、巨頭研究定位一句話、樣式抽取用法（**閘門敘述已於本輪對齊 `gates.md`**）
-- [ ] 19.5 決賽 QA 準備：統問統答（為何不做 PPTX、為何不用 HTML 中間層、與 NotebookLM/Gamma 差異、TAIDE 可否接）
-- [ ] 人工驗收：504×692 手機實機走一次「生成 → 確認 → 下載」，確認 CTA 與下載列不需捲過預覽牆
-
----
-
-## 四、驗證指令（現行唯一一套）
+## 三、驗證指令（現行唯一一套）
 
 ```powershell
 cd odforge
@@ -187,7 +175,7 @@ CI 兩條線並存：不釘版本的 `python` job 是上游變動的早期警報
 
 ---
 
-## 五、架構決策（v2 定案，仍然有效）
+## 四、架構決策（v2 定案，仍然有效）
 
 > **引擎管「能力」與「保證」；LLM 掛著 skill 管「選擇」與「變化」；harness 兜底。**
 > 變化來自 per-deck design tokens ＋ page-role 版型多樣性 ＋ 參數化選項，

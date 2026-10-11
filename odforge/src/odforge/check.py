@@ -10,7 +10,7 @@ back as report text or ``error:`` strings):
 
 Depends only on the stdlib, lxml and :mod:`odforge.validate`. It never imports
 ``render/*`` or the IR: it consumes a :class:`~pathlib.Path` and nothing more.
-The markdown it emits doubles as competition evidence ("ODF 優化建議"), so the
+The markdown it emits is meant to be read and shared ("ODF 優化建議"), so the
 formatting is kept tidy and deterministic.
 """
 
