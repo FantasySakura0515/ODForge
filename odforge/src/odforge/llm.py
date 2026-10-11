@@ -5,7 +5,8 @@ decides *what* to ask — the prompts, the retries, the gates — lives once, in
 ``StructuredLLMBackend``; each transport implements a single method:
 
 * ``OpenAICompatBackend`` drives an OpenAI-compatible chat endpoint with forced
-  function calling — DeepSeek, Ollama, or any hosted provider (``custom``).
+  function calling — Ollama, or any hosted provider that speaks the OpenAI API
+  (``custom``: DeepSeek, OpenAI, OpenRouter, DashScope, vLLM …).
 * ``CodexCliBackend`` drives the locally installed Codex CLI as a subprocess,
   where ``--output-schema`` plays the part the forced tool call plays above.
   It authenticates through the operator's own ChatGPT login, so it spends no
@@ -1750,16 +1751,14 @@ def _custom_extra_body() -> dict | None:
     return value
 
 
+# Used when neither ``--backend`` nor ``ODFORGE_BACKEND`` names one. Codex needs
+# no API key (it runs on the operator's own ChatGPT login), so it is the backend
+# a fresh checkout can use without signing up for anything.
+DEFAULT_BACKEND = "codex"
+
+
 BACKENDS: Dict[str, Callable[[], LLMBackend]] = {
     "codex": _make_codex,
-    "deepseek": lambda: OpenAICompatBackend(
-        "https://api.deepseek.com",
-        _require_env("DEEPSEEK_API_KEY"),
-        os.environ.get("ODFORGE_MODEL", "deepseek-chat"),
-        discovery_model=os.environ.get("ODFORGE_DISCOVERY_MODEL"),
-        outline_model=os.environ.get("ODFORGE_OUTLINE_MODEL"),
-        slides_model=os.environ.get("ODFORGE_SLIDES_MODEL"),
-    ),
     "ollama": lambda: OpenAICompatBackend(
         "http://localhost:11434/v1",
         "ollama",
@@ -1783,12 +1782,18 @@ BACKENDS: Dict[str, Callable[[], LLMBackend]] = {
 def get_backend(name: Optional[str] = None) -> LLMBackend:
     """Resolve and construct a backend by name.
 
-    ``name=None`` reads ``ODFORGE_BACKEND`` (default ``"deepseek"``). An unknown
-    name raises ``ValueError`` listing the available keys.
+    ``name=None`` reads ``ODFORGE_BACKEND`` (default :data:`DEFAULT_BACKEND`). An
+    unknown name raises ``ValueError`` listing the available keys.
     """
     if name is None:
-        name = os.environ.get("ODFORGE_BACKEND", "deepseek")
+        name = os.environ.get("ODFORGE_BACKEND", DEFAULT_BACKEND)
     factory = BACKENDS.get(name)
+    if name == "deepseek" and factory is None:
+        raise ValueError(
+            "deepseek 不再是獨立後端,請改用 OpenAI 相容的 custom:"
+            "ODFORGE_BACKEND=custom、ODFORGE_CUSTOM_BASE_URL=https://api.deepseek.com、"
+            "ODFORGE_CUSTOM_API_KEY=<金鑰>、ODFORGE_CUSTOM_MODEL=deepseek-chat"
+        )
     if factory is None:
         raise ValueError(
             f"未知的 backend: {name!r};可用值:{sorted(BACKENDS)}"

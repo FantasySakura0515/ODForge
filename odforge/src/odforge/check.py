@@ -24,6 +24,7 @@ from pathlib import Path
 
 from lxml import etree
 
+from .layoutcheck import LayoutReport, check_layout
 from .validate import find_soffice, run_soffice_convert, validate_odf
 from .xmlsafe import safe_fromstring
 from .zipguard import (
@@ -199,7 +200,8 @@ def check_odf_verdict(path: Path) -> tuple[str, bool]:
 
 def _check_odf_report(path: Path) -> tuple[str, bool]:
     """Build the markdown report for an existing file (may raise; guarded)."""
-    report = validate_odf(path, with_soffice=find_soffice() is not None)
+    soffice = find_soffice()
+    report = validate_odf(path, with_soffice=soffice is not None)
 
     lines: list[str] = [f"# ODF 檢測報告:{path.name}", ""]
 
@@ -229,9 +231,25 @@ def _check_odf_report(path: Path) -> tuple[str, bool]:
         lines.extend(f"  - `{name}`" for name in undefined)
     lines.append("")
 
-    # Style-reference issues stay informational (they never said FAIL either):
-    # only the three gates decide the verdict.
+    if path.suffix.lower() != ".ods":
+        lines.append("## 跑版")
+        lines.extend(layout_lines(check_layout(path, soffice)))
+        lines.append("")
+
+    # Style-reference issues and layout overflow stay informational, like the
+    # design gate: only the three format gates decide the verdict.
     return "\n".join(lines).rstrip() + "\n", failed
+
+
+def layout_lines(layout: LayoutReport) -> list[str]:
+    """Markdown bullets for a :class:`~odforge.layoutcheck.LayoutReport`."""
+    if layout.status == "ok":
+        return [f"- OK — {layout.message}"]
+    if layout.status != "overflow":
+        return [f"- 略過:{layout.message}"]
+    return [f"- 發現 {len(layout.findings)} 處跑版:"] + [
+        f"  - {finding.describe()}" for finding in layout.findings
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +377,9 @@ def _diff_report(docx: Path, soffice: Path) -> str:
             odt_counts = _count_odt(odt)
         except (etree.XMLSyntaxError, ValueError) as exc:
             return f"error: conversion failed: 無法解析結構:{exc}"
+        # Counts say whether elements survived the conversion; this says whether
+        # they still fit on the page once LibreOffice laid them out.
+        layout = check_layout(odt, soffice)
     finally:
         shutil.rmtree(outdir, ignore_errors=True)
 
@@ -386,6 +407,10 @@ def _diff_report(docx: Path, soffice: Path) -> str:
     else:
         for label, dv, ov in mismatches:
             lines.append(f"- {label}:DOCX={dv} 對 ODT={ov},數量不一致。")
+    lines.append("")
+
+    lines.append("## 跑版(轉出的 .odt)")
+    lines.extend(layout_lines(layout))
     lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"

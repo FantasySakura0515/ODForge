@@ -26,6 +26,8 @@ XML 由渲染引擎寫，寫完再過驗證閘。模型從頭到尾不碰檔案�
 - **吃現有範本**：給一份 `.otp`／`.odp`／`.ott`／`.odt`，抽出配色與字型，新簡報沿用它的樣子。
 - **素材**：插入自己的圖片、封面校徽；可接外部生圖服務。
 - **四道品質閘**：zip 結構、XML、LibreOffice 實際轉檔、視覺模型逐頁審稿並自動修補。
+- **跑版檢查**：用 LibreOffice 實際排版，找出超出框、超出右邊界或超出頁面的文字；
+  自己產的檔和別人給的 `.odp`／`.odt`／`.docx` 都能查。
 - **三種用法**：CLI、Web 控制台、MCP server（讓 Claude 等 AI 助理直接產檔，不需 API 金鑰）。
 
 ## 安裝
@@ -51,14 +53,22 @@ pip install -e ".[cjk,web]"
 
 ## 設定 LLM 後端
 
-用 `--backend` 指定，或設環境變數 `ODFORGE_BACKEND`（預設 `deepseek`）。
+用 `--backend` 指定，或設環境變數 `ODFORGE_BACKEND`（預設 `codex`）。
 
 | 後端 | 需要的設定 | 說明 |
 | --- | --- | --- |
 | `codex` | 本機裝好 [Codex CLI](https://github.com/openai/codex)（0.147.0 以上）並 `codex login` | 走自己的 ChatGPT 登入，不用 API 金鑰；只限本機使用。模型用 `ODFORGE_CODEX_MODEL` 指定 |
-| `deepseek` | `DEEPSEEK_API_KEY` | 雲端 |
 | `ollama` | 本機跑 [Ollama](https://ollama.com/)，預設模型 `qwen2.5` | 完全離線 |
-| `custom` | `ODFORGE_CUSTOM_BASE_URL`、`ODFORGE_CUSTOM_MODEL`（`ODFORGE_CUSTOM_API_KEY` 選填） | 任何 OpenAI 相容端點 |
+| `custom` | `ODFORGE_CUSTOM_BASE_URL`、`ODFORGE_CUSTOM_MODEL`（`ODFORGE_CUSTOM_API_KEY` 選填） | 任何 OpenAI API 格式的服務：DeepSeek、OpenAI、OpenRouter、vLLM 等 |
+
+例如用 DeepSeek：
+
+```bash
+export ODFORGE_BACKEND=custom
+export ODFORGE_CUSTOM_BASE_URL=https://api.deepseek.com
+export ODFORGE_CUSTOM_API_KEY=sk-...
+export ODFORGE_CUSTOM_MODEL=deepseek-chat
+```
 
 每個後端都能對大綱、逐頁內容分別指定模型。完整變數清單（含生圖、視覺審稿、
 遠端圖片白名單）見 [`odforge/.env.example`](odforge/.env.example)。
@@ -104,6 +114,7 @@ odforge new "全班成績表，學期成績 = 期中 30% + 期末 40% + 平時 3
 | `academic` | Beamer metropolis 主題 | 標題下分隔線、底部進度條 |
 | `keynote` | 舞台簡報 | 滿版強調色封面、內頁只有大字 |
 | `editorial` | Swiss 平面風格 | 頂部通欄細線、超大淡色編號分節頁 |
+| `passport` | 審查、提案、成果報告 | 白色框線卡片、右側深色重點面板，資訊密度最高 |
 | `zen` | 極簡版面 | 沒有線也沒有頁尾 |
 
 例如沿用學校的公版、加上校徽，並在產完後讓視覺模型審一輪：
@@ -119,9 +130,26 @@ odforge new "期末專題進度報告" -o progress.odp \
 ### 檢查既有檔案
 
 ```bash
-odforge check some.odp               # 跑驗證閘並檢查樣式引用，輸出 Markdown 報告
-odforge check some.docx -o diff.md   # 把 .docx 轉成 .odt，比對前後結構是否跑版
+odforge check some.odp               # 驗證閘、樣式引用、跑版，輸出 Markdown 報告
+odforge check some.docx -o diff.md   # 把 .docx 轉成 .odt，比對前後結構並檢查跑版
 ```
+
+跑版檢查會讓 LibreOffice 把檔案排出來，再逐行比對文字落在哪裡：
+
+- 簡報：文字超出所屬的框（會標出壓到哪段文字）或超出投影片。
+- 文書：文字超出右邊界，或延伸到頁面外被裁掉（常見於太寬的表格）。
+
+結果像這樣：
+
+```text
+## 跑版
+- 發現 2 處跑版:
+  - 第 15 頁「17輸出順序」文字超出框的下緣 1.96 cm
+  - 第 15 頁「前序 (Pre)」文字超出框的下緣 1.01 cm
+```
+
+`odforge new` 產完也會自動跑一次。跑版只回報，不影響結束碼；沒裝 LibreOffice 時會註明略過，
+不會顯示成通過。
 
 ### 比較模型
 
@@ -179,11 +207,11 @@ ODForge 只負責渲染與驗證，所以不需要任何 API 金鑰。
 | `forge_presentation` | IR → `.odp` |
 | `forge_text_document` | IR → `.odt` |
 | `forge_spreadsheet` | IR → `.ods` |
-| `inspect_odf` | 驗證既有的 ODF 檔 |
+| `inspect_odf` | 驗證既有的 ODF 檔，並檢查跑版 |
 | `preview_odf` | 每頁轉成 PNG，讓助理看圖自查 |
 
-文字放不下時，`forge_*` 照樣產出檔案，但回傳字串會附 `warning:`，逐頁指出哪個框超出多少，
-讓助理縮短文字後重產。
+文字放不下時，`forge_*` 照樣產出檔案，但回傳字串會附 `warning:`：一份是渲染前依版面預算
+估算的超載，一份是 LibreOffice 實際排版後的跑版位置，讓助理縮短文字後重產。
 
 [`odforge/skills/odforge-design`](odforge/skills/odforge-design/SKILL.md) 是給 Claude Code
 等 agent 用的 skill，教它怎麼寫出好的簡報 IR、怎麼用 `preview_odf` 自查。
@@ -236,6 +264,7 @@ odforge/
 │   ├── critic.py        # 驗證閘 4：視覺審稿迴圈
 │   ├── preview.py       # 頁面轉 PNG
 │   ├── check.py         # odforge check
+│   ├── layoutcheck.py   # 跑版檢查
 │   ├── benchmark.py     # odforge benchmark
 │   ├── webapi.py        # Web 控制台後端（FastAPI + SSE）
 │   ├── mcp_server.py    # MCP 工具

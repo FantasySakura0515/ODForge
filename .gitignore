@@ -9,7 +9,7 @@ build/
 *.egg-info/
 .DS_Store
 
-# Secrets — NEVER commit (repo is public). DEEPSEEK_API_KEY etc. live here for local dev.
+# Secrets — NEVER commit (repo is public). API keys live here for local dev.
 .env
 .env.*
 !.env.example

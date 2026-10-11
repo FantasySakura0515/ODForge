@@ -70,12 +70,12 @@ function mockTemplates(templates?: DeckTemplate[]) {
 /** A `/api/sources` answer naming `vision` as the default and saying if it works. */
 function mockSources(vision: string, available: boolean, reason = "") {
   vi.mocked(getSources).mockResolvedValue({
-    text: [{ name: "deepseek", available: true, reason: "" }],
+    text: [{ name: "codex", available: true, reason: "" }],
     vision: [
       { name: "off", available: true, reason: "" },
       { name: vision, available, reason },
     ],
-    defaults: { text: "deepseek", vision },
+    defaults: { text: "codex", vision },
   });
 }
 

@@ -46,6 +46,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by the other major
     from mcp.server.fastmcp import FastMCP as _Server
 
 from odforge.ir import Presentation, parse_ir
+from odforge.layoutcheck import LayoutReport, check_layout
 from odforge.preview import PreviewUnavailable, render_pages
 from odforge.render import render
 from odforge.textmetrics import check_budget, deck_warnings
@@ -90,6 +91,13 @@ def _budget_warnings(ir: object) -> list[str]:
     return warnings
 
 
+def _layout_bullets(layout: LayoutReport) -> list[str]:
+    label = {"ok": "OK", "overflow": "跑版"}.get(layout.status, "略過")
+    return [f"- layout: {label} — {layout.message}"] + [
+        f"  - {finding.describe()}" for finding in layout.findings
+    ]
+
+
 def _forge(document: dict, out_path: str, doc_type: str) -> str:
     """Shared pipeline: inject type -> parse_ir -> render -> validate -> budget.
 
@@ -116,7 +124,8 @@ def _forge(document: dict, out_path: str, doc_type: str) -> str:
 
         render(ir, out)
 
-        report = validate_odf(out, with_soffice=find_soffice() is not None)
+        soffice = find_soffice()
+        report = validate_odf(out, with_soffice=soffice is not None)
         gates = "; ".join(
             f"{name}: {'OK' if passed else 'FAIL'} — {message}"
             for name, (passed, message) in report.gates.items()
@@ -135,6 +144,17 @@ def _forge(document: dict, out_path: str, doc_type: str) -> str:
                 "版面。請縮短這些頁面的文字後重新 forge:\n"
                 + "\n".join(f"- {w}" for w in warnings)
             )
+        if doc_type != "spreadsheet" and soffice is not None:
+            # The budget above is an estimate made before rendering; this is
+            # where LibreOffice actually put the text. They usually agree, and
+            # when they do not, the rendered one is the one the reader sees.
+            layout = check_layout(out, soffice)
+            if layout.findings:
+                result += (
+                    "\n\nwarning: 跑版——LibreOffice 實際排版後,下列文字超出框或頁面。"
+                    "請縮短或拆頁後重新 forge:\n"
+                    + "\n".join(f"- {f.describe()}" for f in layout.findings)
+                )
         return result
     except Exception as exc:
         return f"error: {type(exc).__name__}: {concise(str(exc))}"
@@ -295,18 +315,24 @@ def inspect_odf(path: str) -> str:
     Runs ODForge's validation gates over the file at ``path``: ``structure``
     (zip layout, stored mimetype, manifest) and ``xml`` (well-formedness), plus
     ``soffice`` (a LibreOffice round-trip) when LibreOffice is installed. Returns
-    one markdown bullet per gate — ``- {gate}: {OK|FAIL} — {message}`` — or
-    ``"error: file not found: {path}"`` when the file does not exist. Never raises.
+    one markdown bullet per gate — ``- {gate}: {OK|FAIL} — {message}`` — then a
+    ``- layout: ...`` bullet for ``.odp``/``.odt``: text that LibreOffice laid
+    out beyond its frame, the right margin or the page (跑版), one sub-bullet per
+    place. ``"error: file not found: {path}"`` when the file does not exist.
+    Never raises.
     """
     try:
         target = Path(path)
         if not target.exists():
             return f"error: file not found: {path}"
-        report = validate_odf(target, with_soffice=find_soffice() is not None)
+        soffice = find_soffice()
+        report = validate_odf(target, with_soffice=soffice is not None)
         lines = [
             f"- {name}: {'OK' if passed else 'FAIL'} — {message}"
             for name, (passed, message) in report.gates.items()
         ]
+        if target.suffix.lower() in (".odp", ".odt"):
+            lines.extend(_layout_bullets(check_layout(target, soffice)))
         return "\n".join(lines)
     except Exception as exc:
         return f"error: {type(exc).__name__}: {concise(str(exc))}"

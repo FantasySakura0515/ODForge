@@ -2,7 +2,7 @@
 
 ```powershell
 odforge benchmark "為醫院主管整理候診流程改善成果" `
-  --backend deepseek --backend ollama `
+  --backend codex --backend ollama `
   --pages 8 --image .\after.png `
   --out-dir .\benchmark-results
 ```
@@ -14,7 +14,7 @@ odforge benchmark "為醫院主管整理候診流程改善成果" `
 benchmark-results/
   report.json
   report.md
-  deepseek/
+  codex/
     outline.json
     presentation.json
     deck.odp

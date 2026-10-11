@@ -219,7 +219,7 @@ bytes；PDF 最多 120 頁，會抽取最多 60,000 字作為模型資料，無�
 
 - `prompt`：去除頭尾空白後必須非空，最長 8,000 字元。
 - `mode`：只接受 `presenter`／`detailed`；`theme` 只接受七個內建主題；`backend` 只接受
-  `deepseek`／`ollama`／`custom`。未知值回 `422`，不會留到背景工作才失敗。
+  `codex`／`ollama`／`custom`。未知值回 `422`，不會留到背景工作才失敗。
 
 每個 job 會把可恢復的 session metadata 原子寫入自己的隔離目錄；服務重啟後會載入
 既有 session。重啟時仍未完成的工作會標記為 `error`／`restore`，已完成的預覽與 ODP

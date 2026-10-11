@@ -76,7 +76,7 @@ export interface GenerateBody {
   interactive?: boolean;
   qa?: boolean;
   assets?: AssetUpload[];
-  backend?: "deepseek" | "ollama" | "custom";
+  backend?: "codex" | "ollama" | "custom";
 }
 
 /**
@@ -290,7 +290,7 @@ export interface GenerateOptions {
   qa: boolean;
   interactive: boolean;
   assets?: AssetUpload[];
-  backend?: "deepseek" | "ollama" | "custom";
+  backend?: "codex" | "ollama" | "custom";
 }
 
 /** 後端接受的頁數範圍(webapi 驗證 3–30);超界或非數字一律不送。 */

@@ -21,7 +21,6 @@ env:
   # money. conftest also scrubs these; belt and braces.
   ODFORGE_BACKEND: ""
   ODFORGE_VISION_BACKEND: "off"
-  DEEPSEEK_API_KEY: ""
   ANTHROPIC_API_KEY: ""
   OPENAI_API_KEY: ""
 

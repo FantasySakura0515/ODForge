@@ -1831,7 +1831,7 @@ class DiscoveryBody(StrictBody):
     mode: Optional[Literal["presenter", "detailed"]] = None
     theme: Optional[str] = None
     language: str = "zh-TW"
-    backend: Optional[Literal["deepseek", "ollama", "custom"]] = None
+    backend: Optional[Literal["codex", "ollama", "custom"]] = None
     doc_type: str = "odp"
     pages: Optional[int] = Field(default=None, ge=MIN_REQUESTED_PAGES, le=MAX_OUTLINE_PAGES)
     assets: List[DiscoveryAsset] = Field(default_factory=list, max_length=6)
@@ -2024,7 +2024,7 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
         logger.info(
             "discovery_start request_id=%s backend=%s prompt_chars=%d",
             request_id,
-            body.backend or os.environ.get("ODFORGE_BACKEND", "deepseek"),
+            body.backend or os.environ.get("ODFORGE_BACKEND", llm.DEFAULT_BACKEND),
             len(body.prompt),
         )
         try:
@@ -2110,7 +2110,7 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
             logger.info(
                 "discovery_start request_id=%s backend=%s prompt_chars=%d stream=true",
                 request_id,
-                body.backend or os.environ.get("ODFORGE_BACKEND", "deepseek"),
+                body.backend or os.environ.get("ODFORGE_BACKEND", llm.DEFAULT_BACKEND),
                 len(body.prompt),
             )
             yield line("progress", progress_data("accepted", 0))
@@ -2403,7 +2403,7 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
                 _source_status("vision", n) for n in sorted(vision_source_names())
             ],
             "defaults": {
-                "text": os.environ.get("ODFORGE_BACKEND", "deepseek"),
+                "text": os.environ.get("ODFORGE_BACKEND", llm.DEFAULT_BACKEND),
                 "vision": os.environ.get("ODFORGE_VISION_BACKEND", "off"),
             },
         }

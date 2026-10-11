@@ -30,7 +30,7 @@ powershell -ExecutionPolicy Bypass -File .claude/skills/odforge-up/scripts/start
 ## 回報給使用者時
 
 - 給**可點的 URL**(prod 模式是一個;`-Dev` 是 5173 給前端、API 那個備用)。
-- 若腳本回報某個後端不可用(例如 `deepseek` 缺金鑰、`vision=off`),照實說明那會
+- 若腳本回報某個後端不可用(例如 `custom` 沒設端點、`vision=off`),照實說明那會
   影響什麼:`vision` 為 `off` 時第四道設計閘照樣跑圖但沒有模型看圖,永遠回報零問題。
 - 不要宣稱「已驗證可以生成」,除非真的跑過一次生成。要驗證後端連得上 LLM,打一次
   discovery 就夠(見下)。

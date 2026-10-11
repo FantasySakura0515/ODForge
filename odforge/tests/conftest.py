@@ -44,10 +44,8 @@ def isolated_sessions_dir(tmp_path, monkeypatch):
 # the wrong reason — and then fail in CI, where the key does not exist.
 _PROVIDER_ENV_VARS = (
     "ANTHROPIC_API_KEY",
-    "DEEPSEEK_API_KEY",
     "OPENAI_API_KEY",
     "ODFORGE_BACKEND",
-    "ODFORGE_MODEL",
     "ODFORGE_VISION_MODEL",
     "ODFORGE_OLLAMA_VISION_MODEL",
     "ODFORGE_CUSTOM_BASE_URL",
@@ -132,7 +130,7 @@ def forbid_launching_the_codex_cli(monkeypatch):
 def forbid_outbound_network(monkeypatch):
     """Any attempt to reach a non-localhost address fails the test immediately.
 
-    A test that silently talks to api.deepseek.com is not testing this codebase;
+    A test that silently talks to a hosted model API is not testing this codebase;
     it is testing someone's quota. Loopback stays open because the fake HTTP
     servers used for provider-contract tests bind there.
     """

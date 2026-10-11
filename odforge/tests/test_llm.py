@@ -663,10 +663,18 @@ def test_max_tokens_env_override(monkeypatch):
     assert client.completions.calls[0]["max_tokens"] == 4000
 
 
-def test_get_backend_deepseek_requires_key(monkeypatch):
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="DEEPSEEK_API_KEY"):
+def test_deepseek_points_to_the_openai_compatible_backend():
+    # DeepSeek is one OpenAI-compatible provider among many and goes through
+    # `custom`; an old ODFORGE_BACKEND=deepseek gets told exactly what to set.
+    assert "deepseek" not in llm.BACKENDS
+    with pytest.raises(ValueError, match="ODFORGE_CUSTOM_BASE_URL=https://api.deepseek.com"):
         llm.get_backend("deepseek")
+
+
+def test_get_backend_custom_requires_endpoint(monkeypatch):
+    monkeypatch.delenv("ODFORGE_CUSTOM_BASE_URL", raising=False)
+    with pytest.raises(RuntimeError, match="ODFORGE_CUSTOM_BASE_URL"):
+        llm.get_backend("custom")
 
 
 def test_get_backend_env_default(monkeypatch):
@@ -675,6 +683,14 @@ def test_get_backend_env_default(monkeypatch):
     backend = llm.get_backend(None)
     assert isinstance(backend, llm.OpenAICompatBackend)
     assert "11434" in backend.base_url
+
+
+def test_get_backend_without_env_uses_codex(monkeypatch):
+    monkeypatch.delenv("ODFORGE_BACKEND", raising=False)
+    sentinel = object()
+    monkeypatch.setitem(llm.BACKENDS, "codex", lambda: sentinel)
+    assert llm.DEFAULT_BACKEND == "codex"
+    assert llm.get_backend(None) is sentinel
 
 
 def test_get_backend_unknown_raises(monkeypatch):

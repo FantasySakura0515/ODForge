@@ -583,6 +583,19 @@ def test_cli_backend_choices_match_the_registry():
     assert {b.value for b in Backend} == set(BACKENDS)
 
 
+def test_cli_style_and_theme_choices_match_the_registry():
+    """`--style` / `--theme` 的選項必須跟 themes.py 的註冊表同步。
+
+    `passport` 曾經只存在於 STYLES:Web 與 MCP 都選得到,CLI 卻在 typer 那層
+    直接拒絕 `--style passport`。
+    """
+    from odforge.cli import StyleName, Theme
+    from odforge.themes import STYLES, THEMES
+
+    assert {s.value for s in StyleName} == set(STYLES)
+    assert {t.value for t in Theme} == set(THEMES)
+
+
 def test_serve_rejects_remote_bind_without_explicit_acknowledgement():
     result = runner.invoke(app, ["serve", "--host", "0.0.0.0"])
 
@@ -1007,3 +1020,20 @@ def test_a_new_preset_is_selectable_from_the_cli(
         app, ["new", "deck", "-o", "out.odp", "--theme", "gold", "--no-soffice"]
     )
     assert result.exit_code == 0, _out(result)
+
+
+def test_print_layout_lists_each_overflow(monkeypatch, capsys):
+    from odforge import cli
+    from odforge.layoutcheck import LayoutFinding, LayoutReport
+
+    finding = LayoutFinding(4, "frame", "標題", "bottom", 1.2, "內文")
+    monkeypatch.setattr(cli, "find_soffice", lambda: Path("soffice"))
+    monkeypatch.setattr(
+        cli,
+        "check_layout",
+        lambda path, soffice: LayoutReport("overflow", "發現 1 處跑版", [finding]),
+    )
+    cli._print_layout(Path("deck.odp"))
+    out = _ANSI.sub("", capsys.readouterr().out)
+    assert "發現 1 處跑版" in out
+    assert "第 4 頁「標題」文字超出框的下緣 1.20 cm,壓到「內文」" in out

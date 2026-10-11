@@ -57,19 +57,20 @@ def test_sources_lists_every_registered_backend(client):
 
 
 def test_sources_reports_which_are_usable(client, monkeypatch):
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("ODFORGE_CUSTOM_BASE_URL", raising=False)
     body = client.get("/api/sources").json()
-    deepseek = next(s for s in body["text"] if s["name"] == "deepseek")
-    assert deepseek["available"] is False
-    assert "DEEPSEEK_API_KEY" in deepseek["reason"]
+    custom = next(s for s in body["text"] if s["name"] == "custom")
+    assert custom["available"] is False
+    assert "ODFORGE_CUSTOM_BASE_URL" in custom["reason"]
 
 
 def test_an_available_source_carries_no_complaint(client, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv("ODFORGE_CUSTOM_BASE_URL", "https://api.example.test/v1")
+    monkeypatch.setenv("ODFORGE_CUSTOM_MODEL", "some-model")
     body = client.get("/api/sources").json()
-    deepseek = next(s for s in body["text"] if s["name"] == "deepseek")
-    assert deepseek["available"] is True
-    assert deepseek["reason"] == ""
+    custom = next(s for s in body["text"] if s["name"] == "custom")
+    assert custom["available"] is True
+    assert custom["reason"] == ""
 
 
 def test_off_is_always_an_available_vision_source(client):

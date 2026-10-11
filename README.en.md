@@ -33,6 +33,9 @@ instead of being baked into an image.
 - **Assets**: insert your own images and a cover logo; an external image-generation service can be plugged in.
 - **Four quality gates**: zip structure, XML, an actual LibreOffice conversion, and a vision
   model that reviews each slide and repairs what it finds.
+- **Overflow check**: lays the file out with LibreOffice and finds text that spills out of its
+  frame, past the right margin or off the page — for ODForge's own output and for any
+  `.odp` / `.odt` / `.docx` you are handed.
 - **Three ways to use it**: CLI, web console, and an MCP server (lets Claude and other AI
   assistants produce files directly, with no API key).
 
@@ -59,14 +62,22 @@ Optional extras:
 
 ## Choosing an LLM backend
 
-Pass `--backend`, or set `ODFORGE_BACKEND` (default `deepseek`).
+Pass `--backend`, or set `ODFORGE_BACKEND` (default `codex`).
 
 | Backend | Setup | Notes |
 | --- | --- | --- |
 | `codex` | [Codex CLI](https://github.com/openai/codex) 0.147.0+ installed and `codex login` done | Uses your own ChatGPT login, no API key; local use only. Set the model with `ODFORGE_CODEX_MODEL` |
-| `deepseek` | `DEEPSEEK_API_KEY` | Cloud |
 | `ollama` | [Ollama](https://ollama.com/) running locally, default model `qwen2.5` | Fully offline |
-| `custom` | `ODFORGE_CUSTOM_BASE_URL`, `ODFORGE_CUSTOM_MODEL` (`ODFORGE_CUSTOM_API_KEY` optional) | Any OpenAI-compatible endpoint |
+| `custom` | `ODFORGE_CUSTOM_BASE_URL`, `ODFORGE_CUSTOM_MODEL` (`ODFORGE_CUSTOM_API_KEY` optional) | Any service that speaks the OpenAI API: DeepSeek, OpenAI, OpenRouter, vLLM and so on |
+
+For example, DeepSeek:
+
+```bash
+export ODFORGE_BACKEND=custom
+export ODFORGE_CUSTOM_BASE_URL=https://api.deepseek.com
+export ODFORGE_CUSTOM_API_KEY=sk-...
+export ODFORGE_CUSTOM_MODEL=deepseek-chat
+```
 
 Every backend can use separate models for the outline and slide stages. See
 [`odforge/.env.example`](odforge/.env.example) for the full list of variables, including
@@ -113,6 +124,7 @@ The style decides the composition; the theme only decides colors and fonts:
 | `academic` | Beamer metropolis theme | Rule under the title, progress bar at the bottom |
 | `keynote` | Stage presentations | Full-bleed accent cover, large type only |
 | `editorial` | Swiss graphic design | Full-width top rule, oversized faint numbers on section slides |
+| `passport` | Reviews, proposals, progress reports | White framed cards, dark key-point panel on the right; the densest layout |
 | `zen` | Minimal layouts | No rules, no footer |
 
 For example, reuse your organization's template, add a logo, and let a vision model review
@@ -129,9 +141,28 @@ Vision backends: `claude`, `ollama`, `codex`, `custom`, selected with `ODFORGE_V
 ### Checking existing files
 
 ```bash
-odforge check some.odp               # run the gates and check style references; prints a Markdown report
-odforge check some.docx -o diff.md   # convert .docx to .odt and compare the structure before and after
+odforge check some.odp               # gates, style references and overflow; prints a Markdown report
+odforge check some.docx -o diff.md   # convert .docx to .odt, compare the structure and check overflow
 ```
+
+The overflow check has LibreOffice lay the file out, then compares where each line of text
+actually landed:
+
+- Presentations: text outside the frame it belongs to (naming any text it runs into) or off the slide.
+- Text documents: text past the right margin, or running off the page and getting cut off
+  (typically a table that is too wide).
+
+Output looks like this:
+
+```text
+## 跑版
+- 發現 2 處跑版:
+  - 第 15 頁「17輸出順序」文字超出框的下緣 1.96 cm
+  - 第 15 頁「前序 (Pre)」文字超出框的下緣 1.01 cm
+```
+
+`odforge new` runs it on every file it produces. Overflow is reported, not fatal: it does not
+change the exit code. Without LibreOffice the check says it was skipped and is never shown as passed.
 
 ### Comparing models
 
@@ -196,11 +227,12 @@ Five tools:
 | `forge_presentation` | IR → `.odp` |
 | `forge_text_document` | IR → `.odt` |
 | `forge_spreadsheet` | IR → `.ods` |
-| `inspect_odf` | Validate an existing ODF file |
+| `inspect_odf` | Validate an existing ODF file and check it for overflow |
 | `preview_odf` | Render each page to PNG so the assistant can check its work |
 
-When text does not fit, `forge_*` still writes the file, but the returned string carries a
-`warning:` listing which frame on which slide overflows and by how much, so the assistant can
+When text does not fit, `forge_*` still writes the file, but the returned string carries
+`warning:` blocks: the overruns estimated from the layout budget before rendering, and the
+places where LibreOffice actually laid text outside its frame or page, so the assistant can
 shorten the text and render again.
 
 [`odforge/skills/odforge-design`](odforge/skills/odforge-design/SKILL.md) is a skill for Claude
@@ -257,6 +289,7 @@ odforge/
 │   ├── critic.py        # gate 4: the vision review loop
 │   ├── preview.py       # page-to-PNG rendering
 │   ├── check.py         # odforge check
+│   ├── layoutcheck.py   # overflow check
 │   ├── benchmark.py     # odforge benchmark
 │   ├── webapi.py        # web console backend (FastAPI + SSE)
 │   ├── mcp_server.py    # MCP tools

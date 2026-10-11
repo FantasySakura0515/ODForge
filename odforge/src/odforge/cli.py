@@ -24,6 +24,7 @@ from odforge.check import check_odf_verdict, diff_docx_odt_verdict
 from odforge.critic import QAReport, run_qa_loop
 from odforge.extract import extract_design
 from odforge.ir import Branding, MediaAssetRef, Outline
+from odforge.layoutcheck import check_layout
 from odforge.llm import (
     DroppedContent,
     generate_ir,
@@ -68,6 +69,7 @@ class StyleName(str, Enum):
     academic = "academic"
     keynote = "keynote"
     editorial = "editorial"
+    passport = "passport"
     zen = "zen"
 
 
@@ -88,7 +90,6 @@ class Backend(str, Enum):
     # this enum omits is one typer rejects before it ever reaches the registry
     # (test_cli_backend_choices_match_the_registry holds the two together).
     codex = "codex"
-    deepseek = "deepseek"
     ollama = "ollama"
     custom = "custom"
 
@@ -183,6 +184,19 @@ def _print_dropped_content(dropped: List[DroppedContent]) -> None:
         "[yellow]提醒[/yellow] 以上內容已寫進該頁的備忘稿。"
         "若不希望被刪,請提高 --pages 或縮短需求中的重點數量後重新生成。"
     )
+
+
+def _print_layout(path: Path) -> None:
+    """Print where LibreOffice laid text out beyond its frame or page, if anywhere."""
+    layout = check_layout(path, find_soffice())
+    if layout.status == "ok":
+        _out.print(f"[green]跑版檢查 OK[/green] {escape(layout.message)}")
+    elif layout.status == "overflow":
+        _out.print(f"[yellow]跑版[/yellow] {escape(layout.message)}:")
+        for finding in layout.findings:
+            _out.print(f"  - {escape(finding.describe())}")
+    else:
+        _out.print(f"[dim]跑版檢查略過:{escape(layout.message)}[/dim]")
 
 
 def _print_qa_report(report: QAReport) -> None:
@@ -310,7 +324,8 @@ def new(
         None,
         "--style",
         help="版式（僅對 .odp 有效）：classic 學院派 / report 顧問報告 / "
-        "academic 學術簡潔 / keynote 舞台 / editorial 編輯風 / zen 極簡；"
+        "academic 學術簡潔 / keynote 舞台 / editorial 編輯風 / passport 護照（審查、"
+        "提案、成果報告）/ zen 極簡；"
         "省略則用主題配對的預設版式。",
     ),
     language: Language = typer.Option(
@@ -598,6 +613,11 @@ def new(
         else:
             _err.print("[dim]--qa 僅適用於簡報(.odp),已略過[/dim]")
 
+    # Rendered 跑版 check on the final bytes (after any QA repair). Advisory like
+    # the design gate: it never changes the exit code.
+    if with_soffice and doc_type != "spreadsheet":
+        _print_layout(out_path)
+
     if report.ok:
         _out.print(f"[green]OK[/green] {escape(str(out_path))}")
         raise typer.Exit(code=0)
@@ -617,7 +637,7 @@ def benchmark(
     candidate: Optional[List[Backend]] = typer.Option(
         None,
         "--backend",
-        help="要比較的 backend；可重複指定，預設 deepseek + ollama。",
+        help="要比較的 backend；可重複指定，預設 codex + ollama。",
     ),
     pages: Optional[int] = typer.Option(
         None, "--pages", min=3, max=30, help="所有候選共用的目標頁數。"
@@ -652,7 +672,7 @@ def benchmark(
     names = (
         [item.value for item in candidate]
         if candidate
-        else [Backend.deepseek.value, Backend.ollama.value]
+        else [Backend.codex.value, Backend.ollama.value]
     )
     report = run_benchmark(
         prompt,
@@ -730,7 +750,7 @@ def serve(
         # spend the operator's personal plan for whoever reaches the port.
         os.environ["ODFORGE_PUBLIC_BIND"] = "1"
 
-    # Load a local .env (odforge/.env) so DEEPSEEK_API_KEY etc. can live in a file
+    # Load a local .env (odforge/.env) so API keys and endpoints can live in a file
     # instead of the shell env. Best-effort: python-dotenv ships with the web extra,
     # and this runs only for `serve`, never at import time (so tests stay unaffected).
     # The project-relative path makes it independent of the current working dir.
