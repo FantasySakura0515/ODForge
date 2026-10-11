@@ -12,6 +12,7 @@ const ROLE_ZH: Record<string, string> = {
   "title-content": "標題內文", comparison: "對比", chart: "圖表", closing: "結語",
   cards: "觀點卡片", process: "流程", timeline: "時間軸", metrics: "指標", diagram: "關係圖",
   "image-focus": "主視覺", "image-split": "圖文分割",
+  dashboard: "儀表板", table: "表格", quote: "引言",
 };
 
 export function OutlineRail({
