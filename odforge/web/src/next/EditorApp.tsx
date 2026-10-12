@@ -73,6 +73,7 @@ export function EditorApp() {
   const [loadError, setLoadError] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
   const [pageIndex, setPageIndex] = useState(0);
   const [selection, setSelection] = useState<string[]>([]);
   const [editing, setEditingState] = useState<{ id: string | null; selectAll: boolean }>({ id: null, selectAll: false });
@@ -95,6 +96,29 @@ export function EditorApp() {
   useEffect(() => {
     if (doc) document.title = `${doc.name} · 文鍛`;
   }, [doc]);
+
+  // Someone else (an agent through MCP, another window) may save the same file.
+  // Poll its version and redraw when it moves — but never under a person who is
+  // typing, and never while our own save is still on its way.
+  const busy = useRef({ saving, editing: false, version: 0 });
+  busy.current = { saving, editing: editing.id !== null, version: doc?.version ?? 0 };
+  useEffect(() => {
+    const timer = window.setInterval(async () => {
+      if (busy.current.saving || busy.current.editing || document.hidden) return;
+      try {
+        const version = await api.getVersion();
+        if (version === busy.current.version || busy.current.saving || busy.current.editing) return;
+        const state = await api.loadDoc();
+        setDoc(state);
+        setSelection((ids) => ids.filter((id) => state.scene.pages.some((p) => p.elements.some((e) => e.id === id))));
+        setNotice("檔案在別處被修改,已更新到最新版本");
+        window.setTimeout(() => setNotice(""), 2500);
+      } catch {
+        // The server may be restarting; try again on the next tick.
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   /** Run server calls one after another so their results land in order. */
   const run = useCallback((call: () => Promise<DocState>): Promise<DocState | null> => {
@@ -388,7 +412,7 @@ export function EditorApp() {
         <div className="ne-title">
           <span className="ne-mark">文鍛</span>
           <h1>{doc.name}</h1>
-          <span className="ne-status" aria-live="polite">{saving ? "儲存中…" : "已儲存"}</span>
+          <span className="ne-status" aria-live="polite">{notice || (saving ? "儲存中…" : "已儲存")}</span>
         </div>
         <div className="ne-tools" role="toolbar" aria-label="工具">
           <button type="button" aria-pressed={tool === "select"} title="選取 (V)" onClick={() => setTool("select")}>選取</button>

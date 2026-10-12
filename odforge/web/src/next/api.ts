@@ -26,6 +26,12 @@ export function loadDoc(): Promise<DocState> {
   return call("/api/doc");
 }
 
+export async function getVersion(): Promise<number> {
+  const response = await fetch("/api/doc/version");
+  if (!response.ok) throw new EditorError("連不上編輯器的伺服器");
+  return ((await response.json()) as { version: number }).version;
+}
+
 export function sendOps(ops: Op[]): Promise<DocState> {
   return call("/api/doc/ops", {
     method: "POST",

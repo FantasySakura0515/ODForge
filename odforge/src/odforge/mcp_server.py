@@ -366,6 +366,99 @@ def preview_odf(path: str, out_dir: str) -> str:
         return f"error: {type(exc).__name__}: {concise(str(exc))}"
 
 
+def _outline_text(path: Path) -> str:
+    from odforge.scene import scene_of
+
+    scene = scene_of(path)
+    size = f"{scene['width']:g} × {scene['height']:g} cm"
+    lines = [f"{path.name}: {len(scene['pages'])} 頁,頁面 {size}"]
+    for index, page in enumerate(scene["pages"]):
+        lines.append(f"\n第 {index + 1} 頁(page={index})")
+        for el in page["elements"]:
+            if el["kind"] == "line":
+                where = f"({el['x1']:.2f},{el['y1']:.2f})→({el['x2']:.2f},{el['y2']:.2f})"
+            else:
+                where = f"x={el['x']:.2f} y={el['y']:.2f} w={el['w']:.2f} h={el['h']:.2f}"
+            detail = ""
+            text = el.get("text")
+            if text:
+                paragraphs = ["".join(r["text"] for r in p["runs"]) for p in text["paragraphs"]]
+                first = next((r for p in text["paragraphs"] for r in p["runs"]), {})
+                size = f" {first.get('size'):g}pt" if first.get("size") else ""
+                detail = f"{size} 「" + " / ".join(paragraphs)[:120] + "」"
+            elif el.get("fill"):
+                detail = f" 填色 {el['fill']}"
+            lines.append(f"  [{el['id']}] {el['kind']} {where}{detail}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def outline_odp(path: str) -> str:
+    """List every element of an existing ``.odp``: its id, kind, box and text.
+
+    Use this before ``edit_odp``: the ids it prints (``"page/index"``, e.g.
+    ``"7/2"``) are what ``edit_odp`` operations refer to. Coordinates are in cm
+    from the slide's top-left corner. Works on any .odp, not only ODForge's.
+    Returns ``"error: ..."`` on failure; never raises.
+    """
+    try:
+        target = Path(path)
+        if not target.is_file():
+            return f"error: file not found: {path}"
+        return _outline_text(target)
+    except Exception as exc:
+        return f"error: {type(exc).__name__}: {concise(str(exc))}"
+
+
+@mcp.tool()
+def edit_odp(path: str, ops: list) -> str:
+    """Edit an existing ``.odp`` in place — the same operations the web editor uses.
+
+    Prefer this over re-forging a whole deck when the user has already edited the
+    file by hand (``odforge edit``): it changes only what you name, so their edits
+    survive. If the user has the editor open, they see your change within a second.
+
+    ``ops`` is a list applied atomically (all or nothing); ids come from
+    ``outline_odp`` and refer to positions *before* this batch:
+
+    * ``{"op": "text", "id": "7/2", "paragraphs": ["第一段", "第二段\n段內換行"]}``
+      — replace text, keeping each paragraph's style. A paragraph may instead be
+      ``{"runs": [{"text": "...", "weight": 700, "italic": true, "underline": true,
+      "color": "#C62828", "size": 20, "family": "Noto Serif TC"}], "align": "center"}``.
+    * ``{"op": "geom", "id": "7/2", "x": 2, "y": 3, "w": 10, "h": 2}`` (cm; any
+      subset). Lines take ``x1/y1/x2/y2``.
+    * ``{"op": "add_text", "page": 0, "x": 2, "y": 2, "w": 10, "h": 1.5, "text": "..."}``,
+      ``{"op": "add_rect", "page": 0, "x": .., "y": .., "w": .., "h": ..}``
+    * ``{"op": "delete", "id": "7/2"}``, ``{"op": "duplicate", "id": "7/2", "dx": 0.5, "dy": 0.5}``,
+      ``{"op": "order", "id": "7/2", "to": "front" | "back" | "forward" | "backward"}``
+    * ``{"op": "page_add", "after": 3}``, ``{"op": "page_duplicate", "page": 3}``,
+      ``{"op": "page_delete", "page": 3}``, ``{"op": "page_move", "page": 3, "to": 0}``
+
+    Deleting several elements of one page: list them from the highest index down,
+    or later ids shift. Returns ``"ok: ..."`` with the ids of anything created, then
+    the new outline of the pages touched; ``"error: ..."`` if any op was refused.
+    """
+    try:
+        from odforge.odpedit import Document, EditError
+
+        target = Path(path)
+        if not target.is_file():
+            return f"error: file not found: {path}"
+        if not isinstance(ops, list) or not ops:
+            return "error: ops must be a non-empty list"
+        try:
+            state = Document(target).apply(ops)
+        except EditError as exc:
+            return f"error: {exc}"
+        created = state["created"]
+        result = f"ok: applied {len(ops)} operation(s) to {target.resolve()}"
+        if created:
+            result += f"; created: {', '.join(created)}"
+        return result + "\n\n" + _outline_text(target)
+    except Exception as exc:
+        return f"error: {type(exc).__name__}: {concise(str(exc))}"
+
+
 def main() -> None:  # pragma: no cover
     """Console-script entry point (``odforge-mcp``): run the stdio MCP server.
 

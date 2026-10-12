@@ -52,6 +52,11 @@ def create_editor_app(path: Path) -> FastAPI:
     def get_doc() -> Dict[str, Any]:
         return document.state()
 
+    @app.get("/api/doc/version")
+    def get_version() -> Dict[str, Any]:
+        # Polled by the page: a changed number means someone else saved the file.
+        return {"version": document.poll()}
+
     @app.post("/api/doc/ops")
     def post_ops(body: OpsBody) -> Dict[str, Any]:
         try:

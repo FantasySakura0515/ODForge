@@ -20,6 +20,7 @@ as before.
 from __future__ import annotations
 
 import io
+import logging
 import os
 from dataclasses import dataclass
 from functools import cache
@@ -95,6 +96,9 @@ def _subset(path: Path, text: str) -> tuple[bytes, str] | None:
         from fontTools.ttLib import TTFont
     except ImportError:  # optional dependency
         return None
+    # fontTools narrates every table it prunes at INFO; under a host that logs
+    # INFO (the MCP server does) one subset run is half a megabyte of noise.
+    logging.getLogger("fontTools").setLevel(logging.WARNING)
     options = subset.Options()
     # Keep every name record: LibreOffice matches the embedded face to the
     # document's font-face by family name.

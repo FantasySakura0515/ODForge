@@ -39,7 +39,19 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
 
 沒有人在看（批次產檔、使用者只要檔案）時，改用下面的 MCP 工具。
 
-## MCP 工具（共 5 個）
+## 修改已經存在的 .odp（使用者可能手動改過）
+
+簡報產出之後，使用者常會在網頁編輯器裡自己拖、自己改字。這時**不要重新 forge 整份**
+——那會蓋掉他們的修改。改用：
+
+1. 背景開編輯器給使用者看：`odforge edit deck.odp --no-open > edit.log 2>&1`，把第一行的
+   網址給使用者（不加 `--no-open` 會自動開瀏覽器）。
+2. `outline_odp(path)` 讀出每頁元素的代號（`"7/2"` = 第 8 頁第 3 個元素）、位置與文字。
+3. `edit_odp(path, ops)` 只改要改的地方：改字、搬位置、加減頁。使用者開著的編輯器一秒內
+   就會顯示你的修改；他們同時也能繼續手動調整。
+4. 改完照樣用 `inspect_odf` 檢查跑版。
+
+## MCP 工具（共 7 個）
 
 | 工具 | 簽名 | 用途 |
 | --- | --- | --- |
@@ -48,6 +60,8 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
 | `forge_spreadsheet` | `(document: dict, out_path: str) -> str` | 渲染試算表 → `.ods` |
 | `inspect_odf` | `(path: str) -> str` | 驗證既有 ODF 檔（結構／XML／soffice 三閘）|
 | `preview_odf` | `(path: str, out_dir: str) -> str` | 每頁渲成 PNG，回傳路徑 JSON，供你**看圖**自查 |
+| `outline_odp` | `(path: str) -> str` | 列出既有 .odp 每頁的元素代號、位置、文字 |
+| `edit_odp` | `(path: str, ops: list) -> str` | 原地修改既有 .odp（改字、搬位置、增刪頁），不動其他內容 |
 
 每個工具**只回字串、永不 raise**：失敗一律回 `"error: ..."`。呼叫後要讀回傳字串，
 `"ok:"` 才算成功，`"error:"` 要修好再重來。

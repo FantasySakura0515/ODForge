@@ -52,7 +52,17 @@ class Document:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self._lock = threading.Lock()
+        self.version = 0
+        self._load()
+
+    def _stamp(self) -> Tuple[int, int]:
+        stat = self.path.stat()
+        return stat.st_mtime_ns, stat.st_size
+
+    def _load(self) -> None:
+        """(Re)read the package from disk; history starts over."""
         self._members: List[Tuple[zipfile.ZipInfo, bytes]] = []
+        self._disk = self._stamp()
         with zipfile.ZipFile(self.path) as package:
             for info in package.infolist():
                 self._members.append((info, package.read(info.filename)))
@@ -70,7 +80,32 @@ class Document:
             raise EditError("這份檔案不是簡報(.odp)")
         self.undo_stack: List[bytes] = []
         self.redo_stack: List[bytes] = []
-        self.version = 0
+
+    def _sync(self) -> None:
+        """Pick up changes someone else (an agent, another tool) wrote to the file.
+
+        Undo history belongs to the version it was recorded against, so it is
+        dropped: undoing back across another writer's edit would silently revert
+        their work.
+        """
+        try:
+            stamp = self._stamp()
+        except OSError:
+            return
+        if stamp == self._disk:
+            return
+        try:
+            self._load()
+        except (OSError, zipfile.BadZipFile, etree.XMLSyntaxError, EditError):
+            # Caught mid-write: keep what we have and try again next time.
+            return
+        self.version += 1
+
+    def poll(self) -> int:
+        """The current version, after picking up outside changes (cheap when none)."""
+        with self._lock:
+            self._sync()
+            return self.version
 
     # -- package ----------------------------------------------------------------
 
@@ -108,6 +143,7 @@ class Document:
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
+        self._disk = self._stamp()
         self.version += 1
 
     # -- reading ----------------------------------------------------------------
@@ -121,6 +157,7 @@ class Document:
 
     def state(self) -> Dict[str, Any]:
         with self._lock:
+            self._sync()
             return self._state()
 
     def _state(self, created: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -165,6 +202,7 @@ class Document:
     def apply(self, ops: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply a batch atomically: all of it lands, or none of it does."""
         with self._lock:
+            self._sync()
             before = self._serialise()
             created: List[str] = []
             try:
@@ -187,6 +225,7 @@ class Document:
 
     def undo(self) -> Dict[str, Any]:
         with self._lock:
+            self._sync()
             if self.undo_stack:
                 self.redo_stack.append(self._serialise())
                 self.content = safe_fromstring(self.undo_stack.pop())
@@ -195,6 +234,7 @@ class Document:
 
     def redo(self) -> Dict[str, Any]:
         with self._lock:
+            self._sync()
             if self.redo_stack:
                 self.undo_stack.append(self._serialise())
                 self.content = safe_fromstring(self.redo_stack.pop())
@@ -545,6 +585,7 @@ class Document:
     def clip(self, ids: List[str]) -> List[str]:
         """The XML of elements, for pasting later (on any page of this document)."""
         with self._lock:
+            self._sync()
             return [
                 etree.tostring(self._element(element_id)[2], encoding="unicode")
                 for element_id in ids

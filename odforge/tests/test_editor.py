@@ -418,3 +418,46 @@ def test_new_characters_are_added_to_embedded_fonts(deck):
     after = docfonts.coverage(doc.member("Fonts/NotoSansTC-Regular.otf"))
     assert ord("鬱") in after
     assert all(f["rev"] for f in state["scene"]["fonts"])
+
+
+# -- several writers -------------------------------------------------------------------
+
+
+def test_outside_changes_are_picked_up(deck):
+    editor = Document(deck)
+    editor.apply([{"op": "geom", "id": "7/11", "x": 12}])
+    version = editor.poll()
+    Document(deck).apply([{"op": "text", "id": "7/2", "paragraphs": ["別人改的"]}])
+    assert editor.poll() == version + 1
+    state = editor.state()
+    assert _texts(_el(state, "7/2")) == ["別人改的"]
+    assert _el(state, "7/11")["x"] == 12  # the earlier edit is still in the file
+    assert not state["canUndo"]  # history does not reach across another writer
+
+
+def test_edits_apply_on_top_of_outside_changes(deck):
+    editor = Document(deck)
+    Document(deck).apply([{"op": "text", "id": "7/2", "paragraphs": ["別人改的"]}])
+    state = editor.apply([{"op": "geom", "id": "7/11", "x": 13}])
+    assert _texts(_el(state, "7/2")) == ["別人改的"]
+
+
+def test_version_endpoint(deck):
+    client = TestClient(create_editor_app(deck))
+    first = client.get("/api/doc/version").json()["version"]
+    Document(deck).apply([{"op": "geom", "id": "7/11", "x": 12}])
+    assert client.get("/api/doc/version").json()["version"] == first + 1
+
+
+def test_mcp_outline_and_edit(deck):
+    from odforge.mcp_server import edit_odp, outline_odp
+
+    outline = outline_odp(str(deck))
+    assert "第 8 頁(page=7)" in outline and "[7/2] text" in outline
+    result = edit_odp(
+        str(deck), [{"op": "add_text", "page": 0, "x": 2, "y": 2, "text": "agent 加的"}]
+    )
+    assert result.startswith("ok:") and "created: 0/" in result and "agent 加的" in result
+    assert edit_odp(str(deck), [{"op": "geom", "id": "99/0", "x": 1}]).startswith("error:")
+    assert edit_odp(str(deck), []).startswith("error:")
+    assert outline_odp(str(deck) + ".missing").startswith("error: file not found")

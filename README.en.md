@@ -198,7 +198,9 @@ is what you edit:
   boxes and rectangles.
 
 Every step is written straight back to the file. Anything the editor does not touch (speaker
-notes, pictures, objects it cannot draw) is left exactly as it was.
+notes, pictures, objects it cannot draw) is left exactly as it was. When another program saves the
+file (an AI assistant using `edit_odp` over MCP, say), the open editor updates within a second, so
+you and the assistant can work on the same deck at once.
 
 ## Live preview: your agent writes, the browser shows
 
@@ -265,7 +267,7 @@ ODForge only renders and validates it, so no API key is needed.
 }
 ```
 
-Five tools:
+Seven tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -274,6 +276,8 @@ Five tools:
 | `forge_spreadsheet` | IR → `.ods` |
 | `inspect_odf` | Validate an existing ODF file and check it for overflow |
 | `preview_odf` | Render each page to PNG so the assistant can check its work |
+| `outline_odp` | List every element of an existing `.odp`: id, position, text |
+| `edit_odp` | Edit an existing `.odp` in place — retype, move, add or remove slides — leaving the rest alone |
 
 When text does not fit, `forge_*` still writes the file, but the returned string carries
 `warning:` blocks: the overruns estimated from the layout budget before rendering, and the
