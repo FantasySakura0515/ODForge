@@ -103,6 +103,24 @@ def add_editor_routes(app: FastAPI, base: str, resolve: Callable[[str], Document
             },
         )
 
+    @app.get(f"{base}/export")
+    def export(doc_id: str = "") -> FileResponse:
+        """The file as it is now, after checking it is a well-formed ODF package."""
+        from .validate import validate_odf
+
+        document = resolve(doc_id)
+        document.poll()
+        report = validate_odf(document.path)
+        if not report.ok:
+            problems = "; ".join(m for ok, m in report.gates.values() if not ok)
+            raise HTTPException(status_code=500, detail=f"檔案沒有通過格式檢查,未匯出:{problems}")
+        return FileResponse(
+            document.path,
+            media_type="application/vnd.oasis.opendocument.presentation",
+            filename=document.path.name,
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.get(f"{base}/download")
     def download(doc_id: str = "") -> FileResponse:
         document = resolve(doc_id)

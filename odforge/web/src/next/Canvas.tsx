@@ -1,18 +1,21 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { ALIGN_LABEL, ContextMenu, SelectionBar, type Actions, type MenuItem } from "./Bars";
 import { CommentComposer, CommentPins } from "./Comments";
+import { COMPONENT_MIME } from "./Elements";
 import {
   HANDLES,
   bounds,
   containerOf,
+  flatten,
+  isAncestor,
   fmt,
-  gaps as findGaps,
   geomOp,
   intersects,
   moved,
   resized,
   riders,
   snap,
+  spacingSnap,
   union,
   withBox,
   type AlignKind,
@@ -77,6 +80,8 @@ export interface CanvasProps {
   fonts: { family: string; embeddable: boolean }[];
   openComment: string | null;
   setOpenComment: (id: string | null) => void;
+  /** A part dragged in from the 元素 panel, dropped at (x, y) cm. */
+  onDropComponent: (kind: string, x: number, y: number) => void;
 }
 
 export function Canvas(props: CanvasProps) {
@@ -126,7 +131,7 @@ export function Canvas(props: CanvasProps) {
     return () => wrap.removeEventListener("wheel", onWheel);
   });
 
-  const byId = useMemo(() => new Map(page.elements.map((e) => [e.id, e])), [page]);
+  const byId = useMemo(() => new Map(flatten(page.elements).map((e) => [e.id, e])), [page]);
   const live = (id: string) => overrides.get(id) ?? props.nudge.get(id) ?? byId.get(id);
   const merged = useMemo(() => {
     const m = new Map(props.nudge);
@@ -135,7 +140,12 @@ export function Canvas(props: CanvasProps) {
   }, [overrides, props.nudge]);
 
   /** What a press on ``el`` selects: its card first, the element itself once the card is selected. */
-  function pickFor(el: SceneElement, deep: boolean): { pick: SceneElement; drill: string | null } {
+  function pickFor(el: SceneElement, deep: boolean, inner?: SceneElement): { pick: SceneElement; drill: string | null } {
+    if (el.kind === "group" && inner) {
+      // Canva: the group first; once it is selected, a click selects the member.
+      if (deep || selection.includes(inner.id)) return { pick: inner, drill: null };
+      return { pick: el, drill: selection.includes(el.id) ? inner.id : null };
+    }
     if (deep || selection.includes(el.id)) return { pick: el, drill: null };
     const container = containerOf(el, page.elements);
     if (!container) return { pick: el, drill: null };
@@ -148,7 +158,10 @@ export function Canvas(props: CanvasProps) {
   }
 
   function othersExcept(ids: Set<string>): Rect[] {
-    return page.elements.filter((e) => !ids.has(e.id)).map(bounds);
+    const moving = [...ids];
+    return flatten(page.elements)
+      .filter((e) => !ids.has(e.id) && !moving.some((m) => isAncestor(m, e.id) || isAncestor(e.id, m)))
+      .map(bounds);
   }
 
   function capture(e: ReactPointerEvent) {
@@ -176,39 +189,42 @@ export function Canvas(props: CanvasProps) {
     await props.apply([op]);
   }
 
-  function onElementPointerDown(e: ReactPointerEvent, el: SceneElement) {
+  function onElementPointerDown(e: ReactPointerEvent, raw: SceneElement, inner?: SceneElement) {
+    // Handlers hold the element as it was last drawn; use the current one.
+    const el = byId.get(raw.id) ?? raw;
+    const target = inner ? byId.get(inner.id) ?? inner : el;
     if (tool === "comment" && e.button === 0) {
       e.stopPropagation();
-      startComment(el);
+      startComment(target);
       return;
     }
     if (tool !== "select") return;
     if (e.button === 2) {
       e.stopPropagation();
-      if (!selection.includes(el.id)) {
-        const { pick } = pickFor(el, e.metaKey || e.ctrlKey);
+      if (!selection.includes(target.id)) {
+        const { pick } = pickFor(el, e.metaKey || e.ctrlKey, inner && target);
         if (!selection.includes(pick.id)) setSelection([pick.id]);
       }
       return;
     }
     if (e.button !== 0) return;
     e.stopPropagation();
-    if (props.editingId === el.id) return;
+    if (props.editingId === target.id) return;
     if (props.editingId) leaveText();
     setMenu(null);
 
     const now = Date.now();
     const previous = lastPress.current;
-    lastPress.current = { id: el.id, at: now };
-    if (previous && previous.id === el.id && now - previous.at < DOUBLE_CLICK_MS && el.kind !== "line" && el.text) {
+    lastPress.current = { id: target.id, at: now };
+    if (previous && previous.id === target.id && now - previous.at < DOUBLE_CLICK_MS && target.kind !== "line" && target.text) {
       lastPress.current = null;
       e.preventDefault(); // keep the browser from moving focus; the editor takes it
-      setSelection([el.id]);
-      props.setEditing(el.id);
+      setSelection([target.id]);
+      props.setEditing(target.id);
       return;
     }
 
-    const { pick, drill } = pickFor(el, e.metaKey || e.ctrlKey);
+    const { pick, drill } = pickFor(el, e.metaKey || e.ctrlKey, inner && target);
     const wasSelected = selection.includes(pick.id);
     let next = selection;
     if (e.shiftKey) next = wasSelected ? selection.filter((id) => id !== pick.id) : [...selection, pick.id];
@@ -250,7 +266,7 @@ export function Canvas(props: CanvasProps) {
   latest.current = { onElementPointerDown, setHoverId };
   const handlers = useMemo<ElementHandlers>(
     () => ({
-      onPointerDown: (e, el) => latest.current.onElementPointerDown(e, el),
+      onPointerDown: (e, el, inner) => latest.current.onElementPointerDown(e, el, inner),
       onPointerEnter: (el) => latest.current.setHoverId(el.id),
       onPointerLeave: (el) => latest.current.setHoverId((h) => (h === el.id ? null : h)),
     }),
@@ -328,16 +344,20 @@ export function Canvas(props: CanvasProps) {
       if (!d.started && Math.hypot(dx * s, dy * s) < DRAG_START_PX) return;
       d.started = true;
       const raw = { ...d.base, x: d.base.x + dx, y: d.base.y + dy };
-      const snapped = free ? { dx: 0, dy: 0, guides: [] } : snap(raw, d.others, { width, height }, SNAP_PX / s);
-      const fx = dx + snapped.dx;
-      const fy = dy + snapped.dy;
+      const threshold = SNAP_PX / s;
+      const snapped = free ? { dx: 0, dy: 0, guides: [] as Guide[] } : snap(raw, d.others, { width, height }, threshold);
+      // Equal spacing only on an axis alignment did not already claim.
+      const aligned = { x: snapped.guides.some((g) => g.axis === "v"), y: snapped.guides.some((g) => g.axis === "h") };
+      const spaced = free
+        ? { dx: 0, dy: 0, gaps: [] as Gap[] }
+        : spacingSnap({ ...raw, x: raw.x + snapped.dx, y: raw.y + snapped.dy }, d.others, threshold, aligned);
+      const fx = dx + snapped.dx + spaced.dx;
+      const fy = dy + snapped.dy + spaced.dy;
       const next = new Map<string, SceneElement>();
       d.origin.forEach((el, id) => next.set(id, moved(el, fx, fy)));
       setOverrides(next);
       setGuides(snapped.guides);
-      const placed = { ...d.base, x: d.base.x + fx, y: d.base.y + fy };
-      setGaps(findGaps(placed, d.others));
-      setReadout({ x: placed.x + placed.w / 2, y: placed.y + placed.h, text: `x ${fmt(placed.x)} · y ${fmt(placed.y)} cm` });
+      setGaps(spaced.gaps);
       return;
     }
 
@@ -477,6 +497,9 @@ export function Canvas(props: CanvasProps) {
           disabled: selection.length !== 1,
         },
         null,
+        { label: "組成群組", hint: "⌘G", onSelect: props.actions.group, disabled: !props.actions.canGroup },
+        { label: "解散群組", hint: "⇧⌘G", onSelect: props.actions.ungroup, disabled: !props.actions.canUngroup },
+        null,
         { label: "刪除", hint: "⌫", onSelect: props.actions.remove, danger: true },
       ]
     : [
@@ -496,6 +519,19 @@ export function Canvas(props: CanvasProps) {
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onContextMenu={onContextMenu}
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes(COMPONENT_MIME)) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+          }
+        }}
+        onDrop={(e) => {
+          const kind = e.dataTransfer.getData(COMPONENT_MIME);
+          if (!kind) return;
+          e.preventDefault();
+          const p = point(e);
+          props.onDropComponent(kind, p.x, p.y);
+        }}
       >
         <SlideView
           page={page}

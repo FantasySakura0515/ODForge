@@ -549,3 +549,129 @@ def test_wait_for_feedback_returns_submitted_comments_then_done(deck):
     doc.apply([{"op": "comment_delete", "comment": "c7/0"}, {"op": "session", "state": "done"}])
     assert asyncio.run(wait_for_feedback(str(deck), 1)).startswith("done:")
     assert Document(deck).state()["session"] == "open"  # picked up, so cleared
+
+
+def test_export_serves_the_current_checked_file(deck):
+    client = TestClient(create_editor_app(deck))
+    client.post(
+        "/api/doc/ops", json={"ops": [{"op": "text", "id": "7/2", "paragraphs": ["匯出前改的"]}]}
+    )
+    response = client.get("/api/doc/export")
+    assert response.status_code == 200
+    assert "attachment" in response.headers["content-disposition"]
+    assert response.headers["cache-control"] == "no-store"
+    import io
+
+    with zipfile.ZipFile(io.BytesIO(response.content)) as package:
+        assert "匯出前改的" in package.read("content.xml").decode()
+
+
+def test_export_refuses_a_broken_file(deck, monkeypatch):
+    from odforge import validate
+
+    client = TestClient(create_editor_app(deck))
+
+    from types import SimpleNamespace
+
+    bad = SimpleNamespace(ok=False, gates={"xml": (False, "content.xml 壞了")})
+    monkeypatch.setattr(validate, "validate_odf", lambda *_a, **_k: bad)
+    response = client.get("/api/doc/export")
+    assert response.status_code == 500 and "content.xml 壞了" in response.json()["detail"]
+
+
+# -- groups and ready-made parts ------------------------------------------------------------
+
+
+def test_group_move_scale_edit_and_ungroup(deck):
+    doc = Document(deck)
+    state = doc.apply([{"op": "group", "ids": ["7/11", "7/13", "7/14", "7/15"]}])
+    (gid,) = state["created"]
+    group = _el(state, gid)
+    assert group["kind"] == "group" and [c["id"] for c in group["children"]] == [
+        f"{gid}.{k}" for k in range(4)
+    ]
+    state = doc.apply(
+        [
+            {
+                "op": "geom",
+                "id": gid,
+                "x": group["x"] + 1,
+                "y": group["y"],
+                "w": group["w"] * 2,
+                "h": group["h"],
+            }
+        ]
+    )
+    moved = _el(state, gid)
+    assert moved["x"] == pytest.approx(group["x"] + 1) and moved["w"] == pytest.approx(
+        group["w"] * 2
+    )
+    state = doc.apply([{"op": "text", "id": f"{gid}.1", "paragraphs": ["群組內改字"]}])
+    assert _texts(_el(state, gid)["children"][1]) == ["群組內改字"]
+    state = doc.apply([{"op": "ungroup", "id": gid}])
+    assert len(state["created"]) == 4
+    report = validate_odf(deck, with_soffice=find_soffice() is not None)
+    assert report.ok, report.gates
+
+
+def test_group_needs_two_top_level_elements(deck):
+    doc = Document(deck)
+    with pytest.raises(EditError, match="兩個"):
+        doc.apply([{"op": "group", "ids": ["7/11"]}])
+    with pytest.raises(EditError, match="同一頁"):
+        doc.apply([{"op": "group", "ids": ["7/11", "6/1"]}])
+
+
+def test_deleting_the_last_member_removes_the_group(deck):
+    doc = Document(deck)
+    (gid,) = doc.apply([{"op": "group", "ids": ["7/11", "7/12"]}])["created"]
+    before = len(_page(doc.state(), 7)["elements"])
+    state = doc.apply([{"op": "delete", "id": f"{gid}.1"}, {"op": "delete", "id": f"{gid}.0"}])
+    assert len(_page(state, 7)["elements"]) == before - 1
+
+
+def test_theme_comes_from_the_deck(deck):
+    from odforge.components import infer_theme
+    from odforge.scene import read_package
+
+    theme = infer_theme(*read_package(deck))
+    assert theme.accent == "#1A4B8C" and theme.ink == "#1F2733"
+    assert theme.display_font == "Noto Serif TC" and theme.body_font == "Noto Sans TC"
+    assert theme.card_style  # the deck's own card look is reused
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "heading",
+        "body",
+        "kicker",
+        "card",
+        "step",
+        "metric",
+        "quote",
+        "takeaway",
+        "timeline",
+        "divider",
+        "rect",
+        "ellipse",
+    ],
+)
+def test_every_part_inserts(deck, kind):
+    doc = Document(deck)
+    state = doc.apply([{"op": "add_component", "page": 1, "kind": kind, "x": 3, "y": 3}])
+    el = _el(state, state["created"][0])
+    assert el["kind"] in ("group", "text", "rect", "ellipse", "line")
+
+
+def test_parts_validate_and_use_the_deck_style(deck):
+    doc = Document(deck)
+    state = doc.apply([{"op": "add_component", "page": 1, "kind": "card", "x": 3, "y": 3}])
+    card = _el(state, state["created"][0])
+    title = card["children"][2]["text"]["paragraphs"][0]["runs"][0]
+    assert title["family"] == ["Noto Serif TC"] and title["weight"] == 700
+    assert card["children"][1]["text"]["paragraphs"][0]["runs"][0]["color"] == "#1A4B8C"
+    with pytest.raises(EditError, match="不認得的元素"):
+        doc.apply([{"op": "add_component", "page": 1, "kind": "rocket"}])
+    report = validate_odf(deck, with_soffice=find_soffice() is not None)
+    assert report.ok, report.gates

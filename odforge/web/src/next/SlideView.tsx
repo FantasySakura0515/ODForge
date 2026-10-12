@@ -237,32 +237,63 @@ function LineView({ el, s }: { el: LineElement; s: number }) {
 }
 
 export interface ElementHandlers {
-  onPointerDown?: (e: ReactPointerEvent, el: SceneElement) => void;
+  /** ``inner`` is the member actually pressed when ``el`` is a group. */
+  onPointerDown?: (e: ReactPointerEvent, el: SceneElement, inner?: SceneElement) => void;
   onPointerEnter?: (el: SceneElement) => void;
   onPointerLeave?: (el: SceneElement) => void;
 }
 
+type Commit = (id: string, paragraphs: RichParagraph[]) => void;
+
 export const ElementView = memo(ElementViewInner, (a, b) =>
   // Handlers and commit callbacks are stable wrappers (see Canvas); only what
   // changes the picture decides whether this element redraws.
-  a.el === b.el && a.s === b.s && a.editing === b.editing && a.selectAll === b.selectAll && !!a.handlers === !!b.handlers,
+  a.el === b.el &&
+  a.s === b.s &&
+  a.editingId === b.editingId &&
+  a.selectAll === b.selectAll &&
+  !!a.handlers === !!b.handlers,
 );
 
 function ElementViewInner({
   el,
   s,
-  editing,
+  editingId,
   selectAll,
-  onCommit,
+  commit,
   handlers,
 }: {
   el: SceneElement;
   s: number;
-  editing?: boolean;
+  /** The element being edited, if it is this one or inside this group. */
+  editingId?: string | null;
   selectAll?: boolean;
-  onCommit?: (paragraphs: RichParagraph[]) => void;
+  commit?: Commit;
   handlers?: ElementHandlers;
 }) {
+  if (el.kind === "group" && el.children) {
+    // Members report presses as the group's, naming themselves as ``inner``.
+    const inside: ElementHandlers | undefined = handlers && {
+      onPointerDown: (e, member, inner) => handlers.onPointerDown?.(e, el, inner ?? member),
+      onPointerEnter: () => handlers.onPointerEnter?.(el),
+      onPointerLeave: () => handlers.onPointerLeave?.(el),
+    };
+    return (
+      <>
+        {el.children.map((child) => (
+          <ElementView
+            key={child.id}
+            el={child}
+            s={s}
+            editingId={editingId && (editingId === child.id || editingId.startsWith(`${child.id}.`)) ? editingId : null}
+            selectAll={selectAll}
+            commit={commit}
+            handlers={inside}
+          />
+        ))}
+      </>
+    );
+  }
   if (el.kind === "line") {
     return (
       <>
@@ -293,9 +324,34 @@ function ElementViewInner({
         <img src={fileUrl(el.href)} alt="" draggable={false} style={{ width: "100%", height: "100%", display: "block" }} />
       )}
       {el.kind === "unsupported" && <span className="ne-unsupported">{el.reason ?? "無法編輯的物件"}</span>}
-      {el.text && <TextBlock body={el.text} s={s} editing={editing} onCommit={onCommit} selectAll={selectAll} />}
+      {el.text && (
+        <TextBlock
+          body={el.text}
+          s={s}
+          editing={editingId === el.id}
+          onCommit={commit ? (paragraphs) => commit(el.id, paragraphs) : undefined}
+          selectAll={selectAll}
+        />
+      )}
     </div>
   );
+}
+
+/** Apply drag previews to an element tree (members of groups included). */
+function withOverrides(el: SceneElement, overrides?: Map<string, SceneElement>): SceneElement {
+  if (!overrides?.size) return el;
+  const direct = overrides.get(el.id);
+  if (direct) return direct;
+  if (el.kind === "group" && el.children) {
+    let changed = false;
+    const children = el.children.map((c) => {
+      const next = withOverrides(c, overrides);
+      if (next !== c) changed = true;
+      return next;
+    });
+    return changed ? { ...el, children } : el;
+  }
+  return el;
 }
 
 /** A fat invisible stroke so a hairline can be grabbed. */
@@ -366,20 +422,17 @@ export function SlideView({
           <ElementView key={el.id} el={el} s={s} />
         ))}
       </div>
-      {page.elements.map((raw) => {
-        const el = overrides?.get(raw.id) ?? raw;
-        return (
-          <ElementView
-            key={raw.id}
-            el={el}
-            s={s}
-            editing={editingId === raw.id}
-            selectAll={selectAll}
-            onCommit={onCommit ? (paragraphs) => onCommit(raw.id, paragraphs) : undefined}
-            handlers={handlers}
-          />
-        );
-      })}
+      {page.elements.map((raw) => (
+        <ElementView
+          key={raw.id}
+          el={withOverrides(raw, overrides)}
+          s={s}
+          editingId={editingId && (editingId === raw.id || editingId.startsWith(`${raw.id}.`)) ? editingId : null}
+          selectAll={selectAll}
+          commit={onCommit}
+          handlers={handlers}
+        />
+      ))}
     </div>
   );
 }

@@ -43,7 +43,10 @@ button { font: inherit; color: inherit; }
   display: inline-flex; align-items: center; height: 34px; margin-left: 6px; padding: 0 14px; border-radius: 6px;
   background: var(--ne-brand); color: #fff; font-size: 13px; font-weight: 500; text-decoration: none;
 }
-.ne-download:hover { background: #18337d; }
+.ne-download:hover:not(:disabled) { background: #18337d; }
+button.ne-download { border: 0; cursor: pointer; font: inherit; font-size: 13px; font-weight: 500; }
+button.ne-download:disabled { opacity: 0.7; cursor: progress; }
+.ne-tools button.ne-download { color: #fff; background: var(--ne-brand); border-color: var(--ne-brand); }
 
 /* -- body ------------------------------------------------------------------- */
 .ne-body { flex: 1; min-height: 0; display: flex; }
@@ -274,3 +277,23 @@ button { font: inherit; color: inherit; }
 .ne-drawer-actions button:disabled { opacity: 0.45; cursor: default; }
 .ne-working { margin-left: 6px; font-style: normal; color: var(--ne-brand); }
 @media (prefers-reduced-motion: reduce) { .ne-pin.working, .ne-ai-working { animation: none; } }
+
+/* -- left panel: pages / elements ------------------------------------------------ */
+.ne-left { width: 252px; flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--ne-line); background: var(--ne-bg); min-height: 0; }
+.ne-left .ne-pages { width: auto; border-right: 0; flex: 1; }
+.ne-tabs { display: flex; gap: 4px; padding: 10px 12px 0; border-bottom: 1px solid var(--ne-line); }
+.ne-tabs button {
+  flex: 1; height: 34px; border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer;
+  font-size: 13px; color: var(--ne-muted);
+}
+.ne-tabs button[aria-selected="true"] { color: var(--ne-ink); border-bottom-color: var(--ne-ink); font-weight: 500; }
+.ne-elements { padding: 14px 12px 24px; overflow-y: auto; }
+.ne-elements-hint { margin: 0 0 12px; font-size: 12px; line-height: 1.7; color: var(--ne-muted); }
+.ne-elements-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.ne-element {
+  display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 6px 8px; border: 1px solid var(--ne-line);
+  border-radius: 8px; background: #fff; cursor: grab; font-size: 12px; color: var(--ne-ink);
+}
+.ne-element:hover { border-color: var(--ne-select); background: #f7f9ff; }
+.ne-element svg { width: 100%; height: auto; aspect-ratio: 80 / 48; background: #f6f7f9; border-radius: 4px; }
+@media (max-width: 760px) { .ne-left { width: auto; border-right: 0; border-bottom: 1px solid var(--ne-line); max-height: 220px; } }

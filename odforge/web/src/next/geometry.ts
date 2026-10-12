@@ -31,12 +31,40 @@ export function contains(outer: Rect, inner: Rect, slack = 0.02): boolean {
   );
 }
 
-/** Move an element by (dx, dy) cm. */
+/** Move an element by (dx, dy) cm; a group moves with everything in it. */
 export function moved(el: SceneElement, dx: number, dy: number): SceneElement {
   if (el.kind === "line") {
     return { ...el, x1: el.x1 + dx, x2: el.x2 + dx, y1: el.y1 + dy, y2: el.y2 + dy };
   }
+  if (el.kind === "group" && el.children) {
+    return { ...el, x: el.x + dx, y: el.y + dy, children: el.children.map((c) => moved(c, dx, dy)) };
+  }
   return { ...el, x: el.x + dx, y: el.y + dy };
+}
+
+/** Every element, groups' members included (each group before its members). */
+export function flatten(elements: SceneElement[]): SceneElement[] {
+  return elements.flatMap((el) =>
+    el.kind === "group" && el.children ? [el, ...flatten(el.children)] : [el],
+  );
+}
+
+/** Whether ``a`` is a group that (transitively) contains ``b``. */
+export function isAncestor(a: string, b: string): boolean {
+  return b.startsWith(`${a}.`);
+}
+
+function scaleInto(el: SceneElement, from: Rect, to: Rect): SceneElement {
+  const sx = from.w ? to.w / from.w : 1;
+  const sy = from.h ? to.h / from.h : 1;
+  const mx = (x: number) => to.x + (x - from.x) * sx;
+  const my = (y: number) => to.y + (y - from.y) * sy;
+  if (el.kind === "line") return { ...el, x1: mx(el.x1), x2: mx(el.x2), y1: my(el.y1), y2: my(el.y2) };
+  const box = { x: mx(el.x), y: my(el.y), w: el.w * sx, h: el.h * sy };
+  if (el.kind === "group" && el.children) {
+    return { ...el, ...box, children: el.children.map((c) => scaleInto(c, from, to)) };
+  }
+  return { ...el, ...box };
 }
 
 /** The geometry operation that puts the element where ``el`` now is. */
@@ -204,6 +232,7 @@ export function resized(box: Rect, handle: Handle, dx: number, dy: number, keepR
 }
 
 export function withBox(el: SceneElement, box: Rect): SceneElement {
+  if (el.kind === "group") return scaleInto(el, bounds(el), box);
   if (el.kind === "line") {
     const old = bounds(el);
     const sx = old.w ? box.w / old.w : 1;
@@ -321,4 +350,67 @@ export function distributeOps(elements: SceneElement[], ids: string[], axis: "x"
   return moveWithRiders(elements, items.map((i) => i.id), (b, id) =>
     axis === "x" ? { dx: target.get(id)! - b.x, dy: 0 } : { dx: 0, dy: target.get(id)! - b.y },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Equal spacing (how Canva shows distances: only when they line up)
+// ---------------------------------------------------------------------------
+
+export interface SpacingResult {
+  dx: number;
+  dy: number;
+  gaps: Gap[];
+}
+
+function spacingAxis(moving: Rect, others: Rect[], axis: "x" | "y", threshold: number): { delta: number; gaps: Gap[] } | null {
+  const lo = (r: Rect) => (axis === "x" ? r.x : r.y);
+  const size = (r: Rect) => (axis === "x" ? r.w : r.h);
+  const hi = (r: Rect) => lo(r) + size(r);
+  const across = (r: Rect) => (axis === "x" ? [r.y, r.y + r.h] : [r.x, r.x + r.w]);
+  const [m0, m1] = across(moving);
+  const lane = others.filter((o) => {
+    const [o0, o1] = across(o);
+    return o0 < m1 && m0 < o1;
+  });
+  const mid = (m0 + m1) / 2;
+  const before = lane.filter((o) => hi(o) <= lo(moving) + threshold).sort((a, b) => hi(b) - hi(a));
+  const after = lane.filter((o) => lo(o) >= hi(moving) - threshold).sort((a, b) => lo(a) - lo(b));
+  const prev = before[0];
+  const next = after[0];
+  const gap = (from: number, to: number): Gap => ({ axis, from, to, at: mid });
+  const candidates: { pos: number; gaps: (pos: number) => Gap[] }[] = [];
+  if (prev && next) {
+    // Centred between its two neighbours.
+    candidates.push({
+      pos: (hi(prev) + lo(next) - size(moving)) / 2,
+      gaps: (p) => [gap(hi(prev), p), gap(p + size(moving), lo(next))],
+    });
+  }
+  if (prev && before[1] && hi(before[1]) <= lo(prev)) {
+    // Repeats the spacing of the two before it.
+    const g = lo(prev) - hi(before[1]);
+    candidates.push({ pos: hi(prev) + g, gaps: (p) => [gap(hi(before[1]), lo(prev)), gap(hi(prev), p)] });
+  }
+  if (next && after[1] && lo(after[1]) >= hi(next)) {
+    const g = lo(after[1]) - hi(next);
+    candidates.push({
+      pos: lo(next) - g - size(moving),
+      gaps: (p) => [gap(p + size(moving), lo(next)), gap(hi(next), lo(after[1]))],
+    });
+  }
+  let best: { delta: number; gaps: Gap[] } | null = null;
+  for (const c of candidates) {
+    const delta = c.pos - lo(moving);
+    if (Math.abs(delta) <= threshold && (!best || Math.abs(delta) < Math.abs(best.delta))) {
+      best = { delta, gaps: c.gaps(c.pos) };
+    }
+  }
+  return best;
+}
+
+/** Snap to equal spacing between neighbours; gaps are only reported when it happens. */
+export function spacingSnap(moving: Rect, others: Rect[], threshold: number, skip: { x: boolean; y: boolean }): SpacingResult {
+  const x = skip.x ? null : spacingAxis(moving, others, "x", threshold);
+  const y = skip.y ? null : spacingAxis(moving, others, "y", threshold);
+  return { dx: x?.delta ?? 0, dy: y?.delta ?? 0, gaps: [...(x?.gaps ?? []), ...(y?.gaps ?? [])] };
 }

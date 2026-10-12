@@ -468,8 +468,43 @@ def element(el: etree._Element, styles: Styles, page_no: int, element_id: str) -
         out.update(kind="unsupported", reason="表格、圖表或內嵌物件")
         return out
 
-    out.update(kind="unsupported", reason="自訂圖形或群組", **_box(el))
+    if el.tag == q("draw", "g"):
+        children = [
+            element(child, styles, page_no, f"{element_id}.{k}")
+            for k, child in enumerate(drawables(el))
+        ]
+        if children:
+            boxes = [_bounds(c) for c in children]
+            x = min(b[0] for b in boxes)
+            y = min(b[1] for b in boxes)
+            out.update(
+                kind="group",
+                x=x,
+                y=y,
+                w=max(b[0] + b[2] for b in boxes) - x,
+                h=max(b[1] + b[3] for b in boxes) - y,
+                children=children,
+            )
+            return out
+
+    out.update(kind="unsupported", reason="自訂圖形", **_box(el))
     return out
+
+
+def _bounds(el: Dict[str, Any]) -> Tuple[float, float, float, float]:
+    if el["kind"] == "line":
+        x, y = min(el["x1"], el["x2"]), min(el["y1"], el["y2"])
+        return x, y, abs(el["x2"] - el["x1"]), abs(el["y2"] - el["y1"])
+    return el["x"], el["y"], el["w"], el["h"]
+
+
+def walk_ids(container: etree._Element, prefix: str):
+    """Every drawable under ``container`` with its id, groups descended."""
+    for j, el in enumerate(drawables(container)):
+        element_id = f"{prefix}{j}" if prefix.endswith("/") else f"{prefix}.{j}"
+        yield element_id, el
+        if el.tag == q("draw", "g"):
+            yield from walk_ids(el, element_id)
 
 
 def drawables(page: etree._Element) -> List[etree._Element]:
@@ -488,8 +523,8 @@ def annotations(page: etree._Element) -> List[etree._Element]:
 def comments_of(page: etree._Element, index: int) -> List[Dict[str, Any]]:
     """The page's comments, each tied to the element it names when that still exists."""
     names = {
-        el.get(q("draw", "name")): f"{index}/{j}"
-        for j, el in enumerate(drawables(page))
+        el.get(q("draw", "name")): element_id
+        for element_id, el in walk_ids(page, f"{index}/")
         if el.get(q("draw", "name"))
     }
     out = []

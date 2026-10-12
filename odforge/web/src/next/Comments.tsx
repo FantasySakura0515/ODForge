@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { bounds } from "./geometry";
+import { bounds, flatten } from "./geometry";
 import type { Comment, Page, Scene, SceneElement } from "./types";
 
 /** Where a comment's pin sits: on its element's top-right corner, or where it was left. */
@@ -120,13 +120,13 @@ export function CommentComposer({
 
 function excerpt(page: Page, id: string | null): string {
   if (!id) return "整頁";
-  const el = page.elements.find((e) => e.id === id);
+  const el = flatten(page.elements).find((e) => e.id === id);
   if (!el) return "已刪除的物件";
   if (el.kind !== "line" && el.text) {
     const text = el.text.paragraphs.map((p) => p.runs.map((r) => r.text).join("")).join(" ");
     return `「${text.length > 18 ? `${text.slice(0, 18)}…` : text}」`;
   }
-  return { rect: "方塊", ellipse: "圓形", line: "線條", image: "圖片", text: "文字框", unsupported: "物件" }[el.kind];
+  return { rect: "方塊", ellipse: "圓形", line: "線條", image: "圖片", text: "文字框", unsupported: "物件", group: "群組" }[el.kind];
 }
 
 export function CommentDrawer({

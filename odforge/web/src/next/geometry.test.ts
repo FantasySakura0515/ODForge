@@ -108,3 +108,48 @@ describe("對齊與分布", () => {
     expect(ops).toEqual([{ op: "geom", id: "0/2", x: 10, y: 3, w: 2, h: 2 }]);
   });
 });
+
+import { flatten, isAncestor, spacingSnap, withBox } from "./geometry";
+
+describe("群組與等距", () => {
+  const group: SceneElement = {
+    id: "0/1",
+    kind: "group",
+    x: 2,
+    y: 2,
+    w: 4,
+    h: 2,
+    children: [box("0/1.0", 2, 2, 4, 2), box("0/1.1", 2.5, 2.5, 2, 1, "text")],
+  };
+
+  test("移動群組時,成員一起移動", () => {
+    const m = moved(group, 1, 1) as typeof group;
+    expect(m.children?.map((c) => bounds(c).x)).toEqual([3, 3.5]);
+  });
+
+  test("縮放群組時,成員按比例縮放", () => {
+    const g = withBox(group, { x: 2, y: 2, w: 8, h: 2 }) as typeof group;
+    expect(g.children?.map((c) => [bounds(c).x, bounds(c).w])).toEqual([[2, 8], [3, 4]]);
+  });
+
+  test("flatten 與 isAncestor", () => {
+    expect(flatten([group]).map((e) => e.id)).toEqual(["0/1", "0/1.0", "0/1.1"]);
+    expect(isAncestor("0/1", "0/1.1")).toBe(true);
+    expect(isAncestor("0/1", "0/10")).toBe(false);
+  });
+
+  test("拖到兩個鄰居中間時吸附成等距,並且只在這時顯示距離", () => {
+    const others = [{ x: 1, y: 5, w: 6, h: 4 }, { x: 19, y: 5, w: 6, h: 4 }];
+    const near = spacingSnap({ x: 10.1, y: 5, w: 6, h: 4 }, others, 0.2, { x: false, y: false });
+    expect(near.dx).toBeCloseTo(-0.1);
+    expect(near.gaps.map((g) => g.to - g.from)).toEqual([3, 3]);
+    const far = spacingSnap({ x: 8, y: 5, w: 6, h: 4 }, others, 0.2, { x: false, y: false });
+    expect(far.gaps).toEqual([]);
+  });
+
+  test("沿用前兩個的間距", () => {
+    const others = [{ x: 1, y: 5, w: 4, h: 2 }, { x: 7, y: 5, w: 4, h: 2 }];
+    const r = spacingSnap({ x: 13.15, y: 5, w: 4, h: 2 }, others, 0.2, { x: false, y: false });
+    expect(r.dx).toBeCloseTo(-0.15);
+  });
+});

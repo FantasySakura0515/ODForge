@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
 import type { Actions } from "./Bars";
 import { Canvas, leaveText, type Tool } from "./Canvas";
-import { alignOps, distributeOps, geomOp, moved, riders } from "./geometry";
+import { alignOps, distributeOps, flatten, geomOp, moved, riders } from "./geometry";
 import { CommentDrawer } from "./Comments";
+import { COMPONENTS, ElementsPanel } from "./Elements";
 import { PageList } from "./PageList";
 import { formatAll, normalise, richOf, type Format } from "./richtext";
 import { useDocumentFonts } from "./SlideView";
@@ -19,15 +20,32 @@ function isTyping(target: EventTarget | null): boolean {
   return !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
 }
 
+/** Ids in reverse document order, so deleting one never shifts the next one's id. */
 function byIndexDesc(ids: string[]): string[] {
-  return [...ids].sort((a, b) => Number(b.split("/")[1]) - Number(a.split("/")[1]));
+  const key = (id: string) => id.split("/")[1].split(".").map(Number);
+  return [...ids].sort((a, b) => {
+    const ka = key(a);
+    const kb = key(b);
+    for (let i = 0; i < Math.max(ka.length, kb.length); i++) {
+      const d = (kb[i] ?? -1) - (ka[i] ?? -1);
+      if (d) return d;
+    }
+    return 0;
+  });
+}
+
+function mapTree(elements: SceneElement[], fn: (el: SceneElement) => SceneElement): SceneElement[] {
+  return elements.map((el) => {
+    const next = fn(el);
+    return next.kind === "group" && next.children ? { ...next, children: mapTree(next.children, fn) } : next;
+  });
 }
 
 /** Show edited text at once; the server's answer replaces it a moment later. */
 function withText(doc: DocState, id: string, paragraphs: RichParagraph[]): DocState {
   const pages = doc.scene.pages.map((page) => ({
     ...page,
-    elements: page.elements.map((el) => {
+    elements: mapTree(page.elements, (el) => {
       if (el.id !== id || el.kind === "line" || !el.text) return el;
       const old = el.text.paragraphs;
       const next = paragraphs.map((p, i) => {
@@ -75,6 +93,24 @@ export function EditorApp() {
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
+  const [exporting, setExporting] = useState(false);
+
+  async function exportFile() {
+    if (!doc || exporting) return;
+    setExporting(true);
+    leaveText();
+    try {
+      // Every edit already sent must be on disk before the file is read.
+      await queue.current;
+      await api.exportOdp(doc.name);
+      setNotice(`已匯出 ${doc.name}`);
+      window.setTimeout(() => setNotice(""), 3000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(false);
+    }
+  }
   const [pageIndex, setPageIndex] = useState(0);
   const [selection, setSelection] = useState<string[]>([]);
   const [editing, setEditingState] = useState<{ id: string | null; selectAll: boolean }>({ id: null, selectAll: false });
@@ -82,6 +118,7 @@ export function EditorApp() {
   const [zoom, setZoom] = useState(1);
   const [openComment, setOpenComment] = useState<string | null>(null);
   const [drawer, setDrawer] = useState(false);
+  const [panel, setPanel] = useState<"pages" | "elements">("pages");
   const [nudge, setNudge] = useState<Map<string, SceneElement>>(new Map());
   // ``top`` marks which items were selected (the rest rode along inside a card).
   const [clipboard, setClipboard] = useState<{ items: string[]; top: boolean[]; page: number; pastes: number } | null>(null);
@@ -190,7 +227,7 @@ export function EditorApp() {
 
   async function commitText(id: string, paragraphs: RichParagraph[]) {
     setEditing(null);
-    const el = page?.elements.find((e) => e.id === id);
+    const el = page ? flatten(page.elements).find((e) => e.id === id) : undefined;
     const isNew = fresh.current.delete(id);
     if (!el || el.kind === "line") return;
     const empty = paragraphs.every((p) => !p.runs.some((r) => r.text.trim()));
@@ -205,15 +242,32 @@ export function EditorApp() {
   }
 
   async function pageOp(op: Op) {
-    const created = await apply([op]);
-    const target = created?.find((c) => c.startsWith("page:"));
-    if (target) goToPage(Number(target.slice(5)));
-    else setSelection([]);
+    const state = await run(() => api.sendOps([op]));
+    const target = state?.created.find((c) => c.startsWith("page:"));
+    leaveText();
+    setSelection([]);
+    setEditing(null);
+    if (target && state) {
+      // Clamp against the deck as it is now, not as it was before the page was added.
+      setPageIndex(Math.max(0, Math.min(Number(target.slice(5)), state.scene.pages.length - 1)));
+    }
   }
 
   function flushNudge(map: Map<string, SceneElement>) {
     if (!map.size) return;
     void apply([...map.values()].map(geomOp)).then(() => setNudge(new Map()));
+  }
+
+  /** Add a ready-made part; (x, y) is where its centre should land. */
+  async function insertComponent(kind: string, cx?: number, cy?: number) {
+    if (!scene) return;
+    const spec = COMPONENTS.find((c) => c.kind === kind);
+    const w = spec?.w ?? 6;
+    const h = spec?.h ?? 3;
+    const x = Math.max(0, Math.min(scene.width - w, (cx ?? scene.width / 2) - w / 2));
+    const y = Math.max(0, Math.min(scene.height - h, (cy ?? scene.height / 2) - h / 2));
+    const created = await apply([{ op: "add_component", page: pageIndex, kind, x, y }]);
+    if (created?.length) setSelection(created);
   }
 
   async function insertImage(file: File) {
@@ -243,7 +297,7 @@ export function EditorApp() {
       const el = page.elements.find((e) => e.id === id);
       if (el) riders(el, page.elements).forEach((r) => all.add(r));
     }
-    return [...all].sort((a, b) => Number(a.split("/")[1]) - Number(b.split("/")[1]));
+    return byIndexDesc([...all]).reverse();
   }
 
   const actions: Actions = {
@@ -316,12 +370,28 @@ export function EditorApp() {
     format: (format: Format) => {
       if (!page) return;
       const ops: Op[] = [];
+      const all = flatten(page.elements);
       for (const id of selection) {
-        const el = page.elements.find((e) => e.id === id);
-        if (!el || el.kind === "line" || !el.text) continue;
-        ops.push({ op: "text", id, paragraphs: formatAll(richOf(el.text.paragraphs), format) });
+        // A selected group formats every text inside it.
+        const targets = all.filter((e) => e.id === id || e.id.startsWith(`${id}.`));
+        for (const el of targets) {
+          if (el.kind === "line" || !el.text) continue;
+          ops.push({ op: "text", id: el.id, paragraphs: formatAll(richOf(el.text.paragraphs), format) });
+        }
       }
       void apply(ops);
+    },
+    canGroup: selection.length > 1 && selection.every((id) => !id.includes(".")),
+    canUngroup:
+      selection.length === 1 && !selection[0].includes(".") && page?.elements.find((e) => e.id === selection[0])?.kind === "group",
+    group: () => {
+      if (!(selection.length > 1 && selection.every((id) => !id.includes(".")))) return;
+      void apply([{ op: "group", ids: withRiders(selection) }]).then((c) => c?.[0] && setSelection([c[0]]));
+    },
+    ungroup: () => {
+      const id = selection[0];
+      if (selection.length !== 1 || page?.elements.find((e) => e.id === id)?.kind !== "group") return;
+      void apply([{ op: "ungroup", id }]).then((c) => c?.length && setSelection(c));
     },
   };
 
@@ -337,6 +407,7 @@ export function EditorApp() {
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
 
+      if (mod && key === "s") return e.preventDefault(), void exportFile();
       if (mod && (key === "=" || key === "+")) return e.preventDefault(), zoomBy(1);
       if (mod && key === "-") return e.preventDefault(), zoomBy(-1);
       if (mod && key === "0") return e.preventDefault(), setZoom(1);
@@ -357,6 +428,7 @@ export function EditorApp() {
       if (mod && key === "x") return e.preventDefault(), actions.cut();
       if (mod && key === "v") return e.preventDefault(), actions.paste();
       if (mod && key === "d") return e.preventDefault(), actions.duplicate();
+      if (mod && key === "g") return e.preventDefault(), e.shiftKey ? actions.ungroup() : actions.group();
       if (mod && (key === "b" || key === "i" || key === "u") && selection.length) {
         e.preventDefault();
         return actions.format({ kind: key === "b" ? "bold" : key === "i" ? "italic" : "underline" });
@@ -457,11 +529,21 @@ export function EditorApp() {
           <span className="ne-sep" />
           <button type="button" aria-label="復原" title="復原 (⌘Z)" disabled={!doc.canUndo} onClick={() => { setSelection([]); void run(api.undo); }}>↶</button>
           <button type="button" aria-label="重做" title="重做 (⇧⌘Z)" disabled={!doc.canRedo} onClick={() => { setSelection([]); void run(api.redo); }}>↷</button>
-          <a className="ne-download" href={api.downloadUrl}>下載 .odp</a>
+          <button type="button" className="ne-download" disabled={exporting} title="匯出目前這一版 (⌘S)" onClick={() => void exportFile()}>
+            {exporting ? "匯出中…" : "匯出 .odp"}
+          </button>
         </div>
       </header>
 
       <div className="ne-body">
+        <div className="ne-left">
+          <div className="ne-tabs" role="tablist" aria-label="側欄">
+            <button type="button" role="tab" aria-selected={panel === "pages"} onClick={() => setPanel("pages")}>頁面</button>
+            <button type="button" role="tab" aria-selected={panel === "elements"} onClick={() => setPanel("elements")}>元素</button>
+          </div>
+          {panel === "elements" ? (
+            <ElementsPanel accent={doc.theme?.accent ?? "#1F3F99"} onInsert={(kind) => void insertComponent(kind)} />
+          ) : (
         <PageList
           scene={scene}
           current={pageIndex}
@@ -473,6 +555,8 @@ export function EditorApp() {
           }}
           onMove={(from, to) => void pageOp({ op: "page_move", page: from, to })}
         />
+          )}
+        </div>
         <main className="ne-main">
           <div className="ne-hint">
             <span>第 {pageIndex + 1} 頁 / {pages.length}</span>
@@ -505,6 +589,7 @@ export function EditorApp() {
             fonts={doc.fontChoices ?? []}
             openComment={openComment}
             setOpenComment={setOpenComment}
+            onDropComponent={(kind, x, y) => void insertComponent(kind, x, y)}
           />
         </main>
         {drawer && (

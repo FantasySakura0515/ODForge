@@ -55,7 +55,7 @@ interface Paint {
 }
 
 export interface BoxElement extends Base, Paint {
-  kind: "rect" | "ellipse" | "text" | "image" | "unsupported";
+  kind: "rect" | "ellipse" | "text" | "image" | "unsupported" | "group";
   x: number;
   y: number;
   w: number;
@@ -65,6 +65,8 @@ export interface BoxElement extends Base, Paint {
   href?: string;
   reason?: string;
   placeholder?: string;
+  /** A group's members, drawn in order; their ids are "<group id>.<n>". */
+  children?: SceneElement[];
 }
 
 export interface LineElement extends Base, Paint {
@@ -130,6 +132,7 @@ export interface DocState {
   fontChoices: FontChoice[];
   /** "done" once the person pressed 完成 and the agent has not picked it up yet. */
   session?: "open" | "done";
+  theme?: { accent: string; ink: string; muted: string };
 }
 
 export interface Rect {

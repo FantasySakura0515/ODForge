@@ -13,7 +13,11 @@ export interface Actions {
   align: (kind: AlignKind) => void;
   distribute: (axis: "x" | "y") => void;
   format: (format: Format) => void;
+  group: () => void;
+  ungroup: () => void;
   canPaste: boolean;
+  canGroup: boolean;
+  canUngroup: boolean;
 }
 
 const BASIC_COLORS = ["#16181D", "#5B6470", "#FFFFFF", "#1F3F99", "#2F6BFF", "#C62828", "#E0457B", "#ED6C02", "#2E7D32", "#6A1B9A"];
@@ -228,6 +232,8 @@ export function SelectionBar({
           )}
           {count > 1 && <span className="ne-bar-sep" />}
           {hasText && count === 1 && <Button label="改字 (Enter)" onClick={onEdit}>改字</Button>}
+          {actions.canGroup && <Button label="組成群組 (⌘G)" onClick={actions.group}>組成群組</Button>}
+          {actions.canUngroup && <Button label="解散群組 (⇧⌘G)" onClick={actions.ungroup}>解散群組</Button>}
           <Button label="複製一份 (⌘D)" onClick={actions.duplicate}>複製</Button>
           <Button label="刪除 (Delete)" className="danger" onClick={actions.remove}>刪除</Button>
         </>

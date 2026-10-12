@@ -183,6 +183,7 @@ class Document:
             "version": self.version,
             "scene": scene,
             "session": presentation.get(q("odforge", "session"), "open"),
+            "theme": _theme_summary(self.content, self.styles),
             "fontChoices": docfonts.choices([self.content, self.styles]),
             "canUndo": bool(self.undo_stack),
             "canRedo": bool(self.redo_stack),
@@ -200,15 +201,23 @@ class Document:
         return pages[i]
 
     def _element(self, element_id: Any) -> Tuple[int, int, etree._Element]:
+        """``"7/2"`` is the third drawable of page 8; ``"7/2.1"`` the second inside that group."""
         try:
-            page_part, index_part = str(element_id).split("/")
-            page_i, index = int(page_part), int(index_part)
+            page_part, path = str(element_id).split("/")
+            page_i = int(page_part)
+            indices = [int(part) for part in path.split(".")]
         except ValueError as exc:
             raise EditError(f"元素代號不正確:{element_id!r}") from exc
-        items = drawables(self._page(page_i))
-        if not 0 <= index < len(items):
-            raise EditError(f"找不到元素 {element_id}")
-        return page_i, index, items[index]
+        container = self._page(page_i)
+        el = container
+        for depth, index in enumerate(indices):
+            if depth and el.tag != q("draw", "g"):
+                raise EditError(f"找不到元素 {element_id}")
+            items = drawables(el)
+            if not 0 <= index < len(items):
+                raise EditError(f"找不到元素 {element_id}")
+            el = items[index]
+        return page_i, indices[0], el
 
     # -- history ----------------------------------------------------------------
 
@@ -265,6 +274,15 @@ class Document:
 
     def _op_geom(self, op: Dict[str, Any]) -> None:
         _, _, el = self._element(op.get("id"))
+        if el.tag == q("draw", "g"):
+            # A group has no box of its own: move and scale what is inside it.
+            ox, oy, ow, oh = _group_box(el)
+            nx, ny = float(op.get("x", ox)), float(op.get("y", oy))
+            nw, nh = float(op.get("w", ow)), float(op.get("h", oh))
+            if nw < 0.05 or nh < 0.05:
+                raise EditError("寬度和高度至少要 0.05 cm")
+            _transform(el, ox, oy, nx, ny, nw / ow if ow else 1.0, nh / oh if oh else 1.0)
+            return
         if el.tag == q("draw", "line"):
             for key in ("x1", "y1", "x2", "y2"):
                 if key in op:
@@ -525,9 +543,164 @@ class Document:
         props.set(q("fo", "text-align"), odf_align)
         return new_name
 
+    # -- ready-made parts (元素) -------------------------------------------------
+
+    def _op_add_component(self, op: Dict[str, Any]) -> List[str]:
+        from .components import KINDS, build, infer_theme
+
+        kind = op.get("kind")
+        if kind not in KINDS:
+            raise EditError(f"不認得的元素:{kind!r}")
+        page_i = int(op.get("page", 0))
+        page = self._page(page_i)
+        theme = infer_theme(self.content, self.styles)
+        specs = build(kind, float(op.get("x", 2)), float(op.get("y", 2)), theme)
+        elements = [self._from_spec(spec) for spec in specs]
+        if len(elements) == 1:
+            node = elements[0]
+        else:
+            node = etree.Element(q("draw", "g"))
+            for el in elements:
+                node.append(el)
+        self._insert_on_top(page, node)
+        return [f"{page_i}/{drawables(page).index(node)}"]
+
+    def _from_spec(self, spec: Dict[str, Any]) -> etree._Element:
+        tag = spec["tag"]
+        if tag == "line":
+            el = etree.Element(q("draw", "line"))
+            el.set(q("draw", "style-name"), self._graphic_style(stroke=spec.get("stroke")))
+            for key in ("x1", "y1", "x2", "y2"):
+                el.set(q("svg", key), _len(spec[key]))
+            return el
+        if tag == "text":
+            el = etree.Element(q("draw", "frame"))
+            el.set(q("draw", "style-name"), self._graphic_style(valign=spec.get("valign", "top")))
+            box = etree.SubElement(el, q("draw", "text-box"))
+            self._styled_paragraph(box, spec)
+        else:
+            el = etree.Element(q("draw", "rect" if tag == "rect" else "ellipse"))
+            style = spec.get("style") or self._graphic_style(
+                fill=spec.get("fill"), stroke=spec.get("stroke")
+            )
+            el.set(q("draw", "style-name"), style)
+            if spec.get("radius") and tag == "rect":
+                el.set(q("draw", "corner-radius"), _len(spec["radius"]))
+            if spec.get("label"):
+                self._styled_paragraph(el, spec["label"])
+        for key, attr in (("x", "x"), ("y", "y"), ("w", "width"), ("h", "height")):
+            el.set(q("svg", attr), _len(spec[key]))
+        return el
+
+    def _styled_paragraph(self, parent: etree._Element, spec: Dict[str, Any]) -> None:
+        paragraph = etree.SubElement(parent, q("text", "p"))
+        paragraph.set(q("text", "style-name"), self._paragraph_style(spec))
+        _append_lines(paragraph, spec["text"])
+
+    def _paragraph_style(self, spec: Dict[str, Any]) -> str:
+        key = {
+            k: spec.get(k)
+            for k in ("size", "color", "weight", "font", "align", "italic", "spacing")
+        }
+        name = "OEdP" + hashlib.sha1(json.dumps(key, sort_keys=True).encode()).hexdigest()[:8]
+        if self._has_style(name):
+            return name
+        style = etree.SubElement(self._automatic_styles(), q("style", "style"))
+        style.set(q("style", "name"), name)
+        style.set(q("style", "family"), "paragraph")
+        para = etree.SubElement(style, q("style", "paragraph-properties"))
+        para.set(
+            q("fo", "text-align"), {"left": "start", "right": "end"}.get(key["align"], key["align"])
+        )
+        text = etree.SubElement(style, q("style", "text-properties"))
+        for attr in (
+            q("fo", "font-size"),
+            q("style", "font-size-asian"),
+            q("style", "font-size-complex"),
+        ):
+            text.set(attr, f"{float(key['size']):g}pt")
+        text.set(q("fo", "color"), key["color"])
+        if key["weight"] and key["weight"] >= 600:
+            for attr in (
+                q("fo", "font-weight"),
+                q("style", "font-weight-asian"),
+                q("style", "font-weight-complex"),
+            ):
+                text.set(attr, "bold")
+        if key["italic"]:
+            text.set(q("fo", "font-style"), "italic")
+        if key["spacing"]:
+            text.set(q("fo", "letter-spacing"), _len(key["spacing"]))
+        if key["font"]:
+            text.set(q("style", "font-name"), key["font"])
+            text.set(q("style", "font-name-asian"), key["font"])
+        return name
+
+    def _graphic_style(
+        self, fill: Optional[str] = None, stroke: Optional[str] = None, valign: Optional[str] = None
+    ) -> str:
+        key = json.dumps([fill, stroke, valign])
+        name = "OEdG" + hashlib.sha1(key.encode()).hexdigest()[:8]
+        if self._has_style(name):
+            return name
+        style = etree.SubElement(self._automatic_styles(), q("style", "style"))
+        style.set(q("style", "name"), name)
+        style.set(q("style", "family"), "graphic")
+        props = etree.SubElement(style, q("style", "graphic-properties"))
+        props.set(q("draw", "fill"), "solid" if fill else "none")
+        if fill:
+            props.set(q("draw", "fill-color"), fill)
+        props.set(q("draw", "stroke"), "solid" if stroke else "none")
+        if stroke:
+            props.set(q("svg", "stroke-color"), stroke)
+            props.set(q("svg", "stroke-width"), "0.75pt")
+        if valign:
+            props.set(q("draw", "textarea-vertical-align"), valign)
+            props.set(q("draw", "auto-grow-height"), "true")
+            for side in ("top", "right", "bottom", "left"):
+                props.set(q("fo", f"padding-{side}"), "0cm")
+        return name
+
+    def _op_group(self, op: Dict[str, Any]) -> List[str]:
+        """Wrap top-level elements of one page into a ``draw:g``, where the topmost was."""
+        ids = op.get("ids")
+        if not isinstance(ids, list) or len(ids) < 2:
+            raise EditError("至少要選兩個物件才能組成群組")
+        found = [self._element(i) for i in ids]
+        pages = {page_i for page_i, _, _ in found}
+        if len(pages) != 1 or any("." in str(i) for i in ids):
+            raise EditError("只能把同一頁、不在其他群組裡的物件組成群組")
+        page = self._page(pages.pop())
+        members = sorted((index, el) for _, index, el in found)
+        group = etree.Element(q("draw", "g"))
+        members[-1][1].addnext(group)
+        for _, el in members:
+            group.append(el)
+        page_i = self._pages().index(page)
+        return [f"{page_i}/{drawables(page).index(group)}"]
+
+    def _op_ungroup(self, op: Dict[str, Any]) -> List[str]:
+        page_i, _, group = self._element(op.get("id"))
+        if group.tag != q("draw", "g") or "." in str(op.get("id")):
+            raise EditError("這不是可以解散的群組")
+        parent = group.getparent()
+        children = list(drawables(group))
+        for child in children:
+            group.addprevious(child)
+        parent.remove(group)
+        page = self._page(page_i)
+        items = drawables(page)
+        return [f"{page_i}/{items.index(child)}" for child in children]
+
     def _op_delete(self, op: Dict[str, Any]) -> None:
         _, _, el = self._element(op.get("id"))
-        el.getparent().remove(el)
+        parent = el.getparent()
+        parent.remove(el)
+        # A group emptied by the delete goes too; it would be an invisible box.
+        while parent.tag == q("draw", "g") and not drawables(parent):
+            grand = parent.getparent()
+            grand.remove(parent)
+            parent = grand
 
     def _op_duplicate(self, op: Dict[str, Any]) -> List[str]:
         page_i, _, el = self._element(op.get("id"))
@@ -989,6 +1162,49 @@ def _append_lines(parent: etree._Element, text: str) -> None:
 def _write_lines(target: etree._Element, text: str) -> None:
     target.text = None
     _append_lines(target, text)
+
+
+def _theme_summary(content: etree._Element, styles: etree._Element) -> Dict[str, Any]:
+    from .components import infer_theme
+
+    theme = infer_theme(content, styles)
+    return {"accent": theme.accent, "ink": theme.ink, "muted": theme.muted}
+
+
+def _group_box(group: etree._Element) -> Tuple[float, float, float, float]:
+    xs: List[float] = []
+    ys: List[float] = []
+    for el in group.iter():
+        if el is group or not isinstance(el.tag, str):
+            continue
+        if el.get(q("svg", "x1")) is not None:
+            xs += [cm(el.get(q("svg", "x1"))), cm(el.get(q("svg", "x2")))]
+            ys += [cm(el.get(q("svg", "y1"))), cm(el.get(q("svg", "y2")))]
+        elif el.get(q("svg", "x")) is not None and el.get(q("svg", "width")) is not None:
+            x, y = cm(el.get(q("svg", "x"))), cm(el.get(q("svg", "y")))
+            xs += [x, x + cm(el.get(q("svg", "width")))]
+            ys += [y, y + cm(el.get(q("svg", "height")))]
+    if not xs:
+        raise EditError("空的群組")
+    return min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
+
+
+def _transform(
+    group: etree._Element, ox: float, oy: float, nx: float, ny: float, sx: float, sy: float
+) -> None:
+    """Map every child box from the old group box onto the new one."""
+    for el in group.iter():
+        if el is group or not isinstance(el.tag, str):
+            continue
+        for x_attr, y_attr in (("x", "y"), ("x1", "y1"), ("x2", "y2")):
+            if el.get(q("svg", x_attr)) is not None:
+                el.set(q("svg", x_attr), _len(nx + (cm(el.get(q("svg", x_attr))) - ox) * sx))
+            if el.get(q("svg", y_attr)) is not None:
+                el.set(q("svg", y_attr), _len(ny + (cm(el.get(q("svg", y_attr))) - oy) * sy))
+        if el.get(q("svg", "width")) is not None:
+            el.set(q("svg", "width"), _len(max(0.05, cm(el.get(q("svg", "width"))) * sx)))
+        if el.get(q("svg", "height")) is not None:
+            el.set(q("svg", "height"), _len(max(0.05, cm(el.get(q("svg", "height"))) * sy)))
 
 
 def _offset(el: etree._Element, dx: float, dy: float) -> None:
