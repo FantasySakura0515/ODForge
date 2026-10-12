@@ -1,6 +1,6 @@
 ---
 name: odforge-design
-description: 教外部 agent（Claude Code 等）用 ODForge 產出高品質簡報。涵蓋即時預覽工作流（寫 deck.json + odforge preview，使用者在瀏覽器看）、生成前訪談、page-role 大綱紀律、DesignSpec 設計欄位與對比度自檢、主題規格書，以及 MCP 的 inspect_odf + preview_odf 自查迴圈。當使用者要用 ODForge 做 .odp 簡報（或 .odt/.ods）時使用。
+description: 教外部 agent（Claude Code 等）用 ODForge 產出高品質簡報，並在網頁編輯器裡跟使用者來回修改（odforge edit 自動開網頁 + wait_for_feedback 回饋迴圈）。也涵蓋即時預覽（deck.json + odforge preview）、生成前訪談、page-role 大綱紀律、DesignSpec 設計欄位與對比度自檢、主題規格書，以及 MCP 的 inspect_odf + preview_odf 自查迴圈。當使用者要做簡報（尤其要 .odp／ODF 格式）、或要看／改既有的 .odp 時使用，即使他沒提到 ODForge。
 ---
 
 # odforge-design：用 ODForge 產出好簡報
@@ -9,60 +9,38 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
 （一個 JSON 物件）交給 MCP 工具，它渲染出原生 `.odp`／`.odt`／`.ods` 並驗證。
 引擎不會幫你想設計，好壞取決於你交出的 IR。這份 skill 教你交出好的 IR。
 
-## 首選工作流：即時預覽（簡報）
+## 首選工作流：做好、打開網頁、在網頁上來回修改
 
-使用者要一份簡報、而且人在旁邊時，用這條路。你寫內容，ODForge 排版，使用者在
-瀏覽器裡看。**絕對不要叫使用者打開 LibreOffice**——它只在背景當渲染器。
+使用者人在旁邊時一律走這條路。**互動在網頁裡發生，不在對話裡**：你開網頁給他，他在網頁上
+留言，你自動照著改。**絕對不要叫使用者打開 LibreOffice**——它只在背景當渲染器。
 
-1. 先照 ① 訪談、② 排大綱，然後把整份 Presentation IR 寫成一個 JSON 檔，例如
-   `deck.json`（格式見 ③；`type` 可省略，預設就是簡報）。
-2. 在**背景**啟動預覽，輸出導到檔案：
+1. **產出第一版**：照 ① 訪談、② 排大綱、③ 寫 IR，用 `forge_presentation` 輸出 `.odp`，
+   用 `inspect_odf` 確認沒有跑版。（改既有檔案就跳過這步。）
+2. **網頁會自動打開**：`forge_presentation` 成功後會自己在使用者的瀏覽器打開 ODForge
+   網頁編輯器，回傳結果裡有網址。（要看或改**既有**的 .odp 時，改呼叫 `open_editor(path)`。）
+   不要另外叫使用者去開 LibreOffice 或任何程式。告訴使用者一句話就好：
+   「網頁已經打開，可以直接拖、改字；想讓我改的地方用『留言』點出來，寫完按『交給 AI 修改』，
+   全部滿意就按『完成』。」
+3. **在網頁的回饋迴圈裡等**：呼叫 `wait_for_feedback(path)`。
+   - 回 `feedback: ...`：逐則照留言改（`edit_odp`），**同一次呼叫裡**把處理好的留言用
+     `comment_delete` 刪掉（同一頁由大到小刪）。使用者在網頁上會即時看到你改。改完立刻再呼叫
+     `wait_for_feedback`。
+   - 回 `waiting: ...`：使用者還在看或還在寫，直接再呼叫一次，不要在對話裡催他。
+   - 回 `done: ...`：迴圈結束，用一兩句話回報這輪改了什麼。
+4. 做不到或需要使用者決定的留言不要刪；用 `comment_add` 在同一個物件回一則說明，網頁上看得到。
 
-   ```bash
-   odforge preview deck.json > preview.log 2>&1
-   ```
+使用者也可能在你等待的時候自己動手改；`edit_odp` 每次都是在最新的檔案上套用，不會蓋掉他的修改。
 
-   它會自動用預設瀏覽器打開預覽頁（第一行印出網址；不想自動開就加 `--no-open`，
-   再把網址給使用者）。成品 `.odp` 寫在 JSON 旁邊，同名。
-3. 之後每次修改就直接**編輯 `deck.json` 存檔**。預覽頁幾秒內自動更新；同時
-   `preview.log` 會多一行摘要，例如：
+### 另一條路：即時預覽（agent 寫 JSON）
 
-   ```text
-   [13:05:56] 第 1 版:4 頁,發現 2 處跑版
-     - 第 3 頁「這一段文字很長…」文字超出框的下緣 1.77 cm
-   [13:06:02] 第 2 版:4 頁,沒有文字超出框或頁面
-   ```
+想從零反覆調整整份結構、頁數變動很大時，可以改寫一份 Presentation IR（`deck.json`），在背景執行
+`odforge preview deck.json > /tmp/odforge-preview.log 2>&1 &`（也會自動開瀏覽器），之後每次存檔網頁就重新排版，
+log 會印出每一版的跑版摘要。注意：這條路每次都從 JSON 重產 `.odp`，使用者在編輯器裡的手動修改
+會被蓋掉；結構定案後改用上面的流程。
 
-   讀 log 就知道哪頁跑版、超出多少；縮短文字或拆頁後再存檔，直到沒有跑版。
-   JSON 寫壞時 log 會說「讀不進來,畫面維持上一版」並附原因，修好再存即可。
-4. 使用者在預覽頁說哪裡要改，你就改 `deck.json`。不要另外重產一份新檔。
+沒有人在看（批次產檔、使用者只要檔案）時，直接用下面的 MCP 工具即可。
 
-沒有人在看（批次產檔、使用者只要檔案）時，改用下面的 MCP 工具。
-
-## 修改已經存在的 .odp（使用者可能手動改過）
-
-簡報產出之後，使用者常會在網頁編輯器裡自己拖、自己改字。這時**不要重新 forge 整份**
-——那會蓋掉他們的修改。改用：
-
-1. 背景開編輯器給使用者看：`odforge edit deck.odp --no-open > edit.log 2>&1`，把第一行的
-   網址給使用者（不加 `--no-open` 會自動開瀏覽器）。
-2. `outline_odp(path)` 讀出每頁元素的代號（`"7/2"` = 第 8 頁第 3 個元素）、位置與文字。
-3. `edit_odp(path, ops)` 只改要改的地方：改字、搬位置、加減頁。使用者開著的編輯器一秒內
-   就會顯示你的修改；他們同時也能繼續手動調整。
-4. 改完照樣用 `inspect_odf` 檢查跑版。
-
-### 使用者說「照留言修改」
-
-使用者會在編輯器裡用「留言」工具點在要改的地方寫意見。`outline_odp` 的開頭會寫
-「待處理留言 N 則」，每則像 `留言 [c7/0] 關於 [7/2]:這句太長`（關於 = 那則留言針對的元素；
-「整頁」表示針對整張投影片）。
-
-1. 逐則照意見修改：改字用 `text`、搬動用 `geom`、拆頁用 `page_duplicate` + `text`。
-2. **在同一次 `edit_odp` 裡**把處理好的留言用 `{"op": "comment_delete", "comment": "c7/0"}`
-   刪掉。同一頁刪多則時，代號由大到小刪（刪掉前面的，後面的代號會往前移）。
-3. 做不到或需要使用者決定的，不要刪那則留言；在回覆裡說明，或用 `comment_add` 回一則。
-
-## MCP 工具（共 7 個）
+## MCP 工具（共 9 個）
 
 | 工具 | 簽名 | 用途 |
 | --- | --- | --- |
@@ -73,6 +51,8 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
 | `preview_odf` | `(path: str, out_dir: str) -> str` | 每頁渲成 PNG，回傳路徑 JSON，供你**看圖**自查 |
 | `outline_odp` | `(path: str) -> str` | 列出既有 .odp 每頁的元素代號、位置、文字 |
 | `edit_odp` | `(path: str, ops: list) -> str` | 原地修改既有 .odp（改字、搬位置、增刪頁），不動其他內容 |
+| `open_editor` | `(path: str) -> str` | 在使用者瀏覽器打開既有 .odp 的網頁編輯器（已開著就沿用） |
+| `wait_for_feedback` | `(path: str, timeout_seconds: int = 50) -> str` | 等使用者在網頁上按「交給 AI 修改」，回傳那批留言；按「完成」時回 `done` |
 
 每個工具**只回字串、永不 raise**：失敗一律回 `"error: ..."`。呼叫後要讀回傳字串，
 `"ok:"` 才算成功，`"error:"` 要修好再重來。

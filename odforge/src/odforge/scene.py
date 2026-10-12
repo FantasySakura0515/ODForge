@@ -506,6 +506,8 @@ def comments_of(page: etree._Element, index: int) -> List[Dict[str, Any]]:
                 "x": cm(note.get(q("svg", "x"))),
                 "y": cm(note.get(q("svg", "y"))),
                 "target": names.get(note.get(q("odforge", "target"))),
+                # draft: still being written; submitted: handed to the AI to act on.
+                "state": note.get(q("odforge", "state"), "draft"),
             }
         )
     return out

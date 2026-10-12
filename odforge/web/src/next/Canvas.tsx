@@ -172,7 +172,7 @@ export function Canvas(props: CanvasProps) {
       ? { op: "comment_add", id: composing.target, text }
       : { op: "comment_add", page: props.pageIndex, x: composing.x, y: composing.y, text };
     setComposing(null);
-    props.setTool("select");
+    // Stay in the comment tool: people usually leave several in a row.
     await props.apply([op]);
   }
 

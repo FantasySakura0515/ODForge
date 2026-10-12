@@ -84,9 +84,7 @@ def _budget_warnings(ir: object) -> list[str]:
     style = resolve_style(ir)
     warnings: list[str] = []
     for n, slide in enumerate(ir.slides, start=1):
-        warnings.extend(
-            f"第 {n} 頁:{message}" for message in check_budget(slide, theme, style)
-        )
+        warnings.extend(f"第 {n} 頁:{message}" for message in check_budget(slide, theme, style))
     warnings.extend(deck_warnings(ir.slides))
     return warnings
 
@@ -141,8 +139,7 @@ def _forge(document: dict, out_path: str, doc_type: str) -> str:
             # first one is how an overset deck ships under a clean bill of health.
             result += (
                 "\n\nwarning: 版面預算超載——檔案已產出且格式有效,但下列內容會溢出"
-                "版面。請縮短這些頁面的文字後重新 forge:\n"
-                + "\n".join(f"- {w}" for w in warnings)
+                "版面。請縮短這些頁面的文字後重新 forge:\n" + "\n".join(f"- {w}" for w in warnings)
             )
         if doc_type != "spreadsheet" and soffice is not None:
             # The budget above is an estimate made before rendering; this is
@@ -284,7 +281,14 @@ def forge_presentation(document: dict, out_path: str) -> str:
     tool again; do not present an overset deck as finished. Then call
     ``preview_odf`` and look at the pages before handing the deck over.
     """
-    return _forge(document, out_path, "presentation")
+    result = _forge(document, out_path, "presentation")
+    if result.startswith("ok"):
+        from odforge.editor_launch import editor_note
+
+        note = editor_note(Path(out_path))
+        if note:
+            result += "\n\n" + note
+    return result
 
 
 @mcp.tool()
@@ -357,9 +361,7 @@ def preview_odf(path: str, out_dir: str) -> str:
     """
     try:
         pages = render_pages(Path(path), Path(out_dir))
-        return json.dumps(
-            {"pages": [str(p.resolve()) for p in pages], "count": len(pages)}
-        )
+        return json.dumps({"pages": [str(p.resolve()) for p in pages], "count": len(pages)})
     except PreviewUnavailable as exc:
         return f"error: preview unavailable: {concise(str(exc))}"
     except Exception as exc:
@@ -469,6 +471,54 @@ def edit_odp(path: str, ops: list) -> str:
         if created:
             result += f"; created: {', '.join(created)}"
         return result + "\n\n" + _outline_text(target)
+    except Exception as exc:
+        return f"error: {type(exc).__name__}: {concise(str(exc))}"
+
+
+@mcp.tool()
+def open_editor(path: str) -> str:
+    """Open an existing ``.odp`` in the ODForge web editor in the user's browser.
+
+    ``forge_presentation`` already does this for decks it makes; use this for a
+    file that already exists (the user asks to look at or change a deck). Reuses
+    the editor already serving the file. Then call ``wait_for_feedback(path)``.
+    """
+    try:
+        from odforge.editor_launch import ensure_editor
+
+        target = Path(path)
+        if not target.is_file() or target.suffix.lower() != ".odp":
+            return f"error: not an .odp file: {path}"
+        url = ensure_editor(target)
+        return (
+            f"ok: 已在瀏覽器打開 {url}。使用者可以在網頁上留言、按「交給 AI 修改」;"
+            f'接著呼叫 wait_for_feedback("{target.resolve()}")。'
+        )
+    except Exception as exc:
+        return f"error: {type(exc).__name__}: {concise(str(exc))}"
+
+
+@mcp.tool()
+async def wait_for_feedback(path: str, timeout_seconds: int = 50) -> str:
+    """Wait for the person to hand you comments from the web editor, then return them.
+
+    Use after opening the editor for them (``odforge edit deck.odp``, which opens
+    their browser). They pin comments on the slides and press「交給 AI 修改」;
+    this returns those comments (``feedback: ...``) with the element each one is
+    about. Apply them with ``edit_odp`` — deleting each handled comment in the same
+    call — then call this again to wait for the next batch.
+
+    Returns ``waiting: ...`` when nothing arrived within ``timeout_seconds`` (keep
+    calling; the person may still be writing), or ``done: ...`` when they pressed
+    「完成」, which ends the loop. Never raises.
+    """
+    try:
+        from odforge.feedback import wait_for_feedback as wait
+
+        target = Path(path)
+        if not target.is_file():
+            return f"error: file not found: {path}"
+        return await wait(target, float(max(1, min(timeout_seconds, 3600))))
     except Exception as exc:
         return f"error: {type(exc).__name__}: {concise(str(exc))}"
 

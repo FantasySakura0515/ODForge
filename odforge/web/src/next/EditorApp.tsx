@@ -157,6 +157,13 @@ export function EditorApp() {
   const page = pages[Math.min(pageIndex, Math.max(pages.length - 1, 0))];
 
   const commentCount = pages.reduce((n, p) => n + (p.comments?.length ?? 0), 0);
+  const draftCount = pages.reduce((n, p) => n + (p.comments ?? []).filter((c) => c.state !== "submitted").length, 0);
+  const workingCount = commentCount - draftCount;
+
+  async function submitComments() {
+    await apply([{ op: "comments_submit" }]);
+    setTool("select");
+  }
 
   const colors = useMemo(() => {
     const counts = new Map<string, number>();
@@ -441,6 +448,12 @@ export function EditorApp() {
           <button type="button" aria-pressed={drawer} title="查看全部留言" onClick={() => setDrawer((v) => !v)}>
             留言 {commentCount}
           </button>
+          {draftCount > 0 && (
+            <button type="button" className="ne-ai" title="把留言交給開著這個網頁的 AI" onClick={() => void submitComments()}>
+              交給 AI 修改({draftCount})
+            </button>
+          )}
+          {workingCount > 0 && <span className="ne-ai-working" aria-live="polite">AI 處理中 {workingCount} 則…</span>}
           <span className="ne-sep" />
           <button type="button" aria-label="復原" title="復原 (⌘Z)" disabled={!doc.canUndo} onClick={() => { setSelection([]); void run(api.undo); }}>↶</button>
           <button type="button" aria-label="重做" title="重做 (⇧⌘Z)" disabled={!doc.canRedo} onClick={() => { setSelection([]); void run(api.redo); }}>↷</button>
@@ -506,6 +519,13 @@ export function EditorApp() {
               void apply([{ op: "comment_delete", comment: id }]);
             }}
             onClose={() => setDrawer(false)}
+            onSubmit={() => void submitComments()}
+            onDone={() => {
+              void apply([{ op: "session", state: "done" }]).then(() => {
+                setNotice("已告訴 AI 這輪改完了");
+                window.setTimeout(() => setNotice(""), 2500);
+              });
+            }}
           />
         )}
       </div>

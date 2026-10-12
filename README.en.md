@@ -260,11 +260,16 @@ odforge setup          # registers with Claude Code and Codex; odforge setup --r
 
 Registers the MCP server with Claude Code and Codex (user scope, so every project sees it), links
 the `odforge-design` skill into both agents' skill folders, and links `odforge` into `~/.local/bin`
-when no shell can find it. Then start a new conversation and ask for a deck.
+when no shell can find it.
 
-In the editor, use the comment tool (C) to pin notes where something should change, then tell the
-assistant to apply the comments: it makes each change, deletes the comments it resolved, and the
-open editor follows within a second. Comments live inside the `.odp` (ODF's presentation
+Then, in a new conversation, describe the deck you want and ask for an `.odp`:
+
+1. The assistant makes the `.odp` with ODForge and **opens the web editor in your browser**.
+2. Browse, drag and retype right there; pin comments (C) where you want the assistant to change
+   something, then press 「交給 AI 修改」 (hand to the AI).
+3. The assistant is waiting on the page (`wait_for_feedback`): it applies each comment, deletes the
+   ones it resolved, and you watch it happen. Go back and forth as many rounds as you like.
+4. Press 「完成」 (done) and it reports what changed. Comments live inside the `.odp` (ODF's presentation
 annotation format), so they travel with the file.
 
 ## MCP server
@@ -282,7 +287,7 @@ ODForge only renders and validates it, so no API key is needed.
 }
 ```
 
-Seven tools:
+Nine tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -292,7 +297,9 @@ Seven tools:
 | `inspect_odf` | Validate an existing ODF file and check it for overflow |
 | `preview_odf` | Render each page to PNG so the assistant can check its work |
 | `outline_odp` | List every element of an existing `.odp`: id, position, text |
-| `edit_odp` | Edit an existing `.odp` in place — retype, move, add or remove slides — leaving the rest alone |
+| `edit_odp` | Edit an existing `.odp` in place — retype, move, add or remove slides, resolve comments — leaving the rest alone |
+| `open_editor` | Open an existing `.odp` in the web editor in the user's browser |
+| `wait_for_feedback` | Wait for the user to hand over comments from the web page, then return them |
 
 When text does not fit, `forge_*` still writes the file, but the returned string carries
 `warning:` blocks: the overruns estimated from the layout budget before rendering, and the

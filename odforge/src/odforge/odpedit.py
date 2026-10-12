@@ -177,10 +177,12 @@ class Document:
             data = self._member(font["href"])
             # A re-subset font keeps its path; the revision makes browsers refetch it.
             font["rev"] = hashlib.sha1(data).hexdigest()[:10] if data else ""
+        presentation = self._presentation()
         return {
             "name": self.path.name,
             "version": self.version,
             "scene": scene,
+            "session": presentation.get(q("odforge", "session"), "open"),
             "fontChoices": docfonts.choices([self.content, self.styles]),
             "canUndo": bool(self.undo_stack),
             "canRedo": bool(self.redo_stack),
@@ -636,6 +638,29 @@ class Document:
         else:
             page.append(note)
         return [f"c{page_i}/{annotations(page).index(note)}"]
+
+    def _op_comments_submit(self, op: Dict[str, Any]) -> List[str]:
+        """Hand every draft comment to the AI (``wait_for_feedback`` picks them up)."""
+        submitted = []
+        for page_i, page in enumerate(self._pages()):
+            for k, note in enumerate(annotations(page)):
+                if note.get(q("odforge", "state"), "draft") == "draft":
+                    note.set(q("odforge", "state"), "submitted")
+                    submitted.append(f"c{page_i}/{k}")
+        if not submitted:
+            raise EditError("沒有要交給 AI 的留言")
+        return submitted
+
+    def _op_session(self, op: Dict[str, Any]) -> None:
+        """``{"op": "session", "state": "done" | "open"}``: end (or resume) the AI session."""
+        presentation = self._presentation()
+        state = op.get("state")
+        if state == "done":
+            presentation.set(q("odforge", "session"), "done")
+        elif state == "open":
+            presentation.attrib.pop(q("odforge", "session"), None)
+        else:
+            raise EditError(f"不認得的協作狀態:{state!r}")
 
     def _op_comment_delete(self, op: Dict[str, Any]) -> None:
         try:

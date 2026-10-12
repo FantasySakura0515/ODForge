@@ -86,6 +86,8 @@ export interface Comment {
   y: number;
   /** The element the comment is about, when it still exists. */
   target: string | null;
+  /** draft: still yours; submitted: handed to the AI, which is working on it. */
+  state: "draft" | "submitted";
 }
 
 export interface Page {
@@ -126,6 +128,8 @@ export interface DocState {
   canRedo: boolean;
   created: string[];
   fontChoices: FontChoice[];
+  /** "done" once the person pressed 完成 and the agent has not picked it up yet. */
+  session?: "open" | "done";
 }
 
 export interface Rect {

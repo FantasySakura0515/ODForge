@@ -258,3 +258,19 @@ button { font: inherit; color: inherit; }
 }
 .ne-drawer-done:hover { color: #2e7d32; border-color: #2e7d32; }
 @media (max-width: 760px) { .ne-drawer { position: fixed; inset: auto 0 0 0; width: auto; max-height: 50vh; border-top: 1px solid var(--ne-line); } }
+
+.ne-pin.working { background: var(--ne-brand); animation: ne-pulse 1.4s ease-in-out infinite; }
+@keyframes ne-pulse { 50% { box-shadow: 0 0 0 6px rgba(31, 63, 153, 0.18); } }
+.ne-tools button.ne-ai { background: var(--ne-guide); border-color: var(--ne-guide); color: #fff; font-weight: 500; }
+.ne-tools button.ne-ai:hover { background: #c93a6c; }
+.ne-ai-working { font-size: 12px; color: var(--ne-brand); padding: 0 6px; animation: ne-fade 1.4s ease-in-out infinite; }
+@keyframes ne-fade { 50% { opacity: 0.45; } }
+.ne-drawer-actions { display: flex; gap: 8px; padding: 0 16px 10px; }
+.ne-drawer-actions button {
+  height: 34px; padding: 0 14px; border: 1px solid var(--ne-line-strong); border-radius: 6px; background: #fff;
+  cursor: pointer; font-size: 13px;
+}
+.ne-drawer-actions button.primary { flex: 1; background: var(--ne-guide); border-color: var(--ne-guide); color: #fff; font-weight: 500; }
+.ne-drawer-actions button:disabled { opacity: 0.45; cursor: default; }
+.ne-working { margin-left: 6px; font-style: normal; color: var(--ne-brand); }
+@media (prefers-reduced-motion: reduce) { .ne-pin.working, .ne-ai-working { animation: none; } }

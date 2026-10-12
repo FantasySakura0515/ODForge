@@ -520,3 +520,32 @@ def test_agent_sees_and_resolves_comments(deck):
         ],
     )
     assert result.startswith("ok:") and "待處理留言" not in result
+
+
+# -- the web feedback loop ----------------------------------------------------------------
+
+
+def test_submit_hands_drafts_to_the_ai(deck):
+    doc = Document(deck)
+    doc.apply([{"op": "comment_add", "id": "7/2", "text": "改短"}])
+    state = doc.apply([{"op": "comments_submit"}])
+    assert state["created"] == ["c7/0"]
+    assert _page(state, 7)["comments"][0]["state"] == "submitted"
+    with pytest.raises(EditError, match="沒有要交給 AI"):
+        doc.apply([{"op": "comments_submit"}])
+
+
+def test_wait_for_feedback_returns_submitted_comments_then_done(deck):
+    import asyncio
+
+    from odforge.mcp_server import wait_for_feedback
+
+    doc = Document(deck)
+    doc.apply([{"op": "comment_add", "id": "7/2", "text": "改短"}])
+    assert asyncio.run(wait_for_feedback(str(deck), 1)).startswith("waiting:")
+    doc.apply([{"op": "comments_submit"}])
+    got = asyncio.run(wait_for_feedback(str(deck), 1))
+    assert got.startswith("feedback:") and "[c7/0]" in got and "關於 [7/2]" in got
+    doc.apply([{"op": "comment_delete", "comment": "c7/0"}, {"op": "session", "state": "done"}])
+    assert asyncio.run(wait_for_feedback(str(deck), 1)).startswith("done:")
+    assert Document(deck).state()["session"] == "open"  # picked up, so cleared

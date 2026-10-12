@@ -36,6 +36,8 @@ def isolated_sessions_dir(tmp_path, monkeypatch):
     # Font subsetting costs ~2s per render; the suite renders hundreds of
     # decks. test_fontembed.py switches it back on where it is the subject.
     monkeypatch.setenv("ODFORGE_EMBED_FONTS", "0")
+    # forge_presentation would otherwise start a web editor and open a browser.
+    monkeypatch.setenv("ODFORGE_NO_EDITOR", "1")
 
 
 # Every environment variable that can point the code at a real provider: a key,
