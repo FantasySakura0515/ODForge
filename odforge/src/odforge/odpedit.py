@@ -27,7 +27,18 @@ from typing import Any, Dict, List, Optional, Tuple
 from lxml import etree
 
 from . import docfonts
-from .scene import NS, Styles, _paragraph_style, _text_style, build_scene, drawables, q
+from .scene import (
+    ANNOTATION,
+    NS,
+    Styles,
+    _paragraph_style,
+    _text_style,
+    annotations,
+    build_scene,
+    cm,
+    drawables,
+    q,
+)
 from .xmlsafe import safe_fromstring
 
 MAX_HISTORY = 200
@@ -528,9 +539,10 @@ class Document:
         return [f"{page_i}/{drawables(page).index(clone)}"]
 
     def _insert_on_top(self, page: etree._Element, el: etree._Element) -> None:
-        notes = page.find(q("presentation", "notes"))
-        if notes is not None:
-            notes.addprevious(el)
+        # Above every drawable, below comments and speaker notes (which are not drawn).
+        anchor = next((c for c in page if c.tag in (ANNOTATION, q("presentation", "notes"))), None)
+        if anchor is not None:
+            anchor.addprevious(el)
         else:
             page.append(el)
 
@@ -579,6 +591,62 @@ class Document:
         paragraph.text = str(op.get("text", ""))
         self._insert_on_top(page, frame)
         return [f"{page_i}/{drawables(page).index(frame)}"]
+
+    # -- comments ----------------------------------------------------------------
+
+    def _op_comment_add(self, op: Dict[str, Any]) -> List[str]:
+        """A comment on an element (``id``) or on a spot of a page (``page``, ``x``, ``y``)."""
+        import datetime
+        import uuid
+
+        text = str(op.get("text", "")).strip()
+        if not text:
+            raise EditError("留言不能是空的")
+        target_name = None
+        if op.get("id"):
+            page_i, _, el = self._element(op["id"])
+            target_name = el.get(q("draw", "name"))
+            if not target_name:
+                target_name = f"odforge-{uuid.uuid4().hex[:8]}"
+                el.set(q("draw", "name"), target_name)
+            if el.tag == q("draw", "line"):
+                x = max(cm(el.get(q("svg", "x1"))), cm(el.get(q("svg", "x2"))))
+                y = min(cm(el.get(q("svg", "y1"))), cm(el.get(q("svg", "y2"))))
+            else:
+                x = cm(el.get(q("svg", "x"))) + cm(el.get(q("svg", "width")))
+                y = cm(el.get(q("svg", "y")))
+        else:
+            page_i = int(op.get("page", 0))
+            x, y = float(op.get("x", 1)), float(op.get("y", 1))
+        page = self._page(page_i)
+        note = etree.Element(ANNOTATION)
+        note.set(q("svg", "x"), _len(x))
+        note.set(q("svg", "y"), _len(y))
+        if target_name:
+            note.set(q("odforge", "target"), target_name)
+        creator = etree.SubElement(note, q("dc", "creator"))
+        creator.text = str(op.get("author") or "我")
+        date = etree.SubElement(note, q("dc", "date"))
+        date.text = datetime.datetime.now().replace(microsecond=0).isoformat()
+        for line in text.split("\n"):
+            etree.SubElement(note, q("text", "p")).text = line
+        notes = page.find(q("presentation", "notes"))
+        if notes is not None:
+            notes.addprevious(note)
+        else:
+            page.append(note)
+        return [f"c{page_i}/{annotations(page).index(note)}"]
+
+    def _op_comment_delete(self, op: Dict[str, Any]) -> None:
+        try:
+            page_part, index_part = str(op.get("comment", "")).lstrip("c").split("/")
+            page_i, k = int(page_part), int(index_part)
+        except ValueError as exc:
+            raise EditError(f"留言代號不正確:{op.get('comment')!r}") from exc
+        notes = annotations(self._page(page_i))
+        if not 0 <= k < len(notes):
+            raise EditError(f"找不到留言 {op.get('comment')}")
+        notes[k].getparent().remove(notes[k])
 
     # -- clipboard ---------------------------------------------------------------
 

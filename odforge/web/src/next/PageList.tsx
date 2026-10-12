@@ -74,6 +74,9 @@ export function PageList({
               onClick={() => onSelect(i)}
             >
               <SlideView page={page} width={scene.width} height={scene.height} s={s} />
+              {!!page.comments?.length && (
+                <span className="ne-thumb-badge" aria-label={`${page.comments.length} 則留言`}>{page.comments.length}</span>
+              )}
             </button>
             <span className="ne-page-actions">
               <button type="button" aria-label={`複製第 ${i + 1} 頁`} title="複製這一頁" onClick={() => onDuplicate(i)}>

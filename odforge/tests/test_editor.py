@@ -461,3 +461,62 @@ def test_mcp_outline_and_edit(deck):
     assert edit_odp(str(deck), [{"op": "geom", "id": "99/0", "x": 1}]).startswith("error:")
     assert edit_odp(str(deck), []).startswith("error:")
     assert outline_odp(str(deck) + ".missing").startswith("error: file not found")
+
+
+# -- comments ----------------------------------------------------------------------------
+
+
+def test_comments_follow_their_element_and_survive_edits(deck):
+    doc = Document(deck)
+    state = doc.apply(
+        [
+            {"op": "comment_add", "id": "7/2", "text": "這句太長"},
+            {"op": "comment_add", "page": 7, "x": 20, "y": 12, "text": "整頁太擠"},
+        ]
+    )
+    assert state["created"] == ["c7/0", "c7/1"]
+    comments = _page(state, 7)["comments"]
+    assert [(c["text"], c["target"]) for c in comments] == [("這句太長", "7/2"), ("整頁太擠", None)]
+    # Elements added later do not shift the comment off its element.
+    state = doc.apply(
+        [{"op": "add_text", "page": 7, "text": "新"}, {"op": "geom", "id": "7/2", "x": 3}]
+    )
+    assert _page(state, 7)["comments"][0]["target"] == "7/2"
+    assert len(_page(state, 7)["elements"]) == 26  # comments are not drawn elements
+    state = doc.apply([{"op": "comment_delete", "comment": "c7/0"}])
+    assert [c["text"] for c in _page(state, 7)["comments"]] == ["整頁太擠"]
+    report = validate_odf(deck, with_soffice=find_soffice() is not None)
+    assert report.ok, report.gates
+
+
+def test_comment_text_does_not_trigger_font_embedding(deck):
+    from odforge import docfonts
+    from odforge.scene import read_package
+
+    doc = Document(deck)
+    doc.apply([{"op": "comment_add", "id": "7/2", "text": "鬱鬱蔥蔥"}])
+    assert "鬱" not in docfonts.document_text(list(read_package(deck)))
+
+
+def test_comment_errors(deck):
+    doc = Document(deck)
+    with pytest.raises(EditError, match="空的"):
+        doc.apply([{"op": "comment_add", "id": "7/2", "text": "  "}])
+    with pytest.raises(EditError, match="找不到留言"):
+        doc.apply([{"op": "comment_delete", "comment": "c7/5"}])
+
+
+def test_agent_sees_and_resolves_comments(deck):
+    from odforge.mcp_server import edit_odp, outline_odp
+
+    Document(deck).apply([{"op": "comment_add", "id": "7/2", "text": "改短"}])
+    outline = outline_odp(str(deck))
+    assert "待處理留言 1 則" in outline and "留言 [c7/0] 關於 [7/2]:改短" in outline
+    result = edit_odp(
+        str(deck),
+        [
+            {"op": "text", "id": "7/2", "paragraphs": ["短"]},
+            {"op": "comment_delete", "comment": "c7/0"},
+        ],
+    )
+    assert result.startswith("ok:") and "待處理留言" not in result

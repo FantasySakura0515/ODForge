@@ -389,6 +389,13 @@ def _outline_text(path: Path) -> str:
             elif el.get("fill"):
                 detail = f" 填色 {el['fill']}"
             lines.append(f"  [{el['id']}] {el['kind']} {where}{detail}")
+        for comment in page.get("comments", []):
+            about = f"關於 [{comment['target']}]" if comment["target"] else "整頁"
+            text = comment["text"].replace("\n", " / ")
+            lines.append(f"  留言 [{comment['id']}] {about}:{text}")
+    pending = sum(len(p.get("comments", [])) for p in scene["pages"])
+    if pending:
+        lines.insert(1, f"待處理留言 {pending} 則(照留言改完後,用 comment_delete 刪掉該則留言)")
     return "\n".join(lines)
 
 
@@ -433,6 +440,13 @@ def edit_odp(path: str, ops: list) -> str:
       ``{"op": "order", "id": "7/2", "to": "front" | "back" | "forward" | "backward"}``
     * ``{"op": "page_add", "after": 3}``, ``{"op": "page_duplicate", "page": 3}``,
       ``{"op": "page_delete", "page": 3}``, ``{"op": "page_move", "page": 3, "to": 0}``
+    * ``{"op": "comment_delete", "comment": "c7/0"}`` — remove a comment once it is
+      handled (comments are listed by ``outline_odp``); ``{"op": "comment_add",
+      "id": "7/2", "text": "..."}`` to leave one for the user.
+
+    When the user asks you to apply their comments (照留言改): read them with
+    ``outline_odp``, make each change, and delete each comment you resolved in the
+    same ``edit_odp`` call — the open editor then shows the page without it.
 
     Deleting several elements of one page: list them from the highest index down,
     or later ids shift. Returns ``"ok: ..."`` with the ids of anything created, then

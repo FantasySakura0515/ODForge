@@ -66,9 +66,13 @@ def choices(roots: List[etree._Element]) -> List[Dict[str, object]]:
 
 
 def document_text(roots: List[etree._Element]) -> str:
+    """Text drawn in the document's fonts — comments are not (the viewer draws them)."""
+    annotation = q("officeooo", "annotation")
     parts: List[str] = []
     for root in roots:
         for el in root.iter(q("text", "p"), q("text", "h")):
+            if any(a.tag == annotation for a in el.iterancestors()):
+                continue
             parts.append("".join(el.itertext()))
     return "".join(parts)
 

@@ -39,6 +39,11 @@ NS = {
     "xlink": "http://www.w3.org/1999/xlink",
     "presentation": "urn:oasis:names:tc:opendocument:xmlns:presentation:1.0",
     "loext": "urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0",
+    # Impress stores slide comments as officeooo:annotation inside draw:page.
+    "officeooo": "http://openoffice.org/2009/office",
+    "dc": "http://purl.org/dc/elements/1.1/",
+    # Which element a comment is about (by draw:name); ODF has no word for it.
+    "odforge": "urn:odforge:editor:1",
 }
 
 
@@ -59,6 +64,7 @@ _LINE = q("draw", "line")
 _FRAME = q("draw", "frame")
 _NOTES = q("presentation", "notes")
 _FORMS = q("office", "forms")
+ANNOTATION = q("officeooo", "annotation")
 
 
 def cm(value: Optional[str], default: float = 0.0) -> float:
@@ -469,8 +475,40 @@ def element(el: etree._Element, styles: Styles, page_no: int, element_id: str) -
 def drawables(page: etree._Element) -> List[etree._Element]:
     """The page's drawable children in paint order (speaker notes and forms excluded)."""
     return [
-        child for child in page if isinstance(child.tag, str) and child.tag not in (_NOTES, _FORMS)
+        child
+        for child in page
+        if isinstance(child.tag, str) and child.tag not in (_NOTES, _FORMS, ANNOTATION)
     ]
+
+
+def annotations(page: etree._Element) -> List[etree._Element]:
+    return [child for child in page if child.tag == ANNOTATION]
+
+
+def comments_of(page: etree._Element, index: int) -> List[Dict[str, Any]]:
+    """The page's comments, each tied to the element it names when that still exists."""
+    names = {
+        el.get(q("draw", "name")): f"{index}/{j}"
+        for j, el in enumerate(drawables(page))
+        if el.get(q("draw", "name"))
+    }
+    out = []
+    for k, note in enumerate(annotations(page)):
+        text = "\n".join("".join(p.itertext()) for p in note.iter(q("text", "p")))
+        creator = note.find(q("dc", "creator"))
+        date = note.find(q("dc", "date"))
+        out.append(
+            {
+                "id": f"c{index}/{k}",
+                "text": text,
+                "author": (creator.text or "") if creator is not None else "",
+                "date": (date.text or "") if date is not None else "",
+                "x": cm(note.get(q("svg", "x"))),
+                "y": cm(note.get(q("svg", "y"))),
+                "target": names.get(note.get(q("odforge", "target"))),
+            }
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -542,6 +580,7 @@ def build_scene(content: etree._Element, styles_root: etree._Element) -> Dict[st
                     element(el, styles, page_no, f"{index}/{j}")
                     for j, el in enumerate(drawables(page))
                 ],
+                "comments": comments_of(page, index),
             }
         )
 

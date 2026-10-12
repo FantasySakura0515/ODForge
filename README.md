@@ -222,6 +222,20 @@ odforge serve        # http://127.0.0.1:8000
 服務沒有身分驗證，預設只綁 `127.0.0.1`；要對外綁定得加 `--allow-remote`，
 而且 `codex` 後端在對外綁定時會拒絕執行。`serve` 會自動讀取 `odforge/.env`。
 
+## 接上 AI 助理
+
+```bash
+odforge setup          # 註冊到 Claude Code 與 Codex；odforge setup --remove 可撤銷
+```
+
+會把 MCP server 註冊到 Claude Code 和 Codex（使用者層級，每個專案都看得到），把
+`odforge-design` skill 連到兩者的 skill 資料夾，並在找不到 `odforge` 指令時於
+`~/.local/bin` 建立連結。之後開新的對話就能說「用 ODForge 做一份…簡報」。
+
+在編輯器用「留言」工具（C）點在要改的地方寫意見，再對助理說「照留言修改」：它會逐則改好、
+刪掉處理完的留言，開著的編輯器一秒內跟著更新。留言存在 `.odp` 裡（ODF 的簡報註解格式），
+檔案傳給別人也還在。
+
 ## MCP server
 
 ODForge 也是一個 MCP server。這個模式下由 AI 助理自己寫 Document IR，

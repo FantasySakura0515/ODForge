@@ -3,6 +3,7 @@ import * as api from "./api";
 import type { Actions } from "./Bars";
 import { Canvas, leaveText, type Tool } from "./Canvas";
 import { alignOps, distributeOps, geomOp, moved, riders } from "./geometry";
+import { CommentDrawer } from "./Comments";
 import { PageList } from "./PageList";
 import { formatAll, normalise, richOf, type Format } from "./richtext";
 import { useDocumentFonts } from "./SlideView";
@@ -79,6 +80,8 @@ export function EditorApp() {
   const [editing, setEditingState] = useState<{ id: string | null; selectAll: boolean }>({ id: null, selectAll: false });
   const [tool, setTool] = useState<Tool>("select");
   const [zoom, setZoom] = useState(1);
+  const [openComment, setOpenComment] = useState<string | null>(null);
+  const [drawer, setDrawer] = useState(false);
   const [nudge, setNudge] = useState<Map<string, SceneElement>>(new Map());
   // ``top`` marks which items were selected (the rest rode along inside a card).
   const [clipboard, setClipboard] = useState<{ items: string[]; top: boolean[]; page: number; pastes: number } | null>(null);
@@ -152,6 +155,8 @@ export function EditorApp() {
   const scene = doc?.scene;
   const pages = scene?.pages ?? [];
   const page = pages[Math.min(pageIndex, Math.max(pages.length - 1, 0))];
+
+  const commentCount = pages.reduce((n, p) => n + (p.comments?.length ?? 0), 0);
 
   const colors = useMemo(() => {
     const counts = new Map<string, number>();
@@ -365,6 +370,7 @@ export function EditorApp() {
         }
         return;
       }
+      if (!mod && key === "c") return setTool("comment");
       if (!mod && key === "t") return setTool("text");
       if (!mod && key === "r") return setTool("rect");
       if (!mod && key === "v") return setTool("select");
@@ -419,6 +425,7 @@ export function EditorApp() {
           <button type="button" aria-pressed={tool === "text"} title="文字 (T)" onClick={() => setTool("text")}>文字</button>
           <button type="button" aria-pressed={tool === "rect"} title="方塊 (R)" onClick={() => setTool("rect")}>方塊</button>
           <button type="button" title="插入圖片" onClick={() => fileInput.current?.click()}>圖片</button>
+          <button type="button" aria-pressed={tool === "comment"} title="留言 (C):點投影片上要改的地方" onClick={() => setTool("comment")}>留言</button>
           <input
             ref={fileInput}
             type="file"
@@ -430,6 +437,10 @@ export function EditorApp() {
               e.target.value = "";
             }}
           />
+          <span className="ne-sep" />
+          <button type="button" aria-pressed={drawer} title="查看全部留言" onClick={() => setDrawer((v) => !v)}>
+            留言 {commentCount}
+          </button>
           <span className="ne-sep" />
           <button type="button" aria-label="復原" title="復原 (⌘Z)" disabled={!doc.canUndo} onClick={() => { setSelection([]); void run(api.undo); }}>↶</button>
           <button type="button" aria-label="重做" title="重做 (⇧⌘Z)" disabled={!doc.canRedo} onClick={() => { setSelection([]); void run(api.redo); }}>↷</button>
@@ -479,8 +490,24 @@ export function EditorApp() {
             setZoom={setZoom}
             colors={colors}
             fonts={doc.fontChoices ?? []}
+            openComment={openComment}
+            setOpenComment={setOpenComment}
           />
         </main>
+        {drawer && (
+          <CommentDrawer
+            scene={scene}
+            onGo={(page, id) => {
+              goToPage(page);
+              setOpenComment(id);
+            }}
+            onResolve={(id) => {
+              setOpenComment(null);
+              void apply([{ op: "comment_delete", comment: id }]);
+            }}
+            onClose={() => setDrawer(false)}
+          />
+        )}
       </div>
 
       {error && (

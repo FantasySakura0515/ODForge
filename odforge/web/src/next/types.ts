@@ -77,12 +77,24 @@ export interface LineElement extends Base, Paint {
 
 export type SceneElement = BoxElement | LineElement;
 
+export interface Comment {
+  id: string;
+  text: string;
+  author: string;
+  date: string;
+  x: number;
+  y: number;
+  /** The element the comment is about, when it still exists. */
+  target: string | null;
+}
+
 export interface Page {
   id: string;
   name: string;
   background: string;
   master: SceneElement[];
   elements: SceneElement[];
+  comments?: Comment[];
 }
 
 export interface FontFace {

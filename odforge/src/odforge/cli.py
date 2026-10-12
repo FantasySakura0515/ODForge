@@ -733,6 +733,26 @@ def _free_port(host: str, preferred: int) -> int:
 
 
 @app.command()
+def setup(
+    remove: bool = typer.Option(False, "--remove", help="撤銷 setup 做過的設定。"),
+    claude: bool = typer.Option(True, "--claude/--no-claude", help="設定 Claude Code。"),
+    codex: bool = typer.Option(True, "--codex/--no-codex", help="設定 Codex。"),
+) -> None:
+    """把 ODForge 接上這台電腦的 AI 助理:註冊 MCP、安裝 skill、讓 odforge 指令找得到。"""
+    from odforge.setup_agents import setup as run_setup
+
+    steps = run_setup(remove=remove, claude=claude, codex=codex)
+    for step in steps:
+        mark = "[green]OK[/green]" if step.ok else "[yellow]略過[/yellow]"
+        _out.print(f"{mark} {escape(step.label)}:{escape(step.detail)}")
+    if not remove and any(s.ok for s in steps):
+        _out.print(
+            "[dim]開一個新的 Claude Code / Codex 對話就能用:例如「用 ODForge 做一份…簡報」,"
+            "或在編輯器留言後說「照留言修改」。[/dim]"
+        )
+
+
+@app.command()
 def edit(
     file: Path = typer.Argument(..., help="要編輯的簡報(.odp)。"),
     host: str = typer.Option("127.0.0.1", "--host", help="綁定位址(只接受本機)。"),

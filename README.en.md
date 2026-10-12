@@ -252,6 +252,21 @@ The server has no authentication and binds to `127.0.0.1` by default. Binding to
 addresses requires `--allow-remote`, and the `codex` backend refuses to run when the server is
 bound beyond loopback. `serve` loads `odforge/.env` automatically.
 
+## Connecting AI assistants
+
+```bash
+odforge setup          # registers with Claude Code and Codex; odforge setup --remove undoes it
+```
+
+Registers the MCP server with Claude Code and Codex (user scope, so every project sees it), links
+the `odforge-design` skill into both agents' skill folders, and links `odforge` into `~/.local/bin`
+when no shell can find it. Then start a new conversation and ask for a deck.
+
+In the editor, use the comment tool (C) to pin notes where something should change, then tell the
+assistant to apply the comments: it makes each change, deletes the comments it resolved, and the
+open editor follows within a second. Comments live inside the `.odp` (ODF's presentation
+annotation format), so they travel with the file.
+
 ## MCP server
 
 ODForge is also an MCP server. In this mode the AI assistant writes the Document IR itself and

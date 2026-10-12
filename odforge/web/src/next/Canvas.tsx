@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { ALIGN_LABEL, ContextMenu, SelectionBar, type Actions, type MenuItem } from "./Bars";
+import { CommentComposer, CommentPins } from "./Comments";
 import {
   HANDLES,
   bounds,
@@ -23,7 +24,7 @@ import { execFormat } from "./richtext";
 import { SlideView, type ElementHandlers } from "./SlideView";
 import type { LineElement, Op, Page, RichParagraph, Rect, SceneElement } from "./types";
 
-export type Tool = "select" | "text" | "rect";
+export type Tool = "select" | "text" | "rect" | "comment";
 
 const SNAP_PX = 5;
 const DRAG_START_PX = 3;
@@ -74,6 +75,8 @@ export interface CanvasProps {
   setZoom: (zoom: number) => void;
   colors: string[];
   fonts: { family: string; embeddable: boolean }[];
+  openComment: string | null;
+  setOpenComment: (id: string | null) => void;
 }
 
 export function Canvas(props: CanvasProps) {
@@ -91,6 +94,7 @@ export function Canvas(props: CanvasProps) {
   const [readout, setReadout] = useState<{ x: number; y: number; text: string } | null>(null);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [composing, setComposing] = useState<{ target: string | null; x: number; y: number } | null>(null);
   const lastPress = useRef<{ id: string; at: number } | null>(null);
 
   // Fit the slide to the space available; zoom multiplies on top of that.
@@ -152,7 +156,32 @@ export function Canvas(props: CanvasProps) {
     setDragging(true);
   }
 
+  function startComment(el: SceneElement | null, at?: { x: number; y: number }) {
+    props.setOpenComment(null);
+    if (el) {
+      const b = bounds(el);
+      setComposing({ target: el.id, x: b.x + b.w, y: b.y });
+    } else if (at) {
+      setComposing({ target: null, x: at.x, y: at.y });
+    }
+  }
+
+  async function submitComment(text: string) {
+    if (!composing) return;
+    const op = composing.target
+      ? { op: "comment_add", id: composing.target, text }
+      : { op: "comment_add", page: props.pageIndex, x: composing.x, y: composing.y, text };
+    setComposing(null);
+    props.setTool("select");
+    await props.apply([op]);
+  }
+
   function onElementPointerDown(e: ReactPointerEvent, el: SceneElement) {
+    if (tool === "comment" && e.button === 0) {
+      e.stopPropagation();
+      startComment(el);
+      return;
+    }
     if (tool !== "select") return;
     if (e.button === 2) {
       e.stopPropagation();
@@ -248,8 +277,17 @@ export function Canvas(props: CanvasProps) {
   async function onStagePointerDown(e: ReactPointerEvent) {
     if (e.button !== 0) return;
     setMenu(null);
+    props.setOpenComment(null);
     const p = point(e);
     if (props.editingId) leaveText();
+    if (tool === "comment") {
+      startComment(null, p);
+      return;
+    }
+    if (composing) {
+      setComposing(null);
+      return;
+    }
     if (tool === "text") {
       props.setTool("select");
       const created = await props.apply([{ op: "add_text", page: props.pageIndex, x: p.x, y: p.y, w: 8, h: 1.2, text: "" }]);
@@ -432,11 +470,19 @@ export function Canvas(props: CanvasProps) {
           onSelect: () => props.actions.align(k),
         })),
         null,
+        {
+          label: "新增留言",
+          hint: "C",
+          onSelect: () => startComment(byId.get(selection[0]) ?? null),
+          disabled: selection.length !== 1,
+        },
+        null,
         { label: "刪除", hint: "⌫", onSelect: props.actions.remove, danger: true },
       ]
     : [
         { label: "貼上", hint: "⌘V", onSelect: props.actions.paste, disabled: !props.actions.canPaste },
         { label: "全選", hint: "⌘A", onSelect: () => setSelection(page.elements.map((el) => el.id)) },
+        { label: "在這裡留言", hint: "C", onSelect: () => menu && startComment(null, point({ clientX: menu.x, clientY: menu.y })) },
       ];
 
   return (
@@ -553,6 +599,30 @@ export function Canvas(props: CanvasProps) {
             onFormat={(f) => (editing ? execFormat(f, s) : props.actions.format(f))}
             actions={props.actions}
             onEdit={() => single && props.setEditing(single.id)}
+          />
+        )}
+        <CommentPins
+          comments={page.comments ?? []}
+          s={s}
+          live={live}
+          openId={props.openComment}
+          onOpen={props.setOpenComment}
+          onResolve={(id) => {
+            props.setOpenComment(null);
+            void props.apply([{ op: "comment_delete", comment: id }]);
+          }}
+        />
+        {composing && (
+          <CommentComposer
+            x={composing.x}
+            y={composing.y}
+            s={s}
+            about={composing.target ? "對這個物件的意見" : "對這一頁的意見"}
+            onSubmit={(text) => void submitComment(text)}
+            onCancel={() => {
+              setComposing(null);
+              props.setTool("select");
+            }}
           />
         )}
       </div>
