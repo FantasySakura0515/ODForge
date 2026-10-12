@@ -1,6 +1,6 @@
 ---
 name: odforge-design
-description: 教外部 agent（Claude Code 等）驅動 ODForge MCP server 產出高品質簡報。涵蓋生成前訪談、page-role 大綱紀律、DesignSpec 設計欄位與對比度自檢、三套主題規格書，以及產出後必跑的 inspect_odf + preview_odf 視覺自查迴圈。當使用者要用 ODForge 做 .odp 簡報（或 .odt/.ods）時使用。
+description: 教外部 agent（Claude Code 等）用 ODForge 產出高品質簡報。涵蓋即時預覽工作流（寫 deck.json + odforge preview，使用者在瀏覽器看）、生成前訪談、page-role 大綱紀律、DesignSpec 設計欄位與對比度自檢、主題規格書，以及 MCP 的 inspect_odf + preview_odf 自查迴圈。當使用者要用 ODForge 做 .odp 簡報（或 .odt/.ods）時使用。
 ---
 
 # odforge-design：用 ODForge 產出好簡報
@@ -8,6 +8,36 @@ description: 教外部 agent（Claude Code 等）驅動 ODForge MCP server 產�
 ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作者，寫出 Document IR
 （一個 JSON 物件）交給 MCP 工具，它渲染出原生 `.odp`／`.odt`／`.ods` 並驗證。
 引擎不會幫你想設計，好壞取決於你交出的 IR。這份 skill 教你交出好的 IR。
+
+## 首選工作流：即時預覽（簡報）
+
+使用者要一份簡報、而且人在旁邊時，用這條路。你寫內容，ODForge 排版，使用者在
+瀏覽器裡看。**絕對不要叫使用者打開 LibreOffice**——它只在背景當渲染器。
+
+1. 先照 ① 訪談、② 排大綱，然後把整份 Presentation IR 寫成一個 JSON 檔，例如
+   `deck.json`（格式見 ③；`type` 可省略，預設就是簡報）。
+2. 在**背景**啟動預覽，輸出導到檔案：
+
+   ```bash
+   odforge preview deck.json > preview.log 2>&1
+   ```
+
+   它會自動用預設瀏覽器打開預覽頁（第一行印出網址；不想自動開就加 `--no-open`，
+   再把網址給使用者）。成品 `.odp` 寫在 JSON 旁邊，同名。
+3. 之後每次修改就直接**編輯 `deck.json` 存檔**。預覽頁幾秒內自動更新；同時
+   `preview.log` 會多一行摘要，例如：
+
+   ```text
+   [13:05:56] 第 1 版:4 頁,發現 2 處跑版
+     - 第 3 頁「這一段文字很長…」文字超出框的下緣 1.77 cm
+   [13:06:02] 第 2 版:4 頁,沒有文字超出框或頁面
+   ```
+
+   讀 log 就知道哪頁跑版、超出多少；縮短文字或拆頁後再存檔，直到沒有跑版。
+   JSON 寫壞時 log 會說「讀不進來,畫面維持上一版」並附原因，修好再存即可。
+4. 使用者在預覽頁說哪裡要改，你就改 `deck.json`。不要另外重產一份新檔。
+
+沒有人在看（批次產檔、使用者只要檔案）時，改用下面的 MCP 工具。
 
 ## MCP 工具（共 5 個）
 

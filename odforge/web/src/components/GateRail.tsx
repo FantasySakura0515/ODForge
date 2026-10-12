@@ -1,4 +1,4 @@
-import type { DroppedContent, Finding, GateId, GateStatus } from "../state/types";
+import type { DroppedContent, Finding, GateId, GateStatus, LayoutReport } from "../state/types";
 
 const GATES: { id: GateId; label: string; sub: string; code: string; tip: string }[] = [
   { id: "zip", label: "封裝結構", sub: "ODF 打包與 manifest", code: "01", tip: "檔案打包結構正確(mimetype 為首)" },
@@ -60,6 +60,7 @@ export function GateRail({
   gateNotes = {},
   qaRounds,
   dropped = [],
+  layout,
   onOpenFinding,
 }: {
   gates: Record<GateId, GateStatus>;
@@ -68,6 +69,8 @@ export function GateRail({
   qaRounds: { round: number; findings: Finding[] }[];
   /** 因版面限制未能保留的內容。使用者要求過這些字,消失了就必須看得見。 */
   dropped?: DroppedContent[];
+  /** 即時預覽的跑版檢查(LibreOffice 實際排版後量出來的)。 */
+  layout?: LayoutReport;
   onOpenFinding?: (n: number) => void;
 }) {
   const passed = GATES.filter((g) => gates[g.id] === "pass").length;
@@ -130,6 +133,25 @@ export function GateRail({
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {layout && (
+        <div className="qa layout-report" data-status={layout.status}>
+          <div className="qahead">跑版檢查</div>
+          {layout.findings.length === 0 ? (
+            <p className="qaempty">{layout.status === "ok" ? `${layout.message} ✓` : layout.message}</p>
+          ) : (
+            <ul className="findings">
+              {layout.findings.map((f, j) => (
+                <FindingRow
+                  key={j}
+                  f={{ slide_no: f.slide_no, issue: f.issue, severity: "error", fix_hint: "" }}
+                  onOpen={onOpenFinding}
+                />
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

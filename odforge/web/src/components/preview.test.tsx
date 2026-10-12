@@ -98,3 +98,11 @@ test("可點單元的可及名稱含開啟動作與標題", () => {
   const btn = screen.getByRole("button", { name: /開啟第\s*1\s*頁/ });
   expect(btn.getAttribute("aria-label")).toContain("封面");
 });
+
+test("跑版的頁面標「跑版」,不說成品檢未過", () => {
+  render(
+    <UnitCell unit={{ n: 3, role: "title-content", title: "內文", status: "done", previewUrl: "/api/jobs/j1/preview/3.png", overflow: true }} jobId="j1" />,
+  );
+  expect(screen.getByText("跑版")).toBeTruthy();
+  expect(screen.queryByText("品檢未過")).toBeNull();
+});

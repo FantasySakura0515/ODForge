@@ -2,7 +2,7 @@ import { eventsUrl } from "./api";
 import type { SseEvent } from "./types";
 
 // unit_done 為 slide_done 的 F4 正名別名(後端並發兩者);兩者都收,reducer 等價處理。
-const KNOWN = new Set(["outline", "awaiting_approval", "slide_done", "unit_done", "preview_ready", "gate_result", "qa_round", "content_degraded", "complete", "error"]);
+const KNOWN = new Set(["outline", "awaiting_approval", "slide_done", "unit_done", "preview_ready", "gate_result", "qa_round", "content_degraded", "complete", "error", "reload", "layout_report"]);
 
 export function parseSseEvent(type: string, data: string): SseEvent | null {
   if (!KNOWN.has(type)) return null;
@@ -13,7 +13,7 @@ export function parseSseEvent(type: string, data: string): SseEvent | null {
   }
 }
 
-const EVENT_NAMES = ["outline", "awaiting_approval", "slide_done", "unit_done", "preview_ready", "gate_result", "qa_round", "content_degraded", "complete", "error"];
+const EVENT_NAMES = ["outline", "awaiting_approval", "slide_done", "unit_done", "preview_ready", "gate_result", "qa_round", "content_degraded", "complete", "error", "reload", "layout_report"];
 
 export function subscribeJob(
   jobId: string,
@@ -21,6 +21,8 @@ export function subscribeJob(
   EventSourceCtor: typeof EventSource = EventSource,
   onError?: (e: unknown) => void,
   onOpen?: () => void,
+  // 即時預覽:complete/error 只代表「這一版」結束,來源檔再改還會有下一版,不能收線。
+  keepOpen = false,
 ): () => void {
   const es = new EventSourceCtor(eventsUrl(jobId));
   // 我們自己收線之後,任何 onerror 都不是「傳輸壞了」——是我們關的。
@@ -43,7 +45,7 @@ export function subscribeJob(
       onEvent(parsed);
       // The backend ends the stream after a terminal event; close our side too so
       // the browser's EventSource doesn't auto-reconnect and replay the whole history.
-      if (parsed.type === "complete" || parsed.type === "error") {
+      if (!keepOpen && (parsed.type === "complete" || parsed.type === "error")) {
         closedByUs = true;
         es.close();
       }

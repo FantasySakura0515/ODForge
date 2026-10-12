@@ -7,12 +7,14 @@ const QA_ZH = { flagged: "品檢未過", warned: "品檢有建議", clear: "" } 
 export function UnitCell({ unit, jobId, onOpen }: { unit: Unit; jobId?: string; onOpen?: (n: number) => void }) {
   const realPreview = unit.previewUrl && !unit.previewUrl.startsWith("mock:") && jobId;
   const clickable = Boolean(realPreview && onOpen);
-  const qaLabel = unit.qa && unit.qa !== "clear" ? QA_ZH[unit.qa] : "";
+  // 跑版是量出來的版面錯誤,與視覺品檢分開說;兩者都有時跑版優先(它一定是真的)。
+  const qaLabel = unit.overflow ? "跑版" : unit.qa && unit.qa !== "clear" ? QA_ZH[unit.qa] : "";
+  const qaKind = unit.overflow ? "flagged" : unit.qa;
 
   const content = (
     <>
       <span className="cn">{String(unit.n).padStart(2, "0")}</span>
-      {qaLabel && <span className="cqa" data-qa={unit.qa}>{qaLabel}</span>}
+      {qaLabel && <span className="cqa" data-qa={qaKind}>{qaLabel}</span>}
       {realPreview ? (
         <img className="thumb" alt={`第 ${unit.n} 頁預覽`} src={unit.previewUrl} loading="lazy" decoding="async" />
       ) : (
@@ -35,7 +37,7 @@ export function UnitCell({ unit, jobId, onOpen }: { unit: Unit; jobId?: string; 
         type="button"
         className="cell clickable"
         data-status={unit.status}
-        data-qa={unit.qa}
+        data-qa={qaKind}
         data-n={unit.n}
         aria-label={`開啟第 ${unit.n} 頁預覽:${unit.title}${qaLabel ? `(${qaLabel})` : ""}`}
         onClick={() => onOpen!(unit.n)}
@@ -49,7 +51,7 @@ export function UnitCell({ unit, jobId, onOpen }: { unit: Unit; jobId?: string; 
     <div
       className="cell"
       data-status={unit.status}
-      data-qa={unit.qa}
+      data-qa={qaKind}
       data-n={unit.n}
       role="img"
       aria-label={`第 ${unit.n} 頁:${unit.title}${qaLabel ? `(${qaLabel})` : ""}`}

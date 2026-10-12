@@ -82,6 +82,8 @@ export default function App() {
   const lastBodyRef = useRef<GenerateBody>();
   const params = new URLSearchParams(window.location.search);
   const mockMode = params.has("mock");
+  // 即時預覽(odforge preview):內容由使用者的 agent 寫在檔案裡,這裡只負責看。
+  const watchMode = params.has("watch");
   const mockStep = Number(params.get("mockStep") ?? "250");
 
   async function loadSessions() {
@@ -125,6 +127,14 @@ export default function App() {
     setView("workspace");
     setJobId(jobParam);
     setSubmitting(true); // 首個事件到達前顯示等待卡
+    if (watchMode) {
+      // 不走視覺節流:每次存檔都是同一批頁碼重來一遍,節流器的去重會把它們當成
+      // 重複事件丟掉;而且預覽要的是「存檔就看到」,不是逐格動畫。連線也不在
+      // complete 後收掉 —— 來源檔再改,還有下一版。
+      const close = subscribeJob(jobParam, dispatch, EventSource, undefined, undefined, true);
+      cancelRef.current = close;
+      return close;
+    }
     const throttle = createThrottledDispatch(dispatch);
     let received = false;
     const close = subscribeJob(
@@ -481,7 +491,7 @@ export default function App() {
             </div>
             <div className="work-actions">
               <button type="button" className="work-home" onClick={goHome}>首頁</button>
-              {state.phase === "complete" && (
+              {state.phase === "complete" && !watchMode && (
                 <button type="button" className="reforge" onClick={resetCockpit}>
                   <span aria-hidden="true">＋</span> 再鍛一份
                 </button>
@@ -508,6 +518,7 @@ export default function App() {
             onCancel={cancelCurrentJob}
             selectedN={selectedN}
             onSelect={setSelectedN}
+            readOnly={watchMode}
           />
           {/* 生成中途出錯:錯誤面板直接壓在舞台區上——牆不卸載(已生成頁留著),
               但錯誤與「重試」必須是看得見的第一層,不能只躲在 narrator 的 hover 裡。 */}
@@ -516,7 +527,7 @@ export default function App() {
               <ErrorPanel error={state.error} onRetry={lastBodyRef.current ? retryGenerate : undefined} />
             </div>
           )}
-          <GateRail gates={state.gates} gateNotes={state.gateNotes} qaRounds={state.qaRounds} dropped={state.dropped} onOpenFinding={state.phase === "error" ? undefined : (n) => setSelectedN(n)} />
+          <GateRail gates={state.gates} gateNotes={state.gateNotes} qaRounds={state.qaRounds} dropped={state.dropped} layout={state.layout} onOpenFinding={state.phase === "error" ? undefined : (n) => setSelectedN(n)} />
           </div>
 
           <footer className="foot">

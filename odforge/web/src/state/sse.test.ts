@@ -103,3 +103,13 @@ test("呼叫端取消訂閱之後的 onerror 不回報", () => {
 
   expect(onError).not.toHaveBeenCalled();
 });
+
+test("keepOpen:即時預覽在 complete / error 之後不收線", () => {
+  const events: string[] = [];
+  subscribeJob("j1", (e) => events.push(e.type), Ctor, undefined, undefined, true);
+  last.emit("complete", { download_url: "/x" });
+  last.emit("error", { message: "壞掉的 JSON", stage: "source" });
+  expect(last.readyState).toBe(0);
+  last.emit("reload", {});
+  expect(events).toEqual(["complete", "error", "reload"]);
+});

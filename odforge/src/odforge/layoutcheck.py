@@ -134,7 +134,11 @@ class LayoutFinding:
     collides_with: str = ""
 
     def describe(self) -> str:
-        where = f"第 {self.page} 頁「{self.excerpt}」"
+        return f"第 {self.page} 頁{self.detail()}"
+
+    def detail(self) -> str:
+        """The finding without its page number, for lists already grouped by page."""
+        where = f"「{self.excerpt}」"
         if self.kind == "frame":
             text = f"{where}文字超出框的{_EDGE_LABEL[self.edge]} {self.overshoot_cm:.2f} cm"
             if self.collides_with:
@@ -516,21 +520,48 @@ def check_layout(path: Path, soffice: Optional[Path]) -> LayoutReport:
     the one that holds. Never raises.
     """
     path = Path(path)
-    ext = path.suffix.lower()
-    if ext == ".ods":
-        return LayoutReport("unsupported", "試算表沒有固定版面,不做跑版檢查")
-    if ext not in (".odp", ".odt"):
-        return LayoutReport("unsupported", f"不支援 {ext or '(無副檔名)'} 的跑版檢查")
+    unsupported = _unsupported(path)
+    if unsupported is not None:
+        return unsupported
     if soffice is None:
         return LayoutReport("unavailable", "找不到 LibreOffice(soffice),無法檢查跑版")
 
     workdir = Path(tempfile.mkdtemp(prefix="odforge-layout-"))
     try:
-        content, styles = _read_parts(path)
         pdf = _convert_to_pdf(path, soffice, workdir)
+    except Exception as exc:
+        shutil.rmtree(workdir, ignore_errors=True)
+        return LayoutReport("unavailable", f"跑版檢查無法執行:{type(exc).__name__}: {exc}")
+    try:
+        return check_layout_pdf(path, pdf)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _unsupported(path: Path) -> Optional[LayoutReport]:
+    ext = path.suffix.lower()
+    if ext == ".ods":
+        return LayoutReport("unsupported", "試算表沒有固定版面,不做跑版檢查")
+    if ext not in (".odp", ".odt"):
+        return LayoutReport("unsupported", f"不支援 {ext or '(無副檔名)'} 的跑版檢查")
+    return None
+
+
+def check_layout_pdf(path: Path, pdf: Path) -> LayoutReport:
+    """Like :func:`check_layout`, against a PDF LibreOffice already made of ``path``.
+
+    For callers that convert anyway (the live preview rasterises the same PDF),
+    so one document is not laid out twice. Never raises.
+    """
+    path = Path(path)
+    unsupported = _unsupported(path)
+    if unsupported is not None:
+        return unsupported
+    try:
+        content, styles = _read_parts(path)
         findings: List[LayoutFinding] = []
         with pymupdf.open(pdf) as doc:
-            if ext == ".odp":
+            if path.suffix.lower() == ".odp":
                 slides = _slides(content, styles)
                 if len(slides) != doc.page_count:
                     return LayoutReport(
@@ -538,7 +569,9 @@ def check_layout(path: Path, soffice: Optional[Path]) -> LayoutReport:
                         f"投影片數({len(slides)})與轉出的頁數({doc.page_count})對不上,"
                         "無法逐頁比對",
                     )
-                for number, (frames, page) in enumerate(zip(slides, doc, strict=True), start=1):
+                for number, (frames, page) in enumerate(
+                    zip(slides, doc, strict=True), start=1
+                ):
                     findings.extend(
                         _slide_findings(
                             number,
@@ -563,8 +596,6 @@ def check_layout(path: Path, soffice: Optional[Path]) -> LayoutReport:
                     )
     except Exception as exc:
         return LayoutReport("unavailable", f"跑版檢查無法執行:{type(exc).__name__}: {exc}")
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
 
     if not findings:
         return LayoutReport("ok", "沒有文字超出框或頁面")

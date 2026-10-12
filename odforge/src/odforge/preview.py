@@ -32,6 +32,59 @@ class PreviewUnavailable(Exception):
     """Raised when preview rendering cannot proceed (soffice not found)."""
 
 
+def convert_to_pdf(odf_path: Path, outdir: Path) -> Path:
+    """Convert ``odf_path`` to a PDF in ``outdir`` (isolated LibreOffice profile).
+
+    Raises :class:`PreviewUnavailable` when LibreOffice is not found, and a
+    :class:`RuntimeError` when the conversion itself fails.
+    """
+    odf_path = Path(odf_path)
+    soffice = find_soffice()
+    if soffice is None:
+        raise PreviewUnavailable(
+            "LibreOffice (soffice) not found; cannot render a preview. "
+            "Install LibreOffice or check it is on PATH."
+        )
+    try:
+        proc = run_soffice_convert(
+            soffice, odf_path, "pdf", outdir, timeout=_SOFFICE_TIMEOUT
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"soffice timed out after {_SOFFICE_TIMEOUT}s converting "
+            f"{odf_path.name} to pdf"
+        ) from exc
+
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(
+            f"soffice exited {proc.returncode} converting {odf_path.name} "
+            f"to pdf: {detail[:500]}"
+        )
+
+    pdf_path = Path(outdir) / (odf_path.stem + ".pdf")
+    if not pdf_path.exists():
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(
+            f"soffice produced no pdf for {odf_path.name}: {detail[:500]}"
+        )
+    return pdf_path
+
+
+def rasterise_pdf(pdf_path: Path, out_dir: Path, dpi: int = 150) -> list[Path]:
+    """Render each page of ``pdf_path`` to ``out_dir/page-NN.png`` (1-based)."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pngs: list[Path] = []
+    with fitz.open(pdf_path) as doc:
+        for index, page in enumerate(doc, start=1):
+            pix = page.get_pixmap(dpi=dpi)
+            png_path = out_dir / f"page-{index:02d}.png"
+            pix.save(str(png_path))
+            pngs.append(png_path)
+    return pngs
+
+
 def render_pages(odf_path: Path, out_dir: Path, dpi: int = 150) -> list[Path]:
     """Rasterise ``odf_path`` to one PNG per page in ``out_dir``.
 
@@ -43,51 +96,9 @@ def render_pages(odf_path: Path, out_dir: Path, dpi: int = 150) -> list[Path]:
     Raises :class:`PreviewUnavailable` when LibreOffice is not found, and a
     :class:`RuntimeError` when the conversion itself fails.
     """
-    odf_path = Path(odf_path)
-    out_dir = Path(out_dir)
-
-    soffice = find_soffice()
-    if soffice is None:
-        raise PreviewUnavailable(
-            "LibreOffice (soffice) not found; cannot render a preview. "
-            "Install LibreOffice or check it is on PATH."
-        )
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-
     pdf_dir = Path(tempfile.mkdtemp(prefix="odforge-preview-"))
     try:
-        try:
-            proc = run_soffice_convert(
-                soffice, odf_path, "pdf", pdf_dir, timeout=_SOFFICE_TIMEOUT
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(
-                f"soffice timed out after {_SOFFICE_TIMEOUT}s converting "
-                f"{odf_path.name} to pdf"
-            ) from exc
-
-        if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or "").strip()
-            raise RuntimeError(
-                f"soffice exited {proc.returncode} converting {odf_path.name} "
-                f"to pdf: {detail[:500]}"
-            )
-
-        pdf_path = pdf_dir / (odf_path.stem + ".pdf")
-        if not pdf_path.exists():
-            detail = (proc.stderr or proc.stdout or "").strip()
-            raise RuntimeError(
-                f"soffice produced no pdf for {odf_path.name}: {detail[:500]}"
-            )
-
-        pngs: list[Path] = []
-        with fitz.open(pdf_path) as doc:
-            for index, page in enumerate(doc, start=1):
-                pix = page.get_pixmap(dpi=dpi)
-                png_path = out_dir / f"page-{index:02d}.png"
-                pix.save(str(png_path))
-                pngs.append(png_path)
-        return pngs
+        pdf_path = convert_to_pdf(odf_path, pdf_dir)
+        return rasterise_pdf(pdf_path, out_dir, dpi)
     finally:
         shutil.rmtree(pdf_dir, ignore_errors=True)

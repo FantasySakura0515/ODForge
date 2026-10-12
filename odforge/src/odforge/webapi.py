@@ -245,6 +245,12 @@ class Job:
     worker_lock: threading.Lock = field(default_factory=threading.Lock)
 
     events: List[Dict[str, Any]] = field(default_factory=list)
+    # Live-preview jobs (``odforge preview``) re-render whenever their source file
+    # changes. Their event log is replaced wholesale on each reload — bumping
+    # ``event_epoch`` tells every open stream to start over from the new log — and
+    # their stream never ends, because "complete" only means "this version is done".
+    watching: bool = False
+    event_epoch: int = 0
     # Set on approve (interactive gate) and on every emit (wakes SSE subscribers).
     approval: asyncio.Event = field(default_factory=asyncio.Event)
     updated: asyncio.Event = field(default_factory=asyncio.Event)
@@ -1938,14 +1944,15 @@ def _default_sessions_dir() -> Path:
     return Path.home() / ".local" / "share" / "odforge" / "sessions"
 
 
-def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
+def create_app(jobs_dir: Optional[Path] = None, lifespan: Any = None) -> FastAPI:
     """Build the ODForge Web API application.
 
     ``jobs_dir`` overrides where per-job artifacts live. By default sessions are
     stored under the user's local application-data directory; tests point it at
-    a temporary path for isolation.
+    a temporary path for isolation. ``lifespan`` is passed through to FastAPI —
+    ``odforge preview`` uses it to run its file watcher for the server's lifetime.
     """
-    app = FastAPI(title="ODForge Web API", version=__version__)
+    app = FastAPI(title="ODForge Web API", version=__version__, lifespan=lifespan)
     # Explicit origin allowlist, credentials OFF. A local browser can still reach
     # 127.0.0.1, so binding to localhost is NOT a substitute — the origin check
     # is what stops a random visited site from driving this tool.
@@ -2414,6 +2421,7 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
 
         async def event_stream():
             cursor = 0
+            epoch = job.event_epoch
             while True:
                 # Replay/emit everything appended since our cursor. The stream
                 # closes on a terminal event — but only on the *last* one. A
@@ -2422,7 +2430,12 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
                 # stopped at the first terminal event restored the deck as it
                 # looked several versions ago while the download served the
                 # newest. "Terminal" has to mean "nothing came after it".
-                while cursor < len(job.events):
+                while True:
+                    if job.event_epoch != epoch:
+                        # A live-preview reload replaced the log: replay the new one.
+                        epoch, cursor = job.event_epoch, 0
+                    if cursor >= len(job.events):
+                        break
                     ev = job.events[cursor]
                     cursor += 1
                     yield {
@@ -2433,6 +2446,7 @@ def create_app(jobs_dir: Optional[Path] = None) -> FastAPI:
                         ev["event"] in ("complete", "error")
                         and cursor >= len(job.events)
                         and job.status in _TERMINAL_JOB_STATUSES
+                        and not job.watching
                     ):
                         return
                 if await request.is_disconnected():

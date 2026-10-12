@@ -273,4 +273,28 @@ describe("cockpitReducer", () => {
     );
     expect(s.units[0].status).toBe("preview");
   });
+
+  test("即時預覽 reload:整個畫面從頭重建,上一版的閘門與跑版都不留", () => {
+    const before = send(
+      undefined,
+      { type: "outline", data: outline },
+      { type: "gate_result", data: { gate: "zip", status: "pass" } },
+      { type: "layout_report", data: { status: "overflow", message: "發現 1 處跑版", findings: [{ slide_no: 2, issue: "超出" }] } },
+    );
+    const s = cockpitReducer(before, { type: "reload", data: {} });
+    expect(s.units).toEqual([]);
+    expect(s.gates.zip).toBe("pending");
+    expect(s.layout).toBeUndefined();
+  });
+
+  test("layout_report 標出跑版的頁,與視覺品檢分開", () => {
+    const s = send(
+      undefined,
+      { type: "outline", data: outline },
+      { type: "layout_report", data: { status: "overflow", message: "發現 1 處跑版", findings: [{ slide_no: 2, issue: "超出" }] } },
+    );
+    expect(s.layout?.findings).toHaveLength(1);
+    expect(s.units.map((u) => u.overflow)).toEqual([false, true]);
+    expect(s.units.every((u) => u.qa === undefined)).toBe(true);
+  });
 });

@@ -10,13 +10,14 @@ interface Props {
   onClose: () => void;
   onNavigate: (n: number) => void;
   dispatch: (action: CockpitAction) => void;
+  readOnly?: boolean;
 }
 
 function hasRealPreview(unit: Unit | undefined, jobId?: string): boolean {
   return Boolean(unit?.previewUrl && !unit.previewUrl.startsWith("mock:") && jobId);
 }
 
-export function UnitDetail({ units, n, jobId, onClose, onNavigate, dispatch }: Props) {
+export function UnitDetail({ units, n, jobId, onClose, onNavigate, dispatch, readOnly = false }: Props) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const [instruction, setInstruction] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -144,7 +145,7 @@ export function UnitDetail({ units, n, jobId, onClose, onNavigate, dispatch }: P
           <button className="ud-nav next" type="button" aria-label="下一張" disabled={n >= total} onClick={() => go(1)}>›</button>
         </div>
 
-        <form className="ud-regen" onSubmit={onRegen}>
+        {!readOnly && (<form className="ud-regen" onSubmit={onRegen}>
           <input
             type="text"
             className="ud-input"
@@ -155,7 +156,7 @@ export function UnitDetail({ units, n, jobId, onClose, onNavigate, dispatch }: P
             onChange={(e) => setInstruction(e.target.value)}
           />
           <button className="ud-forge" type="submit" disabled={disabled || instruction.trim() === ""}>重生此頁</button>
-        </form>
+        </form>)}
         {error && <p className="ud-error" role="alert">{error}</p>}
       </div>
     </div>,

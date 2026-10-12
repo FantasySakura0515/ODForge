@@ -5,7 +5,7 @@ import { UnitDetail } from "./UnitDetail";
 import { WaitingCard } from "./WaitingCard";
 
 export function PreviewStage({
-  units, docType, jobId, dispatch, submitting, onCancel, selectedN: selectedNProp, onSelect,
+  units, docType, jobId, dispatch, submitting, onCancel, selectedN: selectedNProp, onSelect, readOnly = false,
 }: {
   units: Unit[];
   docType: DocType;
@@ -16,6 +16,8 @@ export function PreviewStage({
   /** 受控選取(由 App 提升,讓 FindingRow 也能開 lightbox);未提供時退回內部 state。 */
   selectedN?: number | null;
   onSelect?: (n: number | null) => void;
+  /** 即時預覽:內容由使用者的 agent 寫,這裡不提供重生。 */
+  readOnly?: boolean;
 }) {
   const [selfN, setSelfN] = useState<number | null>(null);
   const selectedN = selectedNProp !== undefined ? selectedNProp : selfN;
@@ -55,6 +57,7 @@ export function PreviewStage({
               onClose={() => setSelectedN(null)}
               onNavigate={setSelectedN}
               dispatch={dispatch}
+              readOnly={readOnly}
             />
           )}
         </>

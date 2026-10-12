@@ -24,6 +24,17 @@ export function cockpitReducer(state: CockpitState, event: CockpitAction): Cockp
     case "reset":
       // 「再鍛一份」/ 取消:回到空白控制台,但沿用當前 docType。
       return initialState(state.docType);
+    case "reload":
+      // 即時預覽換版:整個畫面從頭重建,上一版的閘門、跑版、錯誤都不能留著。
+      return initialState(state.docType);
+    case "layout_report": {
+      const flagged = new Set(event.data.findings.map((f) => f.slide_no));
+      return {
+        ...state,
+        layout: event.data,
+        units: state.units.map((u) => ({ ...u, overflow: flagged.has(u.n) })),
+      };
+    }
     case "outline": {
       const units: Unit[] = event.data.pages.map((p, i) => ({ n: i + 1, role: p.role, title: p.title, status: "skeleton" as const }));
       return { ...state, phase: "outline", outline: event.data, units };

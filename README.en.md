@@ -36,6 +36,11 @@ instead of being baked into an image.
 - **Overflow check**: lays the file out with LibreOffice and finds text that spills out of its
   frame, past the right margin or off the page — for ODForge's own output and for any
   `.odp` / `.odt` / `.docx` you are handed.
+- **Web editor**: `odforge edit deck.odp` lets you drag, resize and retype directly in the browser,
+  add, remove and reorder slides, with alignment guides and spacing readouts; every step saves
+  back to the `.odp`. No LibreOffice window involved.
+- **Live preview**: your own AI agent (Claude Code, Codex) writes the content; `odforge preview`
+  shows the laid-out result and any overflow in the browser as it changes.
 - **Three ways to use it**: CLI, web console, and an MCP server (lets Claude and other AI
   assistants produce files directly, with no API key).
 
@@ -173,6 +178,46 @@ odforge benchmark "High-school chemistry: acid-base neutralization" --backend co
 Runs the same prompt on several backends, keeps each candidate's outline, IR, output file and
 previews, and writes a structural comparison report.
 
+## Web editor
+
+```bash
+odforge edit deck.odp            # needs the web extra and a built frontend (see the web console section)
+```
+
+Opens any `.odp`, not only ODForge's. Slides are drawn as real page elements, so what you see
+is what you edit:
+
+- Drag to move; edges snap to other objects and the page centre, with distances to the nearest
+  neighbours shown. Hold ⌥ to move freely.
+- Dragging a card carries the text inside it. Eight handles resize; Shift keeps the ratio.
+- Double-click to retype. Enter starts a paragraph, Shift+Enter breaks a line; fonts, sizes and
+  bullets are kept.
+- Arrow keys nudge 0.5 mm (5 mm with Shift); marquee-select; ⌘D duplicates, Delete deletes,
+  ⌘Z / ⇧⌘Z undo and redo.
+- The slide list reorders by drag and duplicates, deletes or adds slides; the toolbar adds text
+  boxes and rectangles.
+
+Every step is written straight back to the file. Anything the editor does not touch (speaker
+notes, pictures, objects it cannot draw) is left exactly as it was.
+
+## Live preview: your agent writes, the browser shows
+
+Hand the content to the AI agent you already use (Claude Code, Codex…). ODForge only lays it
+out and checks it, so no LLM backend needs to be configured.
+
+```bash
+odforge preview deck.json        # needs the web extra and a built frontend (see below)
+```
+
+`deck.json` is a presentation IR. The command opens the browser; every time the agent saves
+the file, the page re-lays it out within seconds, refreshes the thumbnails, marks slides that
+overflow, and writes the `.odp` next to the JSON. Each version also prints a one-line summary
+in the terminal (version, page count, overflow), so an agent running it in the background knows
+what to fix.
+
+[`odforge/skills/odforge-design`](odforge/skills/odforge-design/SKILL.md) describes this workflow;
+give it to your agent.
+
 ## Web console
 
 Build the frontend once before first use (from the `odforge/` directory; `odforge serve` then
@@ -291,6 +336,10 @@ odforge/
 │   ├── check.py         # odforge check
 │   ├── layoutcheck.py   # overflow check
 │   ├── benchmark.py     # odforge benchmark
+│   ├── watch.py         # odforge preview: watch an IR file and update live
+│   ├── scene.py         # read an .odp into what the web editor draws
+│   ├── odpedit.py       # editing operations (move, retype, pages) and undo
+│   ├── editor_api.py    # backend for odforge edit
 │   ├── webapi.py        # web console backend (FastAPI + SSE)
 │   ├── mcp_server.py    # MCP tools
 │   └── cli.py

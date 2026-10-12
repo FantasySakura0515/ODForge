@@ -34,6 +34,8 @@ export interface Unit {
   status: UnitStatus;
   /** 最近一輪 QA 對這一頁的判定;每輪整批重算,不累積。 */
   qa?: UnitQa;
+  /** 即時預覽的跑版檢查在這一頁量到文字超出框或頁面。 */
+  overflow?: boolean;
   regenPrev?: UnitStatus;
 }
 export interface Finding { slide_no: number; issue: string; severity: "error" | "warn"; fix_hint: string; }
@@ -59,7 +61,18 @@ export type SseEvent =
   // 重生換掉了成品,上一輪的品檢是對「另一份檔案」下的判斷。整批作廢比逐頁保留
   // 誠實:findings 的頁碼還在,指的內容已經不在了。
   | { type: "qa_invalidated"; data: { n: number; reason?: string } }
-  | { type: "error"; data: { message: string; stage: string } };
+  | { type: "error"; data: { message: string; stage: string } }
+  // 即時預覽(odforge preview):來源檔改了,後面跟著一整份新版本的事件。
+  | { type: "reload"; data: { source?: string; out?: string | null } }
+  // 即時預覽的跑版檢查結果:LibreOffice 實際排版後,文字超出框或頁面的地方。
+  | { type: "layout_report"; data: LayoutReport };
+
+export interface LayoutFinding { slide_no: number; issue: string; }
+export interface LayoutReport {
+  status: "ok" | "overflow" | "unavailable" | "unsupported";
+  message: string;
+  findings: LayoutFinding[];
+}
 
 // Client-only actions (not sent by the server). Per-slide regeneration uses the
 // synchronous /regenerate endpoint, so its lifecycle is driven locally from the
@@ -85,6 +98,8 @@ export interface CockpitState {
   /** 因版面限制未能保留的內容,逐頁逐條。 */
   dropped: DroppedContent[];
   downloadUrl?: string;
+  /** 即時預覽的跑版檢查;一般生成流程沒有這一項。 */
+  layout?: LayoutReport;
   error?: { message: string; stage: string };
   regenTick: number;
 }

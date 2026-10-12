@@ -28,6 +28,9 @@ XML 由渲染引擎寫，寫完再過驗證閘。模型從頭到尾不碰檔案�
 - **四道品質閘**：zip 結構、XML、LibreOffice 實際轉檔、視覺模型逐頁審稿並自動修補。
 - **跑版檢查**：用 LibreOffice 實際排版，找出超出框、超出右邊界或超出頁面的文字；
   自己產的檔和別人給的 `.odp`／`.odt`／`.docx` 都能查。
+- **網頁編輯器**：`odforge edit deck.odp` 在瀏覽器裡直接拖動、縮放、改字、增刪和排序頁面，
+  有對齊參考線和間距標示，每一步自動存回 `.odp`；不用打開 LibreOffice。
+- **即時預覽**：讓你自己的 AI agent（Claude Code、Codex）寫內容，`odforge preview` 在瀏覽器即時顯示排版結果和跑版位置。
 - **三種用法**：CLI、Web 控制台、MCP server（讓 Claude 等 AI 助理直接產檔，不需 API 金鑰）。
 
 ## 安裝
@@ -159,6 +162,38 @@ odforge benchmark "高中化學：酸鹼中和" --backend codex --backend ollama
 
 同一題交給多個後端，保留每個候選的大綱、IR、成品和預覽圖，並輸出結構品質比較報告。
 
+## 網頁編輯器
+
+```bash
+odforge edit deck.odp            # 需要 web extra，並先建置前端（見 Web 控制台一節）
+```
+
+任何 `.odp` 都能開，不限 ODForge 產的。投影片直接畫成網頁元素，所見即所得：
+
+- 拖曳移動，靠近其他物件或頁面中線時吸附，並顯示和左右上下鄰居的距離；按住 ⌥ 暫時不吸附。
+- 拖卡片時，卡片裡的文字跟著走；拉八個把手縮放，Shift 等比例。
+- 雙擊改字，Enter 換段、Shift+Enter 段內換行，原本的字型、字級、清單符號都保留。
+- 方向鍵微調 0.5 mm，加 Shift 5 mm；框選多個物件；⌘D 複製、Delete 刪除、⌘Z / ⇧⌘Z 復原重做。
+- 左側頁面列可拖曳排序、複製、刪除、新增頁；工具列可新增文字框和方塊。
+
+每一步都直接存回檔案，用不到的部分（備忘稿、圖片、編輯器畫不出來的物件）原封不動。
+
+## 即時預覽：讓你的 agent 寫，瀏覽器看
+
+內容交給你已經在用的 AI agent（Claude Code、Codex 等），ODForge 只負責排版和檢查，
+不需要另外設定任何 LLM 後端。
+
+```bash
+odforge preview deck.json        # 需要 web extra，並先建置前端（見下節）
+```
+
+`deck.json` 是一份簡報 IR。指令會開好瀏覽器；之後 agent 每次改這個檔存檔，預覽頁
+幾秒內就重新排版、更新縮圖，標出跑版的頁面，並把 `.odp` 寫在 JSON 旁邊。終端機每
+一版也會印一行摘要（第幾版、幾頁、哪裡跑版），在背景執行的 agent 讀它就知道要改哪裡。
+
+[`odforge/skills/odforge-design`](odforge/skills/odforge-design/SKILL.md) 裡寫好了這套流程，
+把它交給 agent 即可。
+
 ## Web 控制台
 
 第一次使用前先建置前端（在 `odforge/` 目錄下；之後 `odforge serve` 會一併提供頁面）：
@@ -266,6 +301,10 @@ odforge/
 │   ├── check.py         # odforge check
 │   ├── layoutcheck.py   # 跑版檢查
 │   ├── benchmark.py     # odforge benchmark
+│   ├── watch.py         # odforge preview：監看 IR 檔並即時更新
+│   ├── scene.py         # 把 .odp 讀成網頁編輯器畫得出來的資料
+│   ├── odpedit.py       # 編輯操作（移動、改字、頁面）與復原
+│   ├── editor_api.py    # odforge edit 的後端
 │   ├── webapi.py        # Web 控制台後端（FastAPI + SSE）
 │   ├── mcp_server.py    # MCP 工具
 │   └── cli.py

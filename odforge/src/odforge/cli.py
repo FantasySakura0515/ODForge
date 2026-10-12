@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import time
 from enum import Enum
 from pathlib import Path
 from typing import List, Mapping, Optional
@@ -715,6 +716,139 @@ def _is_loopback_host(host: str) -> bool:
         return ipaddress.ip_address(candidate).is_loopback
     except ValueError:
         return False
+
+
+def _free_port(host: str, preferred: int) -> int:
+    """``preferred`` when it is free, otherwise any free port the OS hands out."""
+    import socket
+
+    for candidate in (preferred, 0):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind((host, candidate))
+            except OSError:
+                continue
+            return sock.getsockname()[1]
+    raise typer.BadParameter("找不到可用的連接埠", param_hint="--port")
+
+
+@app.command()
+def edit(
+    file: Path = typer.Argument(..., help="要編輯的簡報(.odp)。"),
+    host: str = typer.Option("127.0.0.1", "--host", help="綁定位址(只接受本機)。"),
+    port: int = typer.Option(8790, "--port", help="連接埠;被佔用時自動換一個。"),
+    open_browser: bool = typer.Option(
+        True, "--open/--no-open", help="啟動後用預設瀏覽器打開編輯器。"
+    ),
+) -> None:
+    """在瀏覽器裡編輯一份 .odp:拖動、改字、新增與排序頁面,每一步自動存檔。"""
+    if not _is_loopback_host(host):
+        raise typer.BadParameter("編輯器只能綁定本機位址", param_hint="--host")
+    if file.suffix.lower() != ".odp" or not file.is_file():
+        _err.print(f"[red]FAIL[/red] 找不到簡報檔 {escape(str(file))}(需要 .odp)")
+        raise typer.Exit(code=1)
+    try:
+        import uvicorn
+
+        from odforge.editor_api import create_editor_app
+        from odforge.odpedit import EditError
+        from odforge.webapi import frontend_dist
+    except ImportError as exc:
+        _err.print(
+            "[red]FAIL[/red] 缺少 web 相依,請先安裝:"
+            "[cyan]pip install \"odforge[web]\"[/cyan]"
+            f"({_concise(exc)})"
+        )
+        raise typer.Exit(code=1) from None
+    if frontend_dist() is None:
+        _err.print(
+            "[red]FAIL[/red] 找不到建置好的前端。請在 odforge/ 下執行 "
+            "[cyan]npm --prefix web ci && npm --prefix web run build[/cyan]。"
+        )
+        raise typer.Exit(code=1)
+    try:
+        app_ = create_editor_app(file)
+    except (EditError, OSError, ValueError) as exc:
+        _err.print(f"[red]FAIL[/red] 無法開啟:{escape(_concise(exc))}")
+        raise typer.Exit(code=1) from None
+
+    bound = _free_port(host, port)
+    url = f"http://{host}:{bound}/editor.html"
+    _out.print(f"[green]ODForge 編輯器[/green] {escape(url)}")
+    _out.print(f"[dim]編輯 {escape(str(file.resolve()))};每一步自動存檔。Ctrl+C 結束。[/dim]")
+    if open_browser:
+        import threading
+        import webbrowser
+
+        threading.Timer(1.0, webbrowser.open, args=(url,)).start()
+    uvicorn.run(app_, host=host, port=bound, log_level="warning")
+
+
+@app.command()
+def preview(
+    file: Path = typer.Argument(..., help="要預覽的簡報 Document IR(JSON 檔)。"),
+    out: Optional[Path] = typer.Option(
+        None,
+        "-o",
+        "--out",
+        help="每次重新排版後把 .odp 寫到這裡;預設與 JSON 同名同目錄。",
+    ),
+    host: str = typer.Option("127.0.0.1", "--host", help="綁定位址(只接受本機)。"),
+    port: int = typer.Option(8765, "--port", help="連接埠;被佔用時自動換一個。"),
+    open_browser: bool = typer.Option(
+        True, "--open/--no-open", help="啟動後用預設瀏覽器打開預覽頁。"
+    ),
+) -> None:
+    """即時預覽一份簡報 IR:檔案一改就重新排版,網頁自動更新並顯示跑版。
+
+    給 agent 用的工作方式:agent 編輯 JSON,這裡負責排版、驗證、轉成 .odp,
+    使用者在瀏覽器看結果。需安裝 web 相依並先建置前端。
+    """
+    if not _is_loopback_host(host):
+        raise typer.BadParameter("預覽只能綁定本機位址", param_hint="--host")
+    try:
+        import uvicorn
+
+        from odforge.watch import create_preview_app
+        from odforge.webapi import frontend_dist
+    except ImportError as exc:
+        _err.print(
+            "[red]FAIL[/red] 缺少 web 相依,請先安裝:"
+            "[cyan]pip install \"odforge[web]\"[/cyan]"
+            f"({_concise(exc)})"
+        )
+        raise typer.Exit(code=1) from None
+    if frontend_dist() is None:
+        _err.print(
+            "[red]FAIL[/red] 找不到建置好的前端。請在 odforge/ 下執行 "
+            "[cyan]npm --prefix web ci && npm --prefix web run build[/cyan]。"
+        )
+        raise typer.Exit(code=1)
+    if not file.is_file():
+        _err.print(f"[red]FAIL[/red] 找不到 {escape(str(file))}")
+        raise typer.Exit(code=1)
+
+    target = out if out is not None else file.with_suffix(".odp")
+    def announce(text: str) -> None:
+        stamp = time.strftime("%H:%M:%S")
+        # Plain print, flushed: an agent running this in the background reads
+        # the output file to learn what changed, and Rich markup would be noise.
+        print(f"[{stamp}] {text}", flush=True)
+
+    app_, job = create_preview_app(file, target, announce=announce)
+    bound = _free_port(host, port)
+    url = f"http://{host}:{bound}/?job={job.id}&watch=1"
+    _out.print(f"[green]ODForge 預覽[/green] {escape(url)}")
+    _out.print(
+        f"[dim]監看 {escape(str(file.resolve()))};成品寫到 "
+        f"{escape(str(target.resolve()))}。Ctrl+C 結束。[/dim]"
+    )
+    if open_browser:
+        import threading
+        import webbrowser
+
+        threading.Timer(1.0, webbrowser.open, args=(url,)).start()
+    uvicorn.run(app_, host=host, port=bound, log_level="warning")
 
 
 @app.command()
