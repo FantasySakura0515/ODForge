@@ -772,7 +772,10 @@ def edit(
         _err.print(f"[red]FAIL[/red] 無法開啟:{escape(_concise(exc))}")
         raise typer.Exit(code=1) from None
 
+    from odforge.localguard import add_local_guard, local_hosts
+
     bound = _free_port(host, port)
+    add_local_guard(app_, local_hosts(bound))
     url = f"http://{host}:{bound}/editor.html"
     _out.print(f"[green]ODForge 編輯器[/green] {escape(url)}")
     _out.print(f"[dim]編輯 {escape(str(file.resolve()))};每一步自動存檔。Ctrl+C 結束。[/dim]")
@@ -836,7 +839,10 @@ def preview(
         print(f"[{stamp}] {text}", flush=True)
 
     app_, job = create_preview_app(file, target, announce=announce)
+    from odforge.localguard import add_local_guard, local_hosts
+
     bound = _free_port(host, port)
+    add_local_guard(app_, local_hosts(bound))
     url = f"http://{host}:{bound}/?job={job.id}&watch=1"
     _out.print(f"[green]ODForge 預覽[/green] {escape(url)}")
     _out.print(
