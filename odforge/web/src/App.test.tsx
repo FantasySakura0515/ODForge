@@ -82,7 +82,13 @@ async function submitThroughDiscovery(prompt: string) {
     target: { value: prompt },
   });
   fireEvent.click(screen.getByRole("button", { name: "繼續" }));
-  fireEvent.click(await screen.findByRole("button", { name: "生成大綱" }));
+  // The button mounts disabled: DiscoveryPanel fills the brief in an effect after
+  // the first commit. A slow runner can find it inside that gap, and a click on a
+  // disabled button is silently dropped — the test then times out waiting for an
+  // EventSource that was never asked for (the node 20 lane's intermittent red).
+  const generate = await screen.findByRole("button", { name: "生成大綱" });
+  await waitFor(() => expect(generate).toBeEnabled());
+  fireEvent.click(generate);
 }
 
 test("首頁顯示新增入口與過去 session", async () => {
