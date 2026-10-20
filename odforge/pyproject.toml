@@ -1,9 +1,20 @@
 [project]
 name = "odforge"
-version = "0.2.0"
+# Single source: src/odforge/__init__.py (it had drifted to 0.1.0 while this said 0.2.0).
+dynamic = ["version"]
 description = "Forge natural language into native ODF documents (.odt/.odp/.ods)"
+readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
+authors = [{ name = "FantasySakura0515" }]
+keywords = ["odf", "odp", "presentation", "slides", "libreoffice", "mcp", "claude", "agent"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Office/Business :: Office Suites",
+  "Natural Language :: Chinese (Traditional)",
+]
 dependencies = [
   "odfdo>=3.22", "pydantic>=2.7", "typer>=0.12", "rich>=13",
   "openai>=1.40", "mcp>=1.2", "lxml>=6.1,<7", "json-repair>=0.30",
@@ -33,6 +44,10 @@ cjk = ["jieba>=0.42", "zhconv>=1.4"]
 # Web API (Task 18.1). Imported only by webapi.py / the `serve` command, never at
 # package import — the core suite runs without these installed.
 web = ["fastapi>=0.110", "uvicorn>=0.29", "sse-starlette>=2.0", "python-dotenv>=1.0"]
+[project.urls]
+Homepage = "https://github.com/FantasySakura0515/ODForge"
+Source = "https://github.com/FantasySakura0515/ODForge"
+Issues = "https://github.com/FantasySakura0515/ODForge/issues"
 [project.scripts]
 odforge = "odforge.cli:app"
 # The MCP server as a runnable command, so an MCP host can be pointed at
@@ -49,6 +64,12 @@ artifacts = ["src/odforge/webui/**"]
 # The web cockpit is built from source (npm ci + npm run build against the
 # committed lockfile) and staged into the package as odforge/webui. See
 # hatch_build.py — a wheel that would ship without it fails the build instead.
+[tool.hatch.version]
+path = "src/odforge/__init__.py"
+# The agent skill lives at the repo's skills/ because that is also the Claude Code
+# plugin's root; a wheel install needs its own copy for `odforge setup` / `init`.
+[tool.hatch.build.targets.wheel.force-include]
+"skills/odforge-design" = "odforge/skills/odforge-design"
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "hatch_build.py"
 [tool.hatch.build.targets.sdist]
@@ -56,9 +77,11 @@ path = "hatch_build.py"
 # cannot rebuild the cockpit.
 include = [
   "src/odforge",
+  "skills",
   "tests",
   "web/src",
   "web/index.html",
+  "web/editor.html",
   "web/package.json",
   "web/package-lock.json",
   "web/tsconfig.json",

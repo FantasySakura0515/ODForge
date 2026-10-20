@@ -1,0 +1,18 @@
+{
+  "name": "odforge",
+  "owner": {
+    "name": "FantasySakura0515"
+  },
+  "metadata": {
+    "description": "ODForge：讓 AI 助理直接產出原生 ODF 簡報（.odp），並在網頁編輯器裡跟你來回修改。"
+  },
+  "plugins": [
+    {
+      "name": "odforge",
+      "source": "./odforge",
+      "description": "做簡報、文件、試算表（.odp/.odt/.ods）：odforge-design skill + odforge MCP 工具 + 網頁編輯器回饋迴圈。",
+      "category": "productivity",
+      "keywords": ["odf", "odp", "presentation", "slides"]
+    }
+  ]
+}

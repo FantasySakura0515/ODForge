@@ -35,8 +35,29 @@ XML 由渲染引擎寫，寫完再過驗證閘。模型從頭到尾不碰檔案�
 
 ## 安裝
 
-需要 Python 3.11 以上。建議裝 [LibreOffice](https://www.libreoffice.org/)：第三道閘、
-預覽圖和視覺審稿都靠它，沒裝時其餘功能照常運作。
+建議裝 [LibreOffice](https://www.libreoffice.org/)：第三道閘、預覽圖和視覺審稿都靠它，
+沒裝時其餘功能照常運作。下面三種方式擇一。
+
+**Claude Code plugin**（只用 Claude Code 的話最省事）：先裝 [uv](https://docs.astral.sh/uv/)，
+再在 Claude Code 裡輸入：
+
+```text
+/plugin marketplace add FantasySakura0515/ODForge
+/plugin install odforge@odforge
+```
+
+skill 和 MCP 工具會一起裝好，開新對話說「做一份…簡報」就能用。第一次呼叫工具時 uv 會下載
+相依套件，要等一下。
+
+**命令列**（Codex、Cursor 等其他 agent，或想直接用 `odforge` 指令）：
+
+```bash
+uv tool install "odforge[web,cjk]"   # 或 pipx install "odforge[web,cjk]"
+odforge setup                        # 接上這台電腦的 Claude Code 與 Codex
+odforge init 我的簡報                 # 或只設定某個資料夾（見下方「接上 AI 助理」）
+```
+
+**從原始碼**（開發用，需要 Python 3.11 以上）：
 
 ```bash
 git clone https://github.com/FantasySakura0515/ODForge.git
@@ -231,6 +252,16 @@ odforge setup          # 註冊到 Claude Code 與 Codex；odforge setup --remov
 會把 MCP server 註冊到 Claude Code 和 Codex（使用者層級，每個專案都看得到），把
 `odforge-design` skill 連到兩者的 skill 資料夾，並在找不到 `odforge` 指令時於
 `~/.local/bin` 建立連結。
+
+只想讓某個資料夾裡的助理會用（或要把設定跟著專案一起交給別人），改用：
+
+```bash
+odforge init 我的簡報
+```
+
+它在資料夾裡放 `AGENTS.md`、`CLAUDE.md`、`odforge-design` skill 和 `.mcp.json`。
+這些都是 agent 開工時本來就會讀的檔案，所以不用叫它去讀 README。已經有 `AGENTS.md`
+的話只會附加一段，不會動原本的內容。
 
 之後開新的對話，說明需求、說要 `.odp`，流程是：
 

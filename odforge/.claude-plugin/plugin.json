@@ -1,0 +1,18 @@
+{
+  "name": "odforge",
+  "version": "0.3.0",
+  "description": "做簡報、文件、試算表（.odp/.odt/.ods）：odforge-design skill + odforge MCP 工具 + 網頁編輯器回饋迴圈。",
+  "author": {
+    "name": "FantasySakura0515"
+  },
+  "homepage": "https://github.com/FantasySakura0515/ODForge",
+  "repository": "https://github.com/FantasySakura0515/ODForge",
+  "license": "MIT",
+  "keywords": ["odf", "odp", "presentation", "slides"],
+  "mcpServers": {
+    "odforge": {
+      "command": "uvx",
+      "args": ["--from", "odforge[web,cjk]", "odforge-mcp"]
+    }
+  }
+}

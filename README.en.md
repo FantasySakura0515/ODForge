@@ -46,8 +46,29 @@ instead of being baked into an image.
 
 ## Installation
 
-Python 3.11+ is required. [LibreOffice](https://www.libreoffice.org/) is recommended: the third
-gate, previews and the vision review all depend on it. Everything else works without it.
+[LibreOffice](https://www.libreoffice.org/) is recommended: the third gate, previews and the
+vision review all depend on it. Everything else works without it. Pick one of the three below.
+
+**Claude Code plugin** (simplest if Claude Code is all you use): install
+[uv](https://docs.astral.sh/uv/), then in Claude Code type:
+
+```text
+/plugin marketplace add FantasySakura0515/ODForge
+/plugin install odforge@odforge
+```
+
+This installs the skill and the MCP tools together. Start a new conversation and ask for a deck.
+The first tool call waits while uv downloads the dependencies.
+
+**Command line** (Codex, Cursor and other agents, or to use the `odforge` command yourself):
+
+```bash
+uv tool install "odforge[web,cjk]"   # or: pipx install "odforge[web,cjk]"
+odforge setup                        # hook into Claude Code and Codex on this machine
+odforge init my-deck                 # or set up just one folder (see "Connecting AI assistants")
+```
+
+**From source** (for development; Python 3.11+):
 
 ```bash
 git clone https://github.com/FantasySakura0515/ODForge.git
@@ -261,6 +282,16 @@ odforge setup          # registers with Claude Code and Codex; odforge setup --r
 Registers the MCP server with Claude Code and Codex (user scope, so every project sees it), links
 the `odforge-design` skill into both agents' skill folders, and links `odforge` into `~/.local/bin`
 when no shell can find it.
+
+To set up just one folder instead (or to hand the setup to others along with the project), use:
+
+```bash
+odforge init my-deck
+```
+
+It writes `AGENTS.md`, `CLAUDE.md`, the `odforge-design` skill and `.mcp.json` into the folder.
+Agents read these files on their own when they start, so nobody has to point them at the README.
+An existing `AGENTS.md` gets a section appended; its own content is left alone.
 
 Then, in a new conversation, describe the deck you want and ask for an `.odp`:
 

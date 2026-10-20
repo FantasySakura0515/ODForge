@@ -753,6 +753,24 @@ def setup(
 
 
 @app.command()
+def init(
+    directory: Path = typer.Argument(Path("."), help="要放簡報的資料夾(預設是目前資料夾)。"),
+) -> None:
+    """讓這個資料夾裡的 AI 助理自己就會用 ODForge:放 AGENTS.md、skill 與 .mcp.json。"""
+    from odforge.setup_agents import init_project
+
+    steps = init_project(directory)
+    for step in steps:
+        mark = "[green]OK[/green]" if step.ok else "[yellow]略過[/yellow]"
+        _out.print(f"{mark} {escape(step.label)}:{escape(step.detail)}")
+    if any(s.ok for s in steps):
+        _out.print(
+            f"[dim]在 {escape(str(directory))} 開 Claude Code / Codex,"
+            "直接說「做一份…簡報」就好。[/dim]"
+        )
+
+
+@app.command()
 def edit(
     file: Path = typer.Argument(..., help="要編輯的簡報(.odp)。"),
     host: str = typer.Option("127.0.0.1", "--host", help="綁定位址(只接受本機)。"),

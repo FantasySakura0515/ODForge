@@ -159,8 +159,11 @@ jobs:
         # this job exists to catch.
         run: rm -rf odforge/web/dist odforge/src/odforge/webui
       - run: python -m pip install build
-      - name: Build the wheel (the hook runs npm ci + npm run build)
-        run: python -m build --wheel --outdir dist
+      # sdist first, then the wheel built FROM it — the path `pip install` takes
+      # from source. A file missing from the sdist list (web/editor.html once was)
+      # fails here instead of on a user's machine.
+      - name: Build sdist + wheel (the hook runs npm ci + npm run build)
+        run: python -m build --outdir dist
         working-directory: odforge
       - name: The wheel must actually contain the cockpit
         run: |
@@ -172,6 +175,10 @@ jobs:
           print(f"{wheel}: {len(assets)} web assets")
           if not any(n == "odforge/webui/index.html" for n in assets):
               sys.exit("FAIL: wheel has no web cockpit — refusing to publish it")
+          # `odforge setup` / `odforge init` hand this to agents; without it a
+          # PyPI install connects the tools but teaches nothing.
+          if "odforge/skills/odforge-design/SKILL.md" not in names:
+              sys.exit("FAIL: wheel has no odforge-design skill")
           PY
       - name: Clean-install the wheel into a fresh venv and serve it
         run: |
@@ -183,7 +190,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: wheel
-          path: odforge/dist/*.whl
+          path: |
+            odforge/dist/*.whl
+            odforge/dist/*.tar.gz
           if-no-files-found: error
 
   integration:
@@ -267,3 +276,26 @@ jobs:
         with:
           files: dist/*.whl
           fail_on_unmatched_files: true
+
+  pypi:
+    name: publish to PyPI (tag)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release]
+    runs-on: ubuntu-latest
+    # Trusted publishing: PyPI trusts this workflow + environment, so no token
+    # exists anywhere to leak. The publisher is registered on pypi.org once.
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match the package version
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' odforge/src/odforge/__init__.py)
+          test "v$version" = "${GITHUB_REF_NAME}" || {
+            echo "FAIL: tag ${GITHUB_REF_NAME} but __version__ is $version"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

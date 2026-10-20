@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from pydantic import ValidationError
 
@@ -27,7 +29,8 @@ _GOOD_FONTS = {"display": "Noto Serif TC", "body": "Noto Sans TC"}
 
 
 def test_import():
-    assert odforge.__version__ == "0.1.0"
+    # The value itself is pinned against the plugin manifest in test_setup_agents.
+    assert re.fullmatch(r"\d+\.\d+\.\d+", odforge.__version__)
 
 
 def test_image_layout_requires_safe_image_spec():

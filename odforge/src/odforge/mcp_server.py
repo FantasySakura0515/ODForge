@@ -54,12 +54,26 @@ from odforge.textutil import concise
 from odforge.themes import resolve_design, resolve_style
 from odforge.validate import find_soffice, validate_odf
 
+# Sent to the client on connect, so every MCP host shows it to its model — the
+# one piece of guidance that reaches an agent which never opens the README or
+# the skill. Kept short: the skill is where the depth lives.
+INSTRUCTIONS = """\
+ODForge 把 Document IR(JSON)渲染成原生 ODF 簡報/文件/試算表(.odp/.odt/.ods)。
+
+- 做簡報前先讀 odforge-design skill(有訪談、大綱、版型欄位與主題規格);沒有載入 skill 時,
+  至少照工具說明的欄位寫 IR,產出後一定用 inspect_odf 檢查跑版。
+- 使用者在旁邊時:forge_presentation 成功後網頁編輯器會自動打開;接著反覆呼叫 wait_for_feedback,
+  照留言用 edit_odp 修改,回 done 才結束。看/改既有 .odp 先 open_editor,再 outline_odp 看元素代號。
+- 每個工具只回字串:開頭是 ok: 才算成功,error: 要修好再重來。
+- 不要叫使用者打開 LibreOffice;它只在背景當渲染器。
+"""
+
 # One object either way: ``.tool()`` and ``.run()`` are identical across both
 # majors, so the shim above is the whole migration. Without it, `pip install
 # odforge` on a machine that resolves mcp 2.x installed an MCP server that
 # crashed on the first line of `odforge-mcp` — and the failure was invisible here
 # because this repo's venv happened to be pinned at 1.28 from an earlier install.
-mcp = _Server("odforge")
+mcp = _Server("odforge", instructions=INSTRUCTIONS)
 
 
 def _budget_warnings(ir: object) -> list[str]:

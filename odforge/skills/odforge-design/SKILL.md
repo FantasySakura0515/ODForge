@@ -35,7 +35,8 @@ ODForge 是一台**確定性渲染引擎**——你（agent）自己當內容作
 
 想從零反覆調整整份結構、頁數變動很大時，可以改寫一份 Presentation IR（`deck.json`），在背景執行
 `odforge preview deck.json > /tmp/odforge-preview.log 2>&1 &`（也會自動開瀏覽器），之後每次存檔網頁就重新排版，
-log 會印出每一版的跑版摘要。注意：這條路每次都從 JSON 重產 `.odp`，使用者在編輯器裡的手動修改
+log 會印出每一版的跑版摘要。（shell 找不到 `odforge` 時——例如只裝了 Claude Code plugin——把指令換成
+`uvx --from "odforge[web,cjk]" odforge preview ...`。）注意：這條路每次都從 JSON 重產 `.odp`，使用者在編輯器裡的手動修改
 會被蓋掉；結構定案後改用上面的流程。
 
 沒有人在看（批次產檔、使用者只要檔案）時，直接用下面的 MCP 工具即可。
