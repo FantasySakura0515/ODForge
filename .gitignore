@@ -1,41 +1,21 @@
+# Python
 __pycache__/
 *.pyc
 .venv/
 venv/
 env/
-node_modules/
+*.egg-info/
 dist/
 build/
-*.egg-info/
-.DS_Store
 
-# Secrets — NEVER commit (repo is public). API keys live here for local dev.
+# Node
+node_modules/
+
+# OS and editors
+.DS_Store
+.~lock.*#
+
+# Secrets: API keys for local development live here.
 .env
 .env.*
 !.env.example
-
-.superpowers/
-報名文件/
-佐證資料/
-odforge/.venv/
-odforge/**/__pycache__/
-odforge/*.egg-info/
-上傳區/
-.~lock.*#
-
-# Agent/tooling scratch (binary decks, preview PNGs, skill scratch files)
-.jez/
-.impeccable.md
-
-# Agent scratch that keeps reappearing at the repo root as untracked noise —
-# ignored by name so `git status` stays a signal about the project.
-odforge/preview-*.png
-.claude/worktrees/
-
-# Internal notes, plans, audits and dev-only tooling: kept on this machine, not
-# published. (The repo is public; security audit reports especially stay local.)
-/todo.md
-/docs/
-/.claude/
-odforge/demo/*
-!odforge/demo/tree.png
