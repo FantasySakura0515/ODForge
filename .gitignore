@@ -31,3 +31,11 @@ odforge/*.egg-info/
 # ignored by name so `git status` stays a signal about the project.
 odforge/preview-*.png
 .claude/worktrees/
+
+# Internal notes, plans, audits and dev-only tooling: kept on this machine, not
+# published. (The repo is public; security audit reports especially stay local.)
+/todo.md
+/docs/
+/.claude/
+odforge/demo/*
+!odforge/demo/tree.png
