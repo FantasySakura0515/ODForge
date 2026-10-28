@@ -1653,8 +1653,16 @@ _COVER_META_W = 8.2
 def _cover_meta(slide: Slide, branding: Branding | None) -> list[str]:
     """What the cover's info card lists: the title slide's own bullets
     (單位、講者、日期、期間). The app-owned byline stays verbatim on its own
-    line — it is the user's words, not material to re-layout."""
-    return [_line_text(b) for b in slide.bullets if _line_text(b).strip()][:5]
+    line — it is the user's words, not material to re-layout. A nested item
+    is a label with its value, so it reads as one ``標題：內容`` row."""
+    rows = []
+    for item in _coerce_bullet_items(slide.bullets):
+        if isinstance(item, tuple):
+            text, children = item
+            item = f"{text}：{'、'.join(children)}"
+        if item.strip():
+            rows.append(item)
+    return rows[:5]
 
 
 def _cover_meta_xml(

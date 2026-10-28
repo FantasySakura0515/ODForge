@@ -2431,6 +2431,32 @@ def test_byline_is_drawn_on_the_cover_verbatim():
         assert not [x for x in page.findall(".//text:p", NS) if x.text and "王小明" in x.text]
 
 
+@pytest.mark.parametrize("style", ["passport", "classic", "keynote"])
+def test_a_cover_with_nested_bullets_lists_them_as_label_and_value(style):
+    # Agents give the cover's facts as nested bullets too; this used to crash
+    # the whole deck with "'BulletItem' object has no attribute 'strip'".
+    deck = Presentation(
+        title="封面資訊",
+        style=style,
+        slides=[
+            {
+                "layout": "title",
+                "title": "臺灣入侵植物離線辨識",
+                "bullets": [
+                    {"text": "研究範圍", "children": ["40 種入侵植物"]},
+                    {"text": "執行期程"},
+                    "申請經費 73,000 元",
+                ],
+            },
+            {"layout": "title-content", "title": "內容頁", "bullets": ["一點"]},
+        ],
+    )
+    page = _content_root(deck, THEMES["academic"]).findall(".//draw:page", NS)[0]
+    drawn = "".join(page.itertext())
+    for row in ("研究範圍：40 種入侵植物", "執行期程", "申請經費 73,000 元"):
+        assert row in drawn
+
+
 def test_no_branding_renders_exactly_as_before():
     plain = _branded_deck()
     plain = Presentation(title=plain.title, slides=plain.slides)
