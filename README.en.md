@@ -6,7 +6,7 @@ English | [繁體中文](README.md)
 
 ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![pypi](https://img.shields.io/pypi/v/odforge)
 
-![A slide made with ODForge](odforge/demo/tree.png)
+![Slides made with ODForge](odforge/demo/deck.png)
 
 Ask Claude Code, Codex or a similar assistant for "a lecture deck on trees and binary trees", and it
 uses ODForge to produce a native `.odp`: every word is an editable text box, not a screenshot. When
@@ -58,6 +58,8 @@ Then:
 Comments are stored inside the `.odp`, so they travel with the file.
 
 ## Web editor
+
+![The web editor: pin comments on objects, then hand them to the AI](odforge/demo/editor.png)
 
 Opens any `.odp`, not just ones ODForge made:
 

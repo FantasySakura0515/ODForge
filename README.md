@@ -6,7 +6,7 @@
 
 ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![pypi](https://img.shields.io/pypi/v/odforge)
 
-![ODForge 做出來的簡報](odforge/demo/tree.png)
+![ODForge 做出來的簡報](odforge/demo/deck.png)
 
 你跟 Claude Code、Codex 這類 AI 助理說「幫我做一份資料結構第三章的教學簡報」，它用 ODForge
 產出原生的 `.odp`：每個字都是可以改的文字框，不是一張截圖。做完後瀏覽器會自動打開編輯器，
@@ -55,6 +55,8 @@ odforge setup             # 接上這台電腦的 Claude Code 與 Codex
 留言存在 `.odp` 檔案裡，傳給別人也還在。
 
 ## 網頁編輯器
+
+![網頁編輯器：留言點在物件上，按「交給 AI 修改」](odforge/demo/editor.png)
 
 任何 `.odp` 都能開，不限 ODForge 做的。自己開的話：
 
