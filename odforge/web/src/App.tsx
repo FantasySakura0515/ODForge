@@ -385,7 +385,16 @@ export default function App() {
       <header className="sitebar">
         <div className="sitebar-inner">
           <button type="button" className="brand" aria-label="回到首頁" onClick={goHome}>
-            <span className="brand-seal" aria-hidden="true">文</span>
+            <svg className="brand-seal" viewBox="0 0 100 100" aria-hidden="true">
+              <rect width="100" height="100" rx="22" fill="#1d4384" />
+              <g transform="translate(9 7) scale(.82)">
+                <path d="M4 60H90V67Q90 71 86 71H70L64 79H74V92H26V79H36L30 71H20Q8 71 4 60Z" fill="#9fc0f5" />
+                <path d="M30 8H58L72 22V58H30Z" fill="#fff" stroke="#13294f" strokeWidth="6" strokeLinejoin="round" />
+                <path d="M58 8V22H72" fill="none" stroke="#13294f" strokeWidth="6" strokeLinejoin="round" />
+                <path d="M39 32H63M39 41H63M39 49H53" stroke="#13294f" strokeWidth="5" strokeLinecap="round" />
+                <path d="M77 17L86 9M80 27L92 25M71 10L73 3" stroke="#e0457b" strokeWidth="6" strokeLinecap="round" />
+              </g>
+            </svg>
             <span className="brand-copy">
               <span className="mark">文鍛</span>
               <span className="en">ODForge</span>

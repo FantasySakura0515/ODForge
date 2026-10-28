@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="odforge/brand/logo-dark.svg">
+  <img src="odforge/brand/logo.svg" alt="ODForge" width="96">
+</picture>
+
 # ODForge
 
 Have your AI assistant make an editable slide deck, then fix it up together in the browser.

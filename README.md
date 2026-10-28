@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="odforge/brand/logo-dark.svg">
+  <img src="odforge/brand/logo.svg" alt="ODForge" width="96">
+</picture>
+
 # ODForge（文鍛）
 
 讓 AI 助理做出能直接編輯的簡報，然後在瀏覽器裡跟它一起改。
