@@ -441,8 +441,10 @@ def edit_odp(path: str, ops: list) -> str:
     file by hand (``odforge edit``): it changes only what you name, so their edits
     survive. If the user has the editor open, they see your change within a second.
 
-    ``ops`` is a list applied atomically (all or nothing); ids come from
-    ``outline_odp`` and refer to positions *before* this batch:
+    ``ops`` is a list applied atomically (all or nothing); element ids come from
+    ``outline_odp`` and refer to elements *before* this batch, whatever earlier ops
+    in it delete or add. Ids of elements created in the batch are returned after it
+    — style new elements in a second call:
 
     * ``{"op": "text", "id": "7/2", "paragraphs": ["第一段", "第二段\n段內換行"]}``
       — replace text, keeping each paragraph's style. A paragraph may instead be
@@ -451,7 +453,8 @@ def edit_odp(path: str, ops: list) -> str:
     * ``{"op": "geom", "id": "7/2", "x": 2, "y": 3, "w": 10, "h": 2}`` (cm; any
       subset). Lines take ``x1/y1/x2/y2``.
     * ``{"op": "add_text", "page": 0, "x": 2, "y": 2, "w": 10, "h": 1.5, "text": "..."}``,
-      ``{"op": "add_rect", "page": 0, "x": .., "y": .., "w": .., "h": ..}``
+      ``{"op": "add_rect", "page": 0, "x": .., "y": .., "w": .., "h": .., "fill": "#0B6BA8",
+      "stroke": "#C9D0D7"}`` (``fill``/``stroke`` optional ``#RRGGBB``; no fill → light grey)
     * ``{"op": "delete", "id": "7/2"}``, ``{"op": "duplicate", "id": "7/2", "dx": 0.5, "dy": 0.5}``,
       ``{"op": "order", "id": "7/2", "to": "front" | "back" | "forward" | "backward"}``
     * ``{"op": "page_add", "after": 3}``, ``{"op": "page_duplicate", "page": 3}``,
@@ -464,8 +467,9 @@ def edit_odp(path: str, ops: list) -> str:
     ``outline_odp``, make each change, and delete each comment you resolved in the
     same ``edit_odp`` call — the open editor then shows the page without it.
 
-    Deleting several elements of one page: list them from the highest index down,
-    or later ids shift. Returns ``"ok: ..."`` with the ids of anything created, then
+    Page numbers (``page_*`` ops) and comment ids are not pinned: they shift as
+    earlier ops in the batch add or remove pages and comments, so delete those
+    from the highest index down. Returns ``"ok: ..."`` with the ids of anything created, then
     the new outline of the pages touched; ``"error: ..."`` if any op was refused.
     """
     try:

@@ -165,6 +165,44 @@ def test_add_duplicate_order_delete(deck):
     assert len(_page(state, 0)["elements"]) == count + 2
 
 
+def test_ids_in_a_batch_mean_what_they_meant_before_it(deck):
+    doc = Document(deck)
+    before = doc.state()
+    ids = [e["id"] for e in _page(before, 7)["elements"]]
+    kept = _el(before, ids[5])
+    # Deletes in ascending order used to shift the later ids onto other elements.
+    state = doc.apply(
+        [
+            {"op": "delete", "id": ids[1]},
+            {"op": "delete", "id": ids[2]},
+            {"op": "geom", "id": ids[5], "x": 1.25},
+        ]
+    )
+    after = _page(state, 7)["elements"]
+    assert len(after) == len(ids) - 2
+    moved = after[3]
+    assert moved["x"] == pytest.approx(1.25)
+    assert moved["kind"] == kept["kind"] and moved.get("text") == kept.get("text")
+
+
+def test_an_element_deleted_earlier_in_the_batch_is_reported(deck):
+    doc = Document(deck)
+    with pytest.raises(EditError, match="已在這批操作中被刪除"):
+        doc.apply([{"op": "delete", "id": "7/2"}, {"op": "text", "id": "7/2", "paragraphs": ["x"]}])
+    assert not doc.state()["canUndo"]
+
+
+def test_add_rect_takes_fill_and_stroke(deck):
+    doc = Document(deck)
+    state = doc.apply([{"op": "add_rect", "page": 0, "fill": "#0b6ba8", "stroke": "#C9D0D7"}])
+    (rect_id,) = state["created"]
+    assert _el(state, rect_id)["fill"] == "#0B6BA8"
+    state = doc.apply([{"op": "add_rect", "page": 0}])
+    assert _el(state, state["created"][0])["fill"] == "#E8ECF4"
+    with pytest.raises(EditError, match="#RRGGBB"):
+        doc.apply([{"op": "add_rect", "page": 0, "fill": "blue"}])
+
+
 def test_page_operations(deck):
     doc = Document(deck)
     titles = lambda st: [p["name"] for p in st["scene"]["pages"]]  # noqa: E731
