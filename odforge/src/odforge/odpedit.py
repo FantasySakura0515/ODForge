@@ -993,9 +993,13 @@ class Document:
     def _op_add_rect(self, op: Dict[str, Any]) -> List[str]:
         page_i = int(op.get("page", 0))
         page = self._page(page_i)
-        fill, stroke = _hex_or_none(op.get("fill"), "fill"), _hex_or_none(op.get("stroke"), "stroke")
+        fill = _hex_or_none(op.get("fill"), "fill")
+        stroke = _hex_or_none(op.get("stroke"), "stroke")
         rect = etree.Element(q("draw", "rect"))
-        style = self._graphic_style(fill=fill, stroke=stroke) if fill or stroke else self._ensure_rect_style()
+        if fill or stroke:
+            style = self._graphic_style(fill=fill, stroke=stroke)
+        else:
+            style = self._ensure_rect_style()
         rect.set(q("draw", "style-name"), style)
         for key, attr, default in (
             ("x", "x", 4),
