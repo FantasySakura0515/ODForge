@@ -17,6 +17,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import tempfile
 import threading
 import zipfile
@@ -57,12 +58,21 @@ def _len(value: float) -> str:
     return f"{round(value, 4):g}cm"
 
 
+def _hex_or_none(value: Any, field: str) -> Optional[str]:
+    if value is None:
+        return None
+    if not (isinstance(value, str) and re.fullmatch(r"#[0-9A-Fa-f]{6}", value)):
+        raise EditError(f"{field} 要是 #RRGGBB 六碼色碼:{value!r}")
+    return value.upper()
+
+
 class Document:
     """One ``.odp`` open for editing. Thread-safe; every method saves to disk."""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self._lock = threading.Lock()
+        self._pinned: Dict[str, etree._Element] = {}
         self.version = 0
         self._load()
 
@@ -201,7 +211,27 @@ class Document:
         return pages[i]
 
     def _element(self, element_id: Any) -> Tuple[int, int, etree._Element]:
-        """``"7/2"`` is the third drawable of page 8; ``"7/2.1"`` the second inside that group."""
+        """``"7/2"`` is the third drawable of page 8; ``"7/2.1"`` the second inside that group.
+
+        Inside a batch an id means what it meant before the batch (see ``apply``).
+        """
+        pinned = self._pinned.get(str(element_id))
+        if pinned is not None:
+            return self._locate(element_id, pinned)
+        return self._resolve(element_id)
+
+    def _locate(self, element_id: Any, el: etree._Element) -> Tuple[int, int, etree._Element]:
+        top = el
+        while top.getparent() is not None and top.getparent().tag != q("draw", "page"):
+            top = top.getparent()
+        page = top.getparent()
+        pages = self._pages()
+        if page is None or not any(p is page for p in pages):
+            raise EditError(f"元素 {element_id} 已在這批操作中被刪除")
+        page_i = next(i for i, p in enumerate(pages) if p is page)
+        return page_i, drawables(page).index(top), el
+
+    def _resolve(self, element_id: Any) -> Tuple[int, int, etree._Element]:
         try:
             page_part, path = str(element_id).split("/")
             page_i = int(page_part)
@@ -222,11 +252,18 @@ class Document:
     # -- history ----------------------------------------------------------------
 
     def apply(self, ops: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Apply a batch atomically: all of it lands, or none of it does."""
+        """Apply a batch atomically: all of it lands, or none of it does.
+
+        Every element id in the batch is resolved against the document as it was
+        before the batch, so ``[delete 6/3, text 6/5]`` edits the element that was
+        ``6/5`` and deletes listed in any order remove what was listed. An id that
+        did not exist before the batch (one just created) resolves live.
+        """
         with self._lock:
             self._sync()
             before = self._serialise()
             created: List[str] = []
+            self._pinned = self._pin_ids(ops)
             try:
                 for op in ops:
                     created.extend(self._apply_one(op))
@@ -236,6 +273,8 @@ class Document:
             except Exception as exc:
                 self.content = safe_fromstring(before)
                 raise EditError(f"無法套用這個修改:{type(exc).__name__}: {exc}") from exc
+            finally:
+                self._pinned = {}
             if self._serialise() == before:
                 return self._state(created)
             self._refresh_fonts()
@@ -244,6 +283,21 @@ class Document:
             self.redo_stack.clear()
             self._save()
             return self._state(created)
+
+    def _pin_ids(self, ops: List[Dict[str, Any]]) -> Dict[str, etree._Element]:
+        pinned: Dict[str, etree._Element] = {}
+        for op in ops:
+            if not isinstance(op, dict):
+                continue
+            ids = [op.get("id")] + (op.get("ids") if isinstance(op.get("ids"), list) else [])
+            for element_id in ids:
+                if element_id is None or str(element_id) in pinned:
+                    continue
+                try:
+                    pinned[str(element_id)] = self._resolve(element_id)[2]
+                except EditError:
+                    pass  # reported by the op itself, or created earlier in the batch
+        return pinned
 
     def undo(self) -> Dict[str, Any]:
         with self._lock:
@@ -939,8 +993,10 @@ class Document:
     def _op_add_rect(self, op: Dict[str, Any]) -> List[str]:
         page_i = int(op.get("page", 0))
         page = self._page(page_i)
+        fill, stroke = _hex_or_none(op.get("fill"), "fill"), _hex_or_none(op.get("stroke"), "stroke")
         rect = etree.Element(q("draw", "rect"))
-        rect.set(q("draw", "style-name"), self._ensure_rect_style())
+        style = self._graphic_style(fill=fill, stroke=stroke) if fill or stroke else self._ensure_rect_style()
+        rect.set(q("draw", "style-name"), style)
         for key, attr, default in (
             ("x", "x", 4),
             ("y", "y", 4),
